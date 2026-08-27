@@ -72,5 +72,11 @@ Scripts/live-e2e-cleanup.sh   # independent cleanup if a run crashed
   parses generated script text, and every dynamic value is POSIX-quoted.
 - The app only ever touches tmux sessions carrying its own `@rterm_*`
   metadata; your other tmux sessions are invisible to it.
+- Measured footprint (Release, M2 Max, macOS 15.7): idle CPU ≈ 0% with no
+  terminal and ≈ 0.4% with one attached idle terminal; ~102 MB RSS idle,
+  ~115 MB with one attached terminal.
+- Known cosmetic issue: macOS logs one "reentrant operation in its
+  NSTableView delegate" warning at launch (SwiftUI sidebar internals; no
+  functional impact).
 
 Spec: [docs/remote-project-terminal-v1-spec.md](docs/remote-project-terminal-v1-spec.md).

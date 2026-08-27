@@ -44,6 +44,9 @@ final class AppModel {
     var selectedSessionID: SessionID? {
         didSet { selectionDidChange(from: oldValue) }
     }
+    /// When true, clearing the selection detaches but does not persist the
+    /// cleared value (used for window close, which races app termination).
+    private var preserveSelectionOnDisk = false
     private(set) var archivingSessions: Set<SessionID> = []
     var alert: AppAlert?
     var projectEditor: ProjectEditorContext?
@@ -92,18 +95,23 @@ final class AppModel {
             alert = AppAlert(title: "Couldn't Load Settings", message: error.localizedDescription)
         }
         await refreshRemotes()
-        // Restore the last-selected session by reconciling projects until we
-        // find it (or run out); selection triggers reattachment.
-        if restoredSelection != nil {
-            for project in projects {
-                await refreshSessions(for: project)
-                if let restored = restoredSelection,
-                   let session = sessions[project.id]?.first(where: { $0.id == restored }) {
-                    selectedSessionID = session.id
-                    break
-                }
+        // All projects are visible (expanded) in the sidebar, so reconcile
+        // each once at launch; restore the last-selected session when found
+        // (selection triggers reattachment).
+        var selectionToRestore: SessionID?
+        for project in projects {
+            await refreshSessions(for: project)
+            if let restored = restoredSelection,
+               sessions[project.id]?.contains(where: { $0.id == restored }) == true {
+                selectionToRestore = restored
+                restoredSelection = nil
             }
-            restoredSelection = nil
+        }
+        restoredSelection = nil
+        if let selectionToRestore {
+            // Let the sidebar finish inserting rows before applying selection.
+            try? await Task.sleep(for: .milliseconds(100))
+            selectedSessionID = selectionToRestore
         }
     }
 
@@ -168,11 +176,12 @@ final class AppModel {
         guard selectedSessionID != oldValue else { return }
         // Selection changes arrive mid view-update (List binding); defer the
         // attach/detach side effects out of the current render pass.
+        let skipPersist = preserveSelectionOnDisk
         Task { @MainActor in
             guard let session = self.selectedSession,
                   let project = self.projects.first(where: { $0.id == session.projectID }) else {
                 self.attachment.detach()
-                self.persist()
+                if !skipPersist { self.persist() }
                 return
             }
             self.attachment.attach(session: session, project: project)
@@ -180,14 +189,32 @@ final class AppModel {
         }
     }
 
+    /// Closing the window is detach-only, and must not clobber the
+    /// last-selected session stored for next-launch restore.
+    func windowDidClose() {
+        preserveSelectionOnDisk = true
+        selectedSessionID = nil
+        preserveSelectionOnDisk = false
+    }
+
     // MARK: Sessions
+
+    /// Incremented whenever local mutations (create/archive/kill) change what
+    /// a concurrent refresh's results would mean; stale results are dropped.
+    private var sessionListEpoch: [ProjectID: Int] = [:]
+
+    private func bumpSessionEpoch(_ projectID: ProjectID) {
+        sessionListEpoch[projectID, default: 0] += 1
+    }
 
     func refreshSessions(for project: Project) async {
         guard !sessionsLoading.contains(project.id) else { return }
         sessionsLoading.insert(project.id)
         defer { sessionsLoading.remove(project.id) }
+        let epoch = sessionListEpoch[project.id, default: 0]
         do {
             let list = try await provider.listSessions(for: project)
+            guard sessionListEpoch[project.id, default: 0] == epoch else { return }
             sessions[project.id] = list
             sessionErrors[project.id] = nil
         } catch {
@@ -198,6 +225,7 @@ final class AppModel {
     /// Records a session the New Session sheet just created, selects it
     /// (attaching the terminal), and reconciles with the remote.
     func noteCreatedSession(_ session: RemoteSession, project: Project) {
+        bumpSessionEpoch(project.id)
         sessions[project.id, default: []].append(session)
         selectedSessionID = session.id
         Task { await refreshSessions(for: project) }
@@ -212,6 +240,7 @@ final class AppModel {
         defer { archivingSessions.remove(session.id) }
         do {
             try await provider.archiveSession(session, project: project)
+            bumpSessionEpoch(project.id)
             sessions[project.id]?.removeAll { $0.id == session.id }
             tombstones.removeAll { $0.id == session.id }
             persist()
@@ -219,6 +248,7 @@ final class AppModel {
         } catch let error as RuntimeProviderError {
             if case .cleanupFailed = error {
                 // The runtime session is gone; keep a tombstone for retry.
+                bumpSessionEpoch(project.id)
                 sessions[project.id]?.removeAll { $0.id == session.id }
                 tombstones.removeAll { $0.id == session.id }
                 tombstones.append(CleanupTombstone(
@@ -240,6 +270,7 @@ final class AppModel {
         }
         do {
             try await provider.destroySession(session, project: project)
+            bumpSessionEpoch(project.id)
             sessions[project.id]?.removeAll { $0.id == session.id }
             await refreshSessions(for: project)
         } catch {
@@ -312,6 +343,8 @@ final class AppModel {
 
     // MARK: Persistence
 
+    private var persistChain: Task<Void, Never>?
+
     func persist() {
         let state = PersistedState(
             projects: projects,
@@ -319,7 +352,9 @@ final class AppModel {
             lastSelectedSessionID: selectedSessionID,
             collapsedProjectIDs: []
         )
-        Task { [store] in
+        // Chain saves so an older snapshot can never overwrite a newer one.
+        persistChain = Task { [store, previous = persistChain] in
+            await previous?.value
             do {
                 try await store.save(state)
             } catch {

@@ -14,7 +14,7 @@ struct MainWindowView: View {
         // Closing the window is a detach-only operation: the local ssh
         // attachment ends, the remote session keeps running.
         .background(WindowCloseObserver {
-            model.selectedSessionID = nil
+            model.windowDidClose()
         })
         .alert(item: $model.alert) { alert in
             Alert(

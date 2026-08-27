@@ -141,12 +141,6 @@ private struct ProjectRows: View {
                 model.confirmRemoveProject = project
             }
         }
-        .task(id: project.id) {
-            // Initial load when the project first appears.
-            if model.sessions[project.id] == nil {
-                await model.refreshSessions(for: project)
-            }
-        }
 
         // Session rows
         if let error = model.sessionErrors[project.id] {

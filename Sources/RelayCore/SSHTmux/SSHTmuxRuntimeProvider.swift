@@ -211,6 +211,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             executable: URL(fileURLWithPath: SSHCommandRunner.sshPath),
             arguments: [
                 "-tt",
+                "-o", "ConnectTimeout=10",
                 "--",
                 alias,
                 tmuxWord, "attach-session", "-t", session.backendID,
@@ -261,6 +262,9 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             ]
         )
 
+        // Every failure past this point must surface as .cleanupFailed: the
+        // runtime session is already terminated, so the caller needs the
+        // retry/tombstone path, not a generic error.
         let result: SSHCommandRunner.CommandResult
         do {
             result = try await runner.runScript(
@@ -270,6 +274,8 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             )
         } catch SSHCommandRunner.RunnerError.timedOut {
             throw RuntimeProviderError.cleanupFailed("The cleanup command timed out.")
+        } catch {
+            throw RuntimeProviderError.cleanupFailed("Couldn't run the cleanup command: \(error)")
         }
         guard result.exitCode == 0 else {
             if result.exitCode == 255 {

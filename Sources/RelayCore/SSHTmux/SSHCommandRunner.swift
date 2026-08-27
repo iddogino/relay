@@ -21,12 +21,18 @@ public struct SSHCommandRunner: Sendable {
         }
 
         /// Parses `KEY=value` marker lines emitted by management scripts.
+        /// First occurrence wins: scripts emit their markers before any data
+        /// output (e.g. tmux listings), so later look-alike lines — such as a
+        /// hostile tmux session named `RTERM_STATUS=x` — can't override them.
         public func markers() -> [String: String] {
             var result: [String: String] = [:]
             for line in stdout.split(separator: "\n") {
                 guard line.hasPrefix("RTERM_") else { continue }
                 guard let eq = line.firstIndex(of: "=") else { continue }
-                result[String(line[line.startIndex..<eq])] = String(line[line.index(after: eq)...])
+                let key = String(line[line.startIndex..<eq])
+                if result[key] == nil {
+                    result[key] = String(line[line.index(after: eq)...])
+                }
             }
             return result
         }
@@ -74,14 +80,25 @@ public struct SSHCommandRunner: Sendable {
         let spawned = try spawn(executable: executable, arguments: arguments)
 
         // Feed stdin and pump both output pipes off the cooperative pool.
+        // The stop flag bounds draining after the child exits so a grandchild
+        // that inherited the pipe write-ends (e.g. a lingering ssh mux master)
+        // can never hang a management call.
         let stdinData = stdinText.map { Data($0.utf8) } ?? Data()
         Task.detached(priority: .userInitiated) {
             writeAllAndClose(fd: spawned.stdinFD, data: stdinData)
         }
-        async let stdoutData = readAllAndClose(fd: spawned.stdoutFD)
-        async let stderrData = readAllAndClose(fd: spawned.stderrFD)
+        let stopDraining = StopFlag()
+        async let stdoutData = readUntilEOFOrStopped(fd: spawned.stdoutFD, stop: stopDraining)
+        async let stderrData = readUntilEOFOrStopped(fd: spawned.stderrFD, stop: stopDraining)
 
         let status = await reap(pid: spawned.pid, timeout: timeout)
+
+        // Child is gone; allow a short grace period for the pipes to reach
+        // EOF, then stop the readers regardless.
+        Task.detached {
+            try? await Task.sleep(for: .seconds(2))
+            stopDraining.raise()
+        }
 
         let stdout = String(data: await stdoutData, encoding: .utf8) ?? ""
         let stderr = String(data: await stderrData, encoding: .utf8) ?? ""
@@ -217,19 +234,35 @@ public struct SSHCommandRunner: Sendable {
         }
     }
 
-    private static func readAllAndClose(fd: Int32) async -> Data {
-        await withCheckedContinuation { continuation in
+    /// Thread-safe latch used to abandon pipe draining after child exit.
+    final class StopFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func raise() { lock.lock(); value = true; lock.unlock() }
+        var isRaised: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    private static func readUntilEOFOrStopped(fd: Int32, stop: StopFlag) async -> Data {
+        // Non-blocking reads let the drain loop observe the stop flag.
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 var result = Data()
                 var buffer = [UInt8](repeating: 0, count: 65536)
-                while true {
+                loop: while true {
                     let n = read(fd, &buffer, buffer.count)
-                    if n > 0 {
+                    switch n {
+                    case 1...:
                         result.append(contentsOf: buffer[0..<n])
-                    } else if n == -1 && errno == EINTR {
-                        continue
-                    } else {
-                        break
+                    case 0:
+                        break loop // EOF
+                    default:
+                        if errno == EAGAIN || errno == EWOULDBLOCK {
+                            if stop.isRaised { break loop }
+                            usleep(10_000)
+                        } else if errno != EINTR {
+                            break loop
+                        }
                     }
                 }
                 close(fd)

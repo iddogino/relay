@@ -26,9 +26,6 @@ final class TerminalAttachmentController {
     private(set) var surfaceView: TerminalSurfaceView?
     private(set) var terminalTitle: String = ""
 
-    /// Called when the controller discovers the session no longer exists.
-    var onSessionEnded: ((RemoteSession) -> Void)?
-
     private let provider: any RuntimeProvider
     private var attachTask: Task<Void, Never>?
     private var generation = 0
@@ -140,8 +137,10 @@ final class TerminalAttachmentController {
         tearDownSurface()
 
         // An attachment that survived a while resets the backoff; one that
-        // died immediately continues escalating it.
-        let quickFailure = Date().timeIntervalSince(lastAttachTime) < 5
+        // died quickly continues escalating it. The threshold must exceed the
+        // ssh ConnectTimeout so slow connection failures still escalate and
+        // the bounded-retry limit stays reachable.
+        let quickFailure = Date().timeIntervalSince(lastAttachTime) < 30
         let attempt = quickFailure ? previousAttempt + 1 : 0
         guard attempt < Self.maxAutoRetries else {
             phase = .failed(message: "Can't reach \(project.workspace.opaqueID). The connection keeps dropping.")
@@ -159,7 +158,6 @@ final class TerminalAttachmentController {
                 guard !Task.isCancelled, gen == self.generation else { return }
                 guard exists else {
                     self.phase = .ended
-                    self.onSessionEnded?(session)
                     return
                 }
             } catch {
