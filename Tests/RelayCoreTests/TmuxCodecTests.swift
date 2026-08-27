@@ -1,0 +1,113 @@
+import Foundation
+import Testing
+@testable import RelayCore
+
+@Suite("tmux naming")
+struct TmuxNamingTests {
+    @Test func generatedNamesAreSafeAndPrefixed() {
+        for _ in 0..<200 {
+            let name = TmuxNaming.generateSessionName()
+            #expect(name.hasPrefix("rterm-"))
+            #expect(TmuxNaming.isSafeSessionName(name))
+            #expect(name.allSatisfy { $0.isASCII })
+        }
+    }
+
+    @Test func generatedNamesDoNotCollide() {
+        var seen = Set<String>()
+        for _ in 0..<10_000 {
+            #expect(seen.insert(TmuxNaming.generateSessionName()).inserted)
+        }
+    }
+
+    @Test func unsafeNamesRejected() {
+        #expect(!TmuxNaming.isSafeSessionName("other-session"))
+        #expect(!TmuxNaming.isSafeSessionName("rterm-abc; rm -rf /"))
+        #expect(!TmuxNaming.isSafeSessionName("rterm-ünïcode"))
+        #expect(!TmuxNaming.isSafeSessionName("rterm-a b"))
+        #expect(!TmuxNaming.isSafeSessionName(""))
+        #expect(TmuxNaming.isSafeSessionName("rterm-e2e-20260827-4f91c8"))
+    }
+}
+
+@Suite("tmux session codec")
+struct TmuxCodecTests {
+    private func makeLine(
+        name: String = "rterm-2f8a17d9d71e4dbe",
+        schema: String = "1",
+        projectID: String = UUID().uuidString,
+        sessionID: String = UUID().uuidString,
+        nameB64: String = TmuxSessionCodec.encodeDisplayName("my session"),
+        createdAt: String = "1724800000"
+    ) -> String {
+        [name, schema, projectID, sessionID, nameB64, createdAt].joined(separator: "\t")
+    }
+
+    @Test func roundTripsUnicodeDisplayNames() {
+        for name in ["plain", "with spaces", "日本語セッション", "emoji 🚀🔥", "quote ' \" $PATH; echo nope"] {
+            let encoded = TmuxSessionCodec.encodeDisplayName(name)
+            #expect(!encoded.contains("\t"))
+            #expect(TmuxSessionCodec.decodeDisplayName(encoded) == name)
+        }
+    }
+
+    @Test func parsesWellFormedLine() throws {
+        let projectUUID = UUID()
+        let line = makeLine(projectID: projectUUID.uuidString)
+        let parsed = try #require(TmuxSessionCodec.parse(line: line))
+        #expect(parsed.tmuxName == "rterm-2f8a17d9d71e4dbe")
+        #expect(parsed.projectID == ProjectID(uuid: projectUUID))
+        #expect(parsed.displayName == "my session")
+        #expect(parsed.createdAt == Date(timeIntervalSince1970: 1_724_800_000))
+    }
+
+    @Test func rejectsUnknownSchema() {
+        #expect(TmuxSessionCodec.parse(line: makeLine(schema: "2")) == nil)
+        #expect(TmuxSessionCodec.parse(line: makeLine(schema: "")) == nil)
+    }
+
+    @Test func rejectsMalformedMetadata() {
+        #expect(TmuxSessionCodec.parse(line: "") == nil)
+        #expect(TmuxSessionCodec.parse(line: "just-a-name") == nil)
+        #expect(TmuxSessionCodec.parse(line: makeLine(projectID: "not-a-uuid")) == nil)
+        #expect(TmuxSessionCodec.parse(line: makeLine(sessionID: "nope")) == nil)
+        #expect(TmuxSessionCodec.parse(line: makeLine(nameB64: "!!! not base64 !!!")) == nil)
+        #expect(TmuxSessionCodec.parse(line: makeLine(createdAt: "not-a-number")) == nil)
+        // Too many fields
+        #expect(TmuxSessionCodec.parse(line: makeLine() + "\textra") == nil)
+    }
+
+    @Test func rejectsForeignSessions() {
+        // A session not created by the app (name without our prefix) is never
+        // adopted even if it happens to carry look-alike fields.
+        let line = ["users-own-session", "1", UUID().uuidString, UUID().uuidString,
+                    TmuxSessionCodec.encodeDisplayName("x"), "123"].joined(separator: "\t")
+        #expect(TmuxSessionCodec.parse(line: line) == nil)
+    }
+}
+
+@Suite("tmux version parsing")
+struct TmuxVersionTests {
+    @Test func parsesCommonFormats() {
+        #expect(SSHTmuxRuntimeProvider.parseTmuxVersion("tmux 3.4")! == (3, 4))
+        #expect(SSHTmuxRuntimeProvider.parseTmuxVersion("tmux 3.7c")! == (3, 7))
+        #expect(SSHTmuxRuntimeProvider.parseTmuxVersion("tmux next-3.6")! == (3, 6))
+        #expect(SSHTmuxRuntimeProvider.parseTmuxVersion("tmux openbsd-7.4") == nil || SSHTmuxRuntimeProvider.parseTmuxVersion("tmux openbsd-7.4")! == (7, 4))
+        #expect(SSHTmuxRuntimeProvider.parseTmuxVersion("unknown") == nil)
+    }
+}
+
+@Suite("safe executable paths")
+struct SafeExecutablePathTests {
+    @Test func acceptsNormalPaths() {
+        #expect(SSHTmuxRuntimeProvider.isSafeExecutablePath("/opt/homebrew/bin/tmux"))
+        #expect(SSHTmuxRuntimeProvider.isSafeExecutablePath("/usr/bin/tmux"))
+    }
+
+    @Test func rejectsRiskyPaths() {
+        #expect(!SSHTmuxRuntimeProvider.isSafeExecutablePath("tmux"))
+        #expect(!SSHTmuxRuntimeProvider.isSafeExecutablePath("/path with space/tmux"))
+        #expect(!SSHTmuxRuntimeProvider.isSafeExecutablePath("/tmp/$(evil)/tmux"))
+        #expect(!SSHTmuxRuntimeProvider.isSafeExecutablePath(""))
+    }
+}
