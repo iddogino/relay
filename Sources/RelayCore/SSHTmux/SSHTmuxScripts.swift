@@ -88,17 +88,17 @@ enum SSHTmuxScripts {
         // at runtime from `$rp` rather than quoted locally.
         envFlags += " -e \"RTERM_PROJECT_PATH=$rp\""
 
-        // If a launch command is configured, the pane runs the user's login
-        // shell executing it. tmux itself runs this single argument via sh -c.
-        //
-        // Standard per-user bin directories are prepended to PATH first:
-        // login NON-interactive shells skip .zshrc/.bashrc, where installers
-        // (claude, uv, pipx, …) typically export ~/.local/bin — without this,
-        // `claude` works when typed but not as a launch command.
+        // If a launch command is configured, the pane runs it via the user's
+        // login INTERACTIVE shell (`-l -i`): the pane has a real tty, and
+        // interactive mode reads .zshrc/.bashrc so the command sees exactly
+        // the environment the user gets when typing it — aliases, version
+        // managers, PATH exports and all. (Standard per-user bin dirs are
+        // still prepended as a safety net for rc files that guard on
+        // interactivity oddly.) tmux runs this single argument via sh -c.
         var paneCommand = ""
         if let launch = ctx.launchCommand, !launch.isEmpty {
             let inner = pathBolster
-                + "exec \"${SHELL:-/bin/sh}\" -l -c \(POSIXShellQuote.quote(launch))"
+                + "exec \"${SHELL:-/bin/sh}\" -l -i -c \(POSIXShellQuote.quote(launch))"
             paneCommand = " \(POSIXShellQuote.quote(inner))"
         }
 

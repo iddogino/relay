@@ -39,11 +39,13 @@ Launch commands receive a stable environment: `RTERM_PROJECT_ID`,
 branch/folder use), `RTERM_REMOTE` (+ `RTERM_SHUTDOWN_REASON=archive` for
 shutdown commands). The project editor has one-click presets — e.g.
 `claude --worktree="$RTERM_SESSION_SLUG"` runs each session's agent in its
-own worktree. Launch commands run with `~/.local/bin` and `~/bin` on PATH
-(installers export those in interactive-only rc files that login
-non-interactive shells skip), and a launch command that fails keeps its
-dead pane — and the error it printed — visible instead of silently
-vanishing.
+own worktree. Launch commands run in your remote **interactive login
+shell** (`.zshrc`/`.bashrc`, aliases, nvm and friends all apply — the same
+environment as typing the command yourself), with `~/.local/bin` and
+`~/bin` additionally on PATH as a safety net. A launch command that fails
+keeps its dead pane — and the error it printed — visible instead of
+silently vanishing. Shutdown commands run without a tty, so they use a
+login non-interactive shell with the same PATH safety net.
 
 **Archive Session** (⌘⇧E) ends a session cleanly: detach → kill the tmux
 session → run your shutdown command (with retry if it fails). **Kill Session**

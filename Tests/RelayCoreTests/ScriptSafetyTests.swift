@@ -114,7 +114,7 @@ struct ScriptSafetyTests {
             // files, which login non-interactive shells never read).
             let paneCommand = try #require(newSession.last(where: { !$0.isEmpty }))
             #expect(paneCommand.contains("$HOME/.local/bin"))
-            #expect(paneCommand.contains("-l -c"))
+            #expect(paneCommand.contains("-l -i -c"), "launch runs in an interactive login shell (pane has a tty)")
             // Failed launches keep their dead pane visible.
             #expect(calls.contains { $0.first == "set-option" && $0.contains("remain-on-exit") && $0.contains("failed") })
         }
