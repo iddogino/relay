@@ -152,8 +152,10 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             metadata.append((key, value))
         }
 
+        let slug = SessionSlug.make(displayName: displayName, sessionID: sessionID)
         let context = SSHTmuxScripts.CreateContext(
             tmuxName: tmuxName,
+            windowName: slug,
             pathInput: project.resolvedPath.isEmpty ? project.pathInput : project.resolvedPath,
             knownTmuxPath: knownTmuxPath(for: project),
             launchCommand: project.launchCommand?.isEmpty == false ? project.launchCommand : nil,
@@ -162,6 +164,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                 ("RTERM_PROJECT_NAME", project.name),
                 ("RTERM_SESSION_ID", sessionID.uuid.uuidString),
                 ("RTERM_SESSION_NAME", displayName),
+                ("RTERM_SESSION_SLUG", slug),
                 ("RTERM_REMOTE", alias),
             ],
             metadata: metadata
@@ -257,6 +260,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                 ("RTERM_PROJECT_PATH", project.resolvedPath),
                 ("RTERM_SESSION_ID", session.id.uuid.uuidString),
                 ("RTERM_SESSION_NAME", session.displayName),
+                ("RTERM_SESSION_SLUG", SessionSlug.make(displayName: session.displayName, sessionID: session.id)),
                 ("RTERM_REMOTE", alias),
                 ("RTERM_SHUTDOWN_REASON", "archive"),
             ]

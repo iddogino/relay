@@ -57,8 +57,15 @@ enum SSHTmuxScripts {
 
     // MARK: Session creation
 
+    /// Shell fragment prepending well-known user bin dirs to PATH (see the
+    /// launch-command note in `createSession`).
+    private static let pathBolster =
+        "PATH=\"$HOME/.local/bin:$HOME/bin:$PATH\"; export PATH; "
+
     struct CreateContext {
         let tmuxName: String
+        /// Human-readable tmux window name (the status-bar label); slug-safe.
+        let windowName: String
         let pathInput: String
         let knownTmuxPath: String?
         let launchCommand: String?
@@ -83,9 +90,15 @@ enum SSHTmuxScripts {
 
         // If a launch command is configured, the pane runs the user's login
         // shell executing it. tmux itself runs this single argument via sh -c.
+        //
+        // Standard per-user bin directories are prepended to PATH first:
+        // login NON-interactive shells skip .zshrc/.bashrc, where installers
+        // (claude, uv, pipx, …) typically export ~/.local/bin — without this,
+        // `claude` works when typed but not as a launch command.
         var paneCommand = ""
         if let launch = ctx.launchCommand, !launch.isEmpty {
-            let inner = "exec \"${SHELL:-/bin/sh}\" -l -c \(POSIXShellQuote.quote(launch))"
+            let inner = pathBolster
+                + "exec \"${SHELL:-/bin/sh}\" -l -c \(POSIXShellQuote.quote(launch))"
             paneCommand = " \(POSIXShellQuote.quote(inner))"
         }
 
@@ -98,13 +111,21 @@ enum SSHTmuxScripts {
             setOptions += "\"$tmux_path\" set-option -t \(ctx.tmuxName) \(key) \(POSIXShellQuote.quote(value)) || meta_fail=1\n"
         }
 
+        // A failed launch command keeps its dead pane (and the error it
+        // printed) visible instead of silently vanishing; clean exits still
+        // end the session normally. Best-effort: option value needs tmux 3.2+.
+        var remainOnExit = ""
+        if ctx.launchCommand?.isEmpty == false {
+            remainOnExit = "\"$tmux_path\" set-option -w -t \(ctx.tmuxName) remain-on-exit failed 2>/dev/null || true\n"
+        }
+
         return """
         set -u
         \(tmuxPreamble(knownTmuxPath: ctx.knownTmuxPath))
         cd \(pathExpr) 2>/dev/null || { printf 'RTERM_STATUS=no_dir\\n'; exit 22; }
         rp=$(pwd -P)
-        "$tmux_path" new-session -d -s \(ctx.tmuxName) -c "$rp"\(envFlags)\(paneCommand) || { printf 'RTERM_STATUS=create_failed\\n'; exit 23; }
-        meta_fail=0
+        "$tmux_path" new-session -d -s \(ctx.tmuxName) -n \(POSIXShellQuote.quote(ctx.windowName)) -c "$rp"\(envFlags)\(paneCommand) || { printf 'RTERM_STATUS=create_failed\\n'; exit 23; }
+        \(remainOnExit)meta_fail=0
         \(setOptions)if [ "$meta_fail" -ne 0 ]; then
           "$tmux_path" kill-session -t =\(ctx.tmuxName) 2>/dev/null
           printf 'RTERM_STATUS=meta_failed\\n'
@@ -176,7 +197,7 @@ enum SSHTmuxScripts {
         return """
         set -u
         cd \(pathExpr) 2>/dev/null || { printf 'RTERM_STATUS=no_dir\\n'; exit 22; }
-        \(exports)exec "${SHELL:-/bin/sh}" -l -c \(POSIXShellQuote.quote(ctx.shutdownCommand))
+        \(exports)\(pathBolster)exec "${SHELL:-/bin/sh}" -l -c \(POSIXShellQuote.quote(ctx.shutdownCommand))
         """
     }
 }

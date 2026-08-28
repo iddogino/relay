@@ -63,6 +63,7 @@ struct ScriptSafetyTests {
 
             let script = SSHTmuxScripts.createSession(.init(
                 tmuxName: "rterm-cafe0123beef4567",
+                windowName: "hostile-test",
                 pathInput: sandbox.projectDir.path,
                 knownTmuxPath: sandbox.fakeTmux.path,
                 launchCommand: "echo \"launch with 'quotes' and $HOME\"",
@@ -89,6 +90,50 @@ struct ScriptSafetyTests {
             // The resolved project path (with spaces and quote) is one element.
             let cIndex = try #require(newSession.firstIndex(of: "-c"))
             #expect(newSession[cIndex + 1].hasSuffix("project dir with 'quote"))
+        }
+    }
+
+    @Test func launchCommandsGetUserBinPATHAndFailureRetention() async throws {
+        try await withSandbox { sandbox in
+            let script = SSHTmuxScripts.createSession(.init(
+                tmuxName: "rterm-feedbeef00112233",
+                windowName: "some-tool",
+                pathInput: sandbox.projectDir.path,
+                knownTmuxPath: sandbox.fakeTmux.path,
+                launchCommand: "some-tool",
+                environment: [],
+                metadata: [("@rterm_schema", "1")]
+            ))
+            let result = try await runScript(script)
+            #expect(result.exitCode == 0, "stderr: \(result.stderr)")
+
+            let calls = try sandbox.invocations()
+            let newSession = try #require(calls.first { $0.first == "new-session" })
+            // The pane bootstrap prepends user bin dirs before the login shell
+            // (installers put claude/codex PATH exports in interactive-only rc
+            // files, which login non-interactive shells never read).
+            let paneCommand = try #require(newSession.last(where: { !$0.isEmpty }))
+            #expect(paneCommand.contains("$HOME/.local/bin"))
+            #expect(paneCommand.contains("-l -c"))
+            // Failed launches keep their dead pane visible.
+            #expect(calls.contains { $0.first == "set-option" && $0.contains("remain-on-exit") && $0.contains("failed") })
+        }
+    }
+
+    @Test func plainShellSessionsDoNotRetainDeadPanes() async throws {
+        try await withSandbox { sandbox in
+            let script = SSHTmuxScripts.createSession(.init(
+                tmuxName: "rterm-feedbeef44556677",
+                windowName: "plain",
+                pathInput: sandbox.projectDir.path,
+                knownTmuxPath: sandbox.fakeTmux.path,
+                launchCommand: nil,
+                environment: [],
+                metadata: [("@rterm_schema", "1")]
+            ))
+            _ = try await runScript(script)
+            let calls = try sandbox.invocations()
+            #expect(!calls.contains { $0.contains("remain-on-exit") })
         }
     }
 

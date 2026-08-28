@@ -97,6 +97,45 @@ struct TmuxVersionTests {
     }
 }
 
+@Suite("session slug")
+struct SessionSlugTests {
+    private let id = SessionID()
+
+    @Test func slugifiesTypicalNames() {
+        #expect(SessionSlug.make(displayName: "Fix Auth Flow!", sessionID: id) == "fix-auth-flow")
+        #expect(SessionSlug.make(displayName: "  spaces   everywhere  ", sessionID: id) == "spaces-everywhere")
+        #expect(SessionSlug.make(displayName: "v2.1-release (hotfix)", sessionID: id) == "v2-1-release-hotfix")
+        #expect(SessionSlug.make(displayName: "already-good-123", sessionID: id) == "already-good-123")
+    }
+
+    @Test func nonASCIIBecomesDashes() {
+        #expect(SessionSlug.make(displayName: "日本語 test 🚀", sessionID: id) == "test")
+        #expect(SessionSlug.make(displayName: "café-menü", sessionID: id) == "caf-men")
+    }
+
+    @Test func degenerateNamesFallBackToID() {
+        let slug = SessionSlug.make(displayName: "!!! $$$ ()", sessionID: id)
+        #expect(slug.hasPrefix("s-"))
+        #expect(slug.count == 10)
+        // Stable for the same session.
+        #expect(SessionSlug.make(displayName: "???", sessionID: id) == slug)
+    }
+
+    @Test func longNamesAreBounded() {
+        let slug = SessionSlug.make(displayName: String(repeating: "word ", count: 40), sessionID: id)
+        #expect(slug.count <= SessionSlug.maxLength)
+        #expect(!slug.hasSuffix("-"))
+    }
+
+    @Test func slugIsAlwaysShellAndGitSafe() {
+        for name in ["a b", "x/y\\z", "quote'\"", "$PATH `cmd`", "-lead", "日本 語"] {
+            let slug = SessionSlug.make(displayName: name, sessionID: id)
+            #expect(slug.allSatisfy { ($0.isLowercase && $0.isASCII) || $0.isNumber || $0 == "-" })
+            #expect(!slug.hasPrefix("-"))
+        }
+    }
+}
+
 @Suite("safe executable paths")
 struct SafeExecutablePathTests {
     @Test func acceptsNormalPaths() {

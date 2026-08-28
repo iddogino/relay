@@ -46,11 +46,41 @@ struct ProjectEditorSheet: View {
                     TextField("Launch command", text: $launchCommand, prompt: Text("claude"), axis: .vertical)
                         .lineLimit(1...4)
                         .fontDesign(.monospaced)
+                    LabeledContent("") {
+                        Menu {
+                            Section("Claude Code") {
+                                Button("claude") {
+                                    launchCommand = "claude"
+                                }
+                                Button("claude in a new worktree") {
+                                    launchCommand = #"claude --worktree="$RTERM_SESSION_SLUG""#
+                                }
+                            }
+                            Section("Codex") {
+                                Button("codex") {
+                                    launchCommand = "codex"
+                                }
+                            }
+                            Section("Git worktree") {
+                                Button("worktree + shell (with cleanup)") {
+                                    launchCommand = #"git worktree add ".worktrees/$RTERM_SESSION_SLUG" && cd ".worktrees/$RTERM_SESSION_SLUG" && exec "$SHELL""#
+                                    if shutdownCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        shutdownCommand = #"git worktree remove ".worktrees/$RTERM_SESSION_SLUG" && git branch -d "$RTERM_SESSION_SLUG""#
+                                    }
+                                }
+                            }
+                        } label: {
+                            Label("Presets", systemImage: "sparkles")
+                                .font(.caption)
+                        }
+                        .controlSize(.small)
+                        .fixedSize()
+                    }
                     TextField("Shutdown command", text: $shutdownCommand, prompt: Text("optional"), axis: .vertical)
                         .lineLimit(1...4)
                         .fontDesign(.monospaced)
                 } footer: {
-                    Text("The launch command starts each new session (RTERM_* variables describe the session). The shutdown command runs when a session is archived.")
+                    Text("The launch command starts each new session; the shutdown command runs when a session is archived. Both run in the project folder with RTERM_* variables set — including $RTERM_SESSION_SLUG, the session name slugified for branch/folder names.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
