@@ -120,7 +120,12 @@ set, the DMG is also notarized and stapled.
   metadata; your other tmux sessions are invisible to it.
 - Relay sessions are tuned to feel like a plain native terminal: no status
   strip, mouse-wheel scrollback, passthrough sequences allowed, pane titles
-  forwarded to the header. When the tmux server runs only Relay sessions it
+  forwarded to the header. Launch commands additionally run with
+  `TMUX`/`TMUX_PANE` scrubbed and `COLORTERM=truecolor` set — tmux is a
+  persistence layer, not something your tools should adapt to (Claude Code,
+  for example, statics its title spinner and clamps to 256 colors when it
+  sees `$TMUX`). `TERM_PROGRAM=tmux` is kept so input protocols stay
+  tmux-aware. When the tmux server runs only Relay sessions it
   also gets truecolor (`xterm-256color:RGB`), `escape-time 10`,
   `focus-events on`, and a 50k-line history — on a server shared with your
   own tmux sessions those server-wide settings are left alone.

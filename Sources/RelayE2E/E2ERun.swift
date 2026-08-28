@@ -242,7 +242,7 @@ final class E2ERun {
         let envProject = await makeProject(
             host, name: "E2E env \(host.alias)",
             launch: """
-            { pwd; env | grep '^RTERM_' | sort; } > "$RTERM_PROJECT_PATH/launch-marker.txt" 2>&1; exec "${SHELL:-/bin/sh}"
+            { pwd; env | grep '^RTERM_' | sort; printf 'TMUX_VISIBLE=%s\\n' "${TMUX:-none}"; printf 'COLORTERM_VALUE=%s\\n' "${COLORTERM:-none}"; } > "$RTERM_PROJECT_PATH/launch-marker.txt" 2>&1; exec "${SHELL:-/bin/sh}"
             """)
         guard let envProject else { return }
         guard let envSession = await createSession(envProject, name: "env probe") else { return }
@@ -255,6 +255,8 @@ final class E2ERun {
         check(marker.contains("RTERM_SESSION_NAME=env probe"), "AC-07 RTERM_SESSION_NAME correct")
         check(marker.contains("RTERM_REMOTE=\(host.alias)"), "AC-07 RTERM_REMOTE correct")
         check(marker.hasPrefix(envProject.resolvedPath + "\n"), "AC-07 launch command ran in project directory")
+        check(marker.contains("TMUX_VISIBLE=none"), "AC-07 TMUX is scrubbed from launch command env")
+        check(marker.contains("COLORTERM_VALUE=truecolor"), "AC-07 COLORTERM=truecolor in launch command env")
         let envAlive = await ssh(host.alias, "\"\(tmux)\" has-session -t =\(envSession.backendID) && echo RTERM_ALIVE=1")
         check(envAlive.markers()["RTERM_ALIVE"] == "1", "AC-07 session still alive after launch command")
         try? await provider.destroySession(envSession, project: envProject)

@@ -115,6 +115,11 @@ struct ScriptSafetyTests {
             let paneCommand = try #require(newSession.last(where: { !$0.isEmpty }))
             #expect(paneCommand.contains("$HOME/.local/bin"))
             #expect(paneCommand.contains("-l -i -c"), "launch runs in an interactive login shell (pane has a tty)")
+            // tmux is an invisible persistence layer: launched tools must not
+            // see $TMUX (they change behavior when they do), and get the
+            // truecolor the ghostty side always provides.
+            #expect(paneCommand.contains("unset TMUX TMUX_PANE"))
+            #expect(paneCommand.contains("COLORTERM=truecolor"))
             // Failed launches keep their dead pane visible.
             #expect(calls.contains { $0.first == "set-option" && $0.contains("remain-on-exit") && $0.contains("failed") })
             // The tmux status strip is hidden for app-owned sessions.

@@ -95,9 +95,18 @@ enum SSHTmuxScripts {
         // managers, PATH exports and all. (Standard per-user bin dirs are
         // still prepended as a safety net for rc files that guard on
         // interactivity oddly.) tmux runs this single argument via sh -c.
+        //
+        // TMUX/TMUX_PANE are scrubbed: Relay uses tmux purely as an invisible
+        // persistence layer, and tools change behavior when they see $TMUX
+        // (Claude Code statics its title spinner and clamps to 256 colors).
+        // TERM_PROGRAM=tmux is deliberately KEPT so input-protocol and
+        // hyperlink handling stay tmux-aware. COLORTERM advertises the
+        // truecolor the ghostty side always provides (tmux downconverts if a
+        // shared server lacks RGB).
         var paneCommand = ""
         if let launch = ctx.launchCommand, !launch.isEmpty {
-            let inner = pathBolster
+            let inner = "unset TMUX TMUX_PANE; COLORTERM=truecolor; export COLORTERM; "
+                + pathBolster
                 + "exec \"${SHELL:-/bin/sh}\" -l -i -c \(POSIXShellQuote.quote(launch))"
             paneCommand = " \(POSIXShellQuote.quote(inner))"
         }
