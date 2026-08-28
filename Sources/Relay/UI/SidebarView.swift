@@ -225,7 +225,11 @@ private struct SessionRow: View {
     private var isArchiving: Bool { model.archivingSessions.contains(session.id) }
 
     private var statusColor: Color {
-        guard isSelected else { return .secondary.opacity(0.5) }
+        guard isSelected else {
+            // A background session whose agent is busy gets a glanceable dot.
+            if case .working = activity { return .orange }
+            return .secondary.opacity(0.5)
+        }
         switch model.attachment.phase {
         case .attached: return .green
         case .connecting, .reconnecting: return .yellow
@@ -245,6 +249,10 @@ private struct SessionRow: View {
         return session.paneTitle
     }
 
+    private var activity: AgentActivity? {
+        statusTitle.map(AgentActivity.parse)
+    }
+
     var body: some View {
         HStack(spacing: 7) {
             Circle()
@@ -253,13 +261,7 @@ private struct SessionRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.displayName)
                     .lineLimit(1)
-                if let statusTitle, statusTitle != session.displayName {
-                    Text(statusTitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
+                statusLine
             }
             Spacer()
             if isArchiving {
@@ -276,6 +278,42 @@ private struct SessionRow: View {
             Button("Kill Session…", role: .destructive) {
                 model.confirmKillSession = session
             }
+        }
+    }
+
+    /// The caption under the name: the agent's status glyph rendered as a
+    /// real indicator (spinning while working) plus its task text.
+    @ViewBuilder private var statusLine: some View {
+        switch activity {
+        case .working(let task):
+            HStack(spacing: 3) {
+                Image(systemName: "circle.lefthalf.filled")
+                    .symbolEffect(.rotate, options: .repeat(.continuous))
+                    .foregroundStyle(.orange)
+                    .imageScale(.small)
+                Text(task.isEmpty ? "working…" : task)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .font(.caption)
+        case .ready(let task) where !task.isEmpty && task != session.displayName:
+            HStack(spacing: 3) {
+                Text("✳")
+                Text(task)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        case .plain(let title) where !title.isEmpty && title != session.displayName:
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        default:
+            EmptyView()
         }
     }
 }

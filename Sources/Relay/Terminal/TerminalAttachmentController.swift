@@ -105,12 +105,24 @@ final class TerminalAttachmentController {
         }
     }
 
-    private func createSurface(spec: TerminalLaunchSpec, attempt: Int) {
+    private func createSurface(spec: TerminalLaunchSpec, attempt: Int, creationTry: Int = 0) {
         // The surface runs its command as a shell command line (libghostty
         // itself wraps it in `exec -l …` via its login-shell wrapper, so no
         // exec prefix here). Every argv element is fully quoted.
         let command = POSIXShellQuote.quoteJoin([spec.executable.path] + spec.arguments)
         guard let view = TerminalSurfaceView(command: command, environment: spec.environment) else {
+            // ghostty_surface_new can fail transiently in the first moments
+            // of a launch (a restored selection may attach before the window
+            // is fully realized); retry briefly before declaring failure.
+            if GhosttyRuntime.shared.initError == nil, creationTry < 6 {
+                let gen = generation
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard gen == self.generation, !Task.isCancelled else { return }
+                    self.createSurface(spec: spec, attempt: attempt, creationTry: creationTry + 1)
+                }
+                return
+            }
             phase = .failed(message: GhosttyRuntime.shared.initError ?? "Couldn't create the terminal surface.")
             return
         }

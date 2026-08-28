@@ -174,3 +174,23 @@ struct SafeExecutablePathTests {
         #expect(!SSHTmuxRuntimeProvider.isSafeExecutablePath(""))
     }
 }
+
+@Suite("agent activity parsing")
+struct AgentActivityTests {
+    @Test func claudeCodeGlyphsClassify() {
+        #expect(AgentActivity.parse("◐ fix auth flow") == .working(task: "fix auth flow"))
+        #expect(AgentActivity.parse("◑ fix auth flow") == .working(task: "fix auth flow"))
+        #expect(AgentActivity.parse("✳ SUP-714") == .ready(task: "SUP-714"))
+    }
+
+    @Test func variationSelectorsRideAlong() {
+        // Emoji-presentation ✳️ carries U+FE0F in the same grapheme.
+        #expect(AgentActivity.parse("✳️ deploy") == .ready(task: "deploy"))
+    }
+
+    @Test func ordinaryTitlesStayPlain() {
+        #expect(AgentActivity.parse("vim ~/notes.md") == .plain(title: "vim ~/notes.md"))
+        #expect(AgentActivity.parse("") == .plain(title: ""))
+        #expect(AgentActivity.parse("◐◑ art") == .working(task: "◑ art"))
+    }
+}
