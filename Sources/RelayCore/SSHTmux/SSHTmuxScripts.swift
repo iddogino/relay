@@ -124,8 +124,29 @@ enum SSHTmuxScripts {
         \(tmuxPreamble(knownTmuxPath: ctx.knownTmuxPath))
         cd \(pathExpr) 2>/dev/null || { printf 'RTERM_STATUS=no_dir\\n'; exit 22; }
         rp=$(pwd -P)
+        # Native-terminal polish, server-scoped half. Only applied when every
+        # session on the server is app-owned (or the server is fresh), so a
+        # server shared with the user's own tmux sessions keeps their setup.
+        # Values the user configured away from defaults are respected.
+        "$tmux_path" start-server 2>/dev/null || true
+        if ! "$tmux_path" list-sessions -F '#{session_name}' 2>/dev/null | grep -qv '^rterm-'; then
+          [ "$("$tmux_path" show-option -gv history-limit 2>/dev/null)" = "2000" ] \\
+            && "$tmux_path" set-option -g history-limit 50000 2>/dev/null || true
+          [ "$("$tmux_path" show-option -sv escape-time 2>/dev/null)" = "500" ] \\
+            && "$tmux_path" set-option -s escape-time 10 2>/dev/null || true
+          "$tmux_path" set-option -s focus-events on 2>/dev/null || true
+          "$tmux_path" set-option -sa terminal-features ',xterm-256color:RGB' 2>/dev/null || true
+        fi
         "$tmux_path" new-session -d -s \(ctx.tmuxName) -n \(POSIXShellQuote.quote(ctx.windowName)) -c "$rp"\(envFlags)\(paneCommand) || { printf 'RTERM_STATUS=create_failed\\n'; exit 23; }
+        # Native-terminal polish, session-scoped half (never affects the
+        # user's own sessions): no status strip, mouse-wheel scrollback,
+        # passthrough sequences (image protocols etc.), and pane-title
+        # forwarding so the app header can show what's running.
         "$tmux_path" set-option -t \(ctx.tmuxName) status off 2>/dev/null || true
+        "$tmux_path" set-option -t \(ctx.tmuxName) mouse on 2>/dev/null || true
+        "$tmux_path" set-option -t \(ctx.tmuxName) allow-passthrough on 2>/dev/null || true
+        "$tmux_path" set-option -t \(ctx.tmuxName) set-titles on 2>/dev/null || true
+        "$tmux_path" set-option -t \(ctx.tmuxName) set-titles-string '#T' 2>/dev/null || true
         \(remainOnExit)meta_fail=0
         \(setOptions)if [ "$meta_fail" -ne 0 ]; then
           "$tmux_path" kill-session -t =\(ctx.tmuxName) 2>/dev/null

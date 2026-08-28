@@ -119,6 +119,11 @@ struct ScriptSafetyTests {
             #expect(calls.contains { $0.first == "set-option" && $0.contains("remain-on-exit") && $0.contains("failed") })
             // The tmux status strip is hidden for app-owned sessions.
             #expect(calls.contains { $0.first == "set-option" && $0.contains("status") && $0.contains("off") })
+            // Session-scoped native-feel options are applied to our session only.
+            for opt in [["mouse", "on"], ["allow-passthrough", "on"], ["set-titles", "on"]] {
+                #expect(calls.contains { $0.first == "set-option" && $0.contains("-t") && $0.contains(opt[0]) && $0.contains(opt[1]) },
+                        "missing session option \(opt[0])")
+            }
         }
     }
 

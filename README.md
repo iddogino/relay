@@ -84,6 +84,12 @@ Scripts/live-e2e-cleanup.sh   # independent cleanup if a run crashed
   parses generated script text, and every dynamic value is POSIX-quoted.
 - The app only ever touches tmux sessions carrying its own `@rterm_*`
   metadata; your other tmux sessions are invisible to it.
+- Relay sessions are tuned to feel like a plain native terminal: no status
+  strip, mouse-wheel scrollback, passthrough sequences allowed, pane titles
+  forwarded to the header. When the tmux server runs only Relay sessions it
+  also gets truecolor (`xterm-256color:RGB`), `escape-time 10`,
+  `focus-events on`, and a 50k-line history — on a server shared with your
+  own tmux sessions those server-wide settings are left alone.
 - Measured footprint (Release, M2 Max, macOS 15.7): idle CPU ≈ 0% with no
   terminal and ≈ 0.4% with one attached idle terminal; ~102 MB RSS idle,
   ~115 MB with one attached terminal.
