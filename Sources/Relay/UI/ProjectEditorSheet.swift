@@ -187,6 +187,7 @@ struct NewSessionSheet: View {
     let project: Project
 
     @State private var name = ""
+    @State private var runLaunchCommand = true
     @State private var creating = false
     @State private var errorMessage: String?
     @FocusState private var nameFocused: Bool
@@ -205,17 +206,25 @@ struct NewSessionSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 if let launch = project.launchCommand, !launch.isEmpty {
-                    Text("Launches with the project command:")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(launch)
-                        .font(.caption)
-                        .fontDesign(.monospaced)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                        .padding(6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                    Toggle(isOn: $runLaunchCommand) {
+                        Text("Run the project launch command")
+                            .font(.caption)
+                    }
+                    .toggleStyle(.checkbox)
+                    if runLaunchCommand {
+                        Text(launch)
+                            .font(.caption)
+                            .fontDesign(.monospaced)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                            .padding(6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                    } else {
+                        Text("Opens a plain shell in \(project.pathInput) on \(project.workspace.opaqueID).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
                     Text("Opens a shell in \(project.pathInput) on \(project.workspace.opaqueID).")
                         .font(.caption)
@@ -266,7 +275,7 @@ struct NewSessionSheet: View {
         do {
             let session = try await model.provider.createSession(
                 for: project,
-                request: NewSessionRequest(displayName: trimmed))
+                request: NewSessionRequest(displayName: trimmed, runLaunchCommand: runLaunchCommand))
             await MainActor.run {
                 model.noteCreatedSession(session, project: project)
                 dismiss()

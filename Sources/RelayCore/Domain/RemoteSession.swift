@@ -28,13 +28,21 @@ public struct RemoteSession: Identifiable, Sendable, Hashable, Codable {
 /// Request payload for creating a session.
 public struct NewSessionRequest: Sendable {
     public let displayName: String
+    /// When false, the session opens a plain shell even if the project has a
+    /// launch command configured.
+    public let runLaunchCommand: Bool
     /// Extra provider metadata attached to the created session. Keys must
     /// begin with `@` (tmux user options for SSH+tmux). Used by the live E2E
     /// harness for run tagging; the production UI passes none.
     public let extraMetadata: [String: String]
 
-    public init(displayName: String, extraMetadata: [String: String] = [:]) {
+    public init(
+        displayName: String,
+        runLaunchCommand: Bool = true,
+        extraMetadata: [String: String] = [:]
+    ) {
         self.displayName = displayName
+        self.runLaunchCommand = runLaunchCommand
         self.extraMetadata = extraMetadata
     }
 }

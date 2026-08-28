@@ -158,7 +158,8 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             windowName: slug,
             pathInput: project.resolvedPath.isEmpty ? project.pathInput : project.resolvedPath,
             knownTmuxPath: knownTmuxPath(for: project),
-            launchCommand: project.launchCommand?.isEmpty == false ? project.launchCommand : nil,
+            launchCommand: (request.runLaunchCommand && project.launchCommand?.isEmpty == false)
+                ? project.launchCommand : nil,
             environment: [
                 ("RTERM_PROJECT_ID", project.id.uuid.uuidString),
                 ("RTERM_PROJECT_NAME", project.name),
