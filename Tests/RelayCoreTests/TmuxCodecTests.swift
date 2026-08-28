@@ -38,9 +38,12 @@ struct TmuxCodecTests {
         projectID: String = UUID().uuidString,
         sessionID: String = UUID().uuidString,
         nameB64: String = TmuxSessionCodec.encodeDisplayName("my session"),
-        createdAt: String = "1724800000"
+        createdAt: String = "1724800000",
+        host: String = "remote-box.local",
+        paneTitle: String = "✳ fixing auth flow"
     ) -> String {
-        [name, schema, projectID, sessionID, nameB64, createdAt].joined(separator: "\t")
+        [name, schema, projectID, sessionID, nameB64, createdAt, host, paneTitle]
+            .joined(separator: "\t")
     }
 
     @Test func roundTripsUnicodeDisplayNames() {
@@ -59,6 +62,25 @@ struct TmuxCodecTests {
         #expect(parsed.projectID == ProjectID(uuid: projectUUID))
         #expect(parsed.displayName == "my session")
         #expect(parsed.createdAt == Date(timeIntervalSince1970: 1_724_800_000))
+        #expect(parsed.paneTitle == "✳ fixing auth flow")
+    }
+
+    @Test func paneTitleNoiseBecomesNil() throws {
+        // tmux defaults an untouched pane's title to the server hostname.
+        let defaulted = try #require(TmuxSessionCodec.parse(
+            line: makeLine(host: "box.local", paneTitle: "box.local")))
+        #expect(defaulted.paneTitle == nil)
+        let empty = try #require(TmuxSessionCodec.parse(line: makeLine(paneTitle: "")))
+        #expect(empty.paneTitle == nil)
+        let blank = try #require(TmuxSessionCodec.parse(line: makeLine(paneTitle: "   ")))
+        #expect(blank.paneTitle == nil)
+    }
+
+    @Test func paneTitleMayContainTheSeparator() throws {
+        // pane_title is free text; everything past the host field is title.
+        let parsed = try #require(TmuxSessionCodec.parse(
+            line: makeLine(paneTitle: "left\tright")))
+        #expect(parsed.paneTitle == "left\tright")
     }
 
     @Test func rejectsUnknownSchema() {
@@ -73,15 +95,17 @@ struct TmuxCodecTests {
         #expect(TmuxSessionCodec.parse(line: makeLine(sessionID: "nope")) == nil)
         #expect(TmuxSessionCodec.parse(line: makeLine(nameB64: "!!! not base64 !!!")) == nil)
         #expect(TmuxSessionCodec.parse(line: makeLine(createdAt: "not-a-number")) == nil)
-        // Too many fields
-        #expect(TmuxSessionCodec.parse(line: makeLine() + "\textra") == nil)
+        // Too few fields (a line in the pre-title format is not adopted).
+        let short = ["rterm-2f8a17d9d71e4dbe", "1", UUID().uuidString, UUID().uuidString,
+                     TmuxSessionCodec.encodeDisplayName("x"), "123"].joined(separator: "\t")
+        #expect(TmuxSessionCodec.parse(line: short) == nil)
     }
 
     @Test func rejectsForeignSessions() {
         // A session not created by the app (name without our prefix) is never
         // adopted even if it happens to carry look-alike fields.
         let line = ["users-own-session", "1", UUID().uuidString, UUID().uuidString,
-                    TmuxSessionCodec.encodeDisplayName("x"), "123"].joined(separator: "\t")
+                    TmuxSessionCodec.encodeDisplayName("x"), "123", "h", "t"].joined(separator: "\t")
         #expect(TmuxSessionCodec.parse(line: line) == nil)
     }
 }

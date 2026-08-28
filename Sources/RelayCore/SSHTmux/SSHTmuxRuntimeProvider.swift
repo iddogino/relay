@@ -117,7 +117,8 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                     projectID: discovered.projectID,
                     displayName: discovered.displayName,
                     createdAt: discovered.createdAt,
-                    backendID: discovered.tmuxName
+                    backendID: discovered.tmuxName,
+                    paneTitle: discovered.paneTitle
                 )
             }
             .sorted { $0.createdAt < $1.createdAt }

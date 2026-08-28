@@ -9,19 +9,25 @@ public struct RemoteSession: Identifiable, Sendable, Hashable, Codable {
     public let createdAt: Date
     /// Provider-specific opaque identifier (the tmux session name for SSH+tmux).
     public let backendID: String
+    /// Live terminal title reported by whatever runs inside the session (OSC
+    /// title sequences — e.g. Claude Code's "✳ task" status). Available even
+    /// for detached sessions; nil when nothing has set a title.
+    public var paneTitle: String?
 
     public init(
         id: SessionID,
         projectID: ProjectID,
         displayName: String,
         createdAt: Date,
-        backendID: String
+        backendID: String,
+        paneTitle: String? = nil
     ) {
         self.id = id
         self.projectID = projectID
         self.displayName = displayName
         self.createdAt = createdAt
         self.backendID = backendID
+        self.paneTitle = paneTitle
     }
 }
 

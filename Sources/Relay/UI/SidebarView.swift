@@ -234,13 +234,33 @@ private struct SessionRow: View {
         }
     }
 
+    /// What runs inside the session, as reported by its terminal title
+    /// (e.g. Claude Code's "✳ task" status). The attached session uses the
+    /// live surface title; detached sessions use the tmux pane title.
+    private var statusTitle: String? {
+        if isSelected, case .attached = model.attachment.phase,
+           !model.attachment.terminalTitle.isEmpty {
+            return model.attachment.terminalTitle
+        }
+        return session.paneTitle
+    }
+
     var body: some View {
         HStack(spacing: 7) {
             Circle()
                 .fill(statusColor)
                 .frame(width: 7, height: 7)
-            Text(session.displayName)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(session.displayName)
+                    .lineLimit(1)
+                if let statusTitle, statusTitle != session.displayName {
+                    Text(statusTitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
             Spacer()
             if isArchiving {
                 ProgressView().controlSize(.mini)

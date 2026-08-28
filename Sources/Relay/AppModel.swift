@@ -72,6 +72,7 @@ final class AppModel {
     // Remote-reconciled session lists
     private(set) var sessions: [ProjectID: [RemoteSession]] = [:]
     private(set) var sessionsLoading: Set<ProjectID> = []
+    private var titleRefreshTimer: Timer?
     private(set) var sessionErrors: [ProjectID: String] = [:]
 
     // Selection & transient UI state
@@ -113,6 +114,16 @@ final class AppModel {
                 self?.applicationDidActivate()
             }
         }
+
+        // Detached sessions keep reporting status through their pane titles
+        // (tmux tracks OSC titles server-side), so the sidebar merges fresh
+        // titles in periodically while a window is showing. Title-only: this
+        // sweep never adds or removes rows.
+        let timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.refreshSessionTitles() }
+        }
+        timer.tolerance = 5
+        titleRefreshTimer = timer
     }
 
     // MARK: Startup
@@ -277,6 +288,29 @@ final class AppModel {
             sessionErrors[project.id] = nil
         } catch {
             sessionErrors[project.id] = error.localizedDescription
+        }
+    }
+
+    /// Re-reads pane titles for the sessions already in the sidebar and
+    /// merges them in place. Deliberately title-only: existence
+    /// reconciliation (rows appearing/disappearing) stays with the explicit
+    /// refresh paths, so this background sweep never surprises the user.
+    private func refreshSessionTitles() async {
+        guard NSApp.windows.contains(where: { $0.isVisible }) else { return }
+        for project in projects {
+            guard let known = sessions[project.id], !known.isEmpty,
+                  !sessionsLoading.contains(project.id),
+                  let fresh = try? await provider.listSessions(for: project)
+            else { continue }
+            let titles = Dictionary(fresh.map { ($0.id, $0.paneTitle) },
+                                    uniquingKeysWith: { first, _ in first })
+            guard var updated = sessions[project.id] else { continue }
+            for index in updated.indices {
+                if let title = titles[updated[index].id] {
+                    updated[index].paneTitle = title
+                }
+            }
+            if updated != sessions[project.id] { sessions[project.id] = updated }
         }
     }
 
