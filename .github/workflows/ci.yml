@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build & test
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GhosttyKit (cached)
+        uses: ./.github/actions/ghosttykit
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build release binary
+        run: swift build -c release --product Relay

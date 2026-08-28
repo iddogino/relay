@@ -1,5 +1,6 @@
 .build/
 build/
 .e2e-state/
+Vendor/ghostty/
 Vendor/toolchain/
 .DS_Store

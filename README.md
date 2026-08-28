@@ -1,5 +1,9 @@
 # Relay
 
+[![CI](https://github.com/iddogino/relay/actions/workflows/ci.yml/badge.svg)](https://github.com/iddogino/relay/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/iddogino/relay?include_prereleases&sort=semver)](https://github.com/iddogino/relay/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A very small, native Mac app that makes **persistent remote terminal sessions
 feel like local terminal tabs**.
 
@@ -51,6 +55,14 @@ login non-interactive shell with the same PATH safety net.
 session → run your shutdown command (with retry if it fails). **Kill Session**
 is the force escape hatch — it skips the shutdown command.
 
+## Install
+
+Grab the latest `Relay-<version>.dmg` from
+[Releases](https://github.com/iddogino/relay/releases), open it, and drag
+**Relay** into **Applications**. Builds are Developer ID-signed; if a build
+is not yet notarized, right-click Relay.app and choose **Open** on first
+launch.
+
 ## Building
 
 Requirements: macOS 15+, Xcode 26 (Swift 6). No third-party dependencies
@@ -70,6 +82,28 @@ Scripts/live-e2e.sh     # live acceptance run against your two configured remote
                         # (fully namespaced; cleans up after itself)
 Scripts/live-e2e-cleanup.sh   # independent cleanup if a run crashed
 ```
+
+CI runs `swift test` (plus a release-config build) on every PR and push to
+`main`. The pinned GhosttyKit build is cached, so only the first run after a
+pin bump pays the from-source build.
+
+## Releasing
+
+Push a tag of the form `v<semver>` (stable) or `v<semver>-<channel>.<seq>`
+(prerelease), e.g.:
+
+```sh
+git tag v0.1.0-rc.1 && git push origin v0.1.0-rc.1
+```
+
+The [release workflow](.github/workflows/release.yml) tests, builds and
+Developer ID-signs `Relay.app` (hardened runtime), packages a
+drag-to-Applications DMG, and publishes a GitHub release with the DMG and
+SHA-256 checksums attached — marked *prerelease* automatically for channel
+tags. Required repository secrets: `MACOS_CERTIFICATE_P12` (base64 `.p12`
+with a Developer ID Application identity) and `MACOS_CERTIFICATE_PASSWORD`.
+Optional: `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD` — when
+set, the DMG is also notarized and stapled.
 
 ## Design notes
 
@@ -98,3 +132,9 @@ Scripts/live-e2e-cleanup.sh   # independent cleanup if a run crashed
   functional impact).
 
 Spec: [docs/remote-project-terminal-v1-spec.md](docs/remote-project-terminal-v1-spec.md).
+
+## License
+
+[MIT](LICENSE). Terminal emulation by
+[libghostty](https://github.com/ghostty-org/ghostty) (MIT); not affiliated
+with the Ghostty project.
