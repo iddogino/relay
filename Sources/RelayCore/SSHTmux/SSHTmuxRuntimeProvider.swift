@@ -7,7 +7,7 @@ import Foundation
 /// tmux sessions carrying the app's own metadata.
 public struct SSHTmuxRuntimeProvider: RuntimeProvider {
     public let id = ProviderID.sshTmux
-    public let capabilities: RuntimeCapabilities = [.persistentSessions, .staticWorkspaces]
+    public let capabilities: RuntimeCapabilities = [.persistentSessions, .staticWorkspaces, .fileUpload]
 
     /// Minimum remote tmux version (needed for `new-session -e`).
     public static let minimumTmuxVersion = (major: 3, minor: 2)
@@ -323,6 +323,130 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                 )
             }
             throw mapFailure(alias: alias, result: result)
+        }
+    }
+
+    // MARK: File upload
+
+    /// Validates the basenames of a dropped item set: every item must have a
+    /// usable name, no control characters (they could smuggle bytes into the
+    /// terminal when the resulting path is inserted), and no duplicates
+    /// (everything lands in one flat drop directory). Returns the basenames
+    /// in input order. Static and pure for unit testing.
+    static func validateDropBasenames(_ localPaths: [String]) throws -> [String] {
+        guard !localPaths.isEmpty else {
+            throw RuntimeProviderError.invalidInput("Nothing to upload.")
+        }
+        var seen = Set<String>()
+        var basenames: [String] = []
+        for path in localPaths {
+            let name = (path as NSString).lastPathComponent
+            guard !name.isEmpty, name != ".", name != "..", !name.contains("/") else {
+                throw RuntimeProviderError.invalidInput("Can't upload \"\(path)\": unusable file name.")
+            }
+            guard !POSIXShellQuote.containsControlCharacters(name) else {
+                throw RuntimeProviderError.invalidInput("Can't upload \"\(name)\": the name contains control characters.")
+            }
+            guard seen.insert(name).inserted else {
+                throw RuntimeProviderError.invalidInput("Two dropped items are both named \"\(name)\" — rename one and retry.")
+            }
+            basenames.append(name)
+        }
+        return basenames
+    }
+
+    /// The shape a remote drop directory must have before we will ever place
+    /// it in a command line (defense in depth against a hostile remote).
+    static func isSafeDropDirectory(_ path: String) -> Bool {
+        guard path.hasPrefix("/tmp/relay-drop.") else { return false }
+        let suffix = path.dropFirst("/tmp/relay-drop.".count)
+        return !suffix.isEmpty && suffix.count <= 32
+            && suffix.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
+    }
+
+    public func uploadFiles(
+        localPaths: [String],
+        for session: RemoteSession,
+        project: Project
+    ) async throws -> [String] {
+        let alias = try self.alias(for: project)
+        // scp's target syntax splits on the first colon; an alias containing
+        // one would misroute. (Config discovery never produces such aliases,
+        // but the provider re-checks its own preconditions.)
+        guard !alias.contains(":") else {
+            throw RuntimeProviderError.invalidInput("SSH alias \"\(alias)\" can't be used as an scp target.")
+        }
+        let basenames = try Self.validateDropBasenames(localPaths)
+        for path in localPaths {
+            guard FileManager.default.fileExists(atPath: path) else {
+                throw RuntimeProviderError.invalidInput("\"\((path as NSString).lastPathComponent)\" no longer exists.")
+            }
+        }
+
+        // 1. Create a fresh scratch directory on the remote. mktemp's
+        // template syntax works on both BSD and GNU. /tmp keeps drops out of
+        // the project tree and the OS reclaims them on reboot.
+        let mktempScript = """
+        set -u
+        d=$(mktemp -d /tmp/relay-drop.XXXXXXXX) || { printf 'RTERM_STATUS=mktemp_failed\\n'; exit 26; }
+        printf 'RTERM_STATUS=ok\\n'
+        printf 'RTERM_DROP_DIR=%s\\n' "$d"
+        """
+        let mktempResult = try await run(alias: alias, script: mktempScript)
+        guard mktempResult.exitCode == 0,
+              mktempResult.markers()[SSHTmuxScripts.Marker.status] == "ok",
+              let dropDir = mktempResult.markers()["RTERM_DROP_DIR"],
+              Self.isSafeDropDirectory(dropDir)
+        else {
+            throw RuntimeProviderError.uploadFailed(
+                "Couldn't create a drop directory on \(alias).\n\(Self.sanitizedStderr(mktempResult.stderr))"
+            )
+        }
+
+        // 2. Transfer. -r covers directories; -- protects dash-leading
+        // names; modern OpenSSH scp speaks SFTP, so remote names are taken
+        // literally (no remote shell expansion).
+        do {
+            let scpResult = try await SSHCommandRunner.runProcess(
+                executable: "/usr/bin/scp",
+                arguments: ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-r", "--"]
+                    + localPaths + ["\(alias):\(dropDir)/"],
+                stdin: nil,
+                timeout: .seconds(1800)
+            )
+            guard scpResult.exitCode == 0 else {
+                bestEffortRemoveDropDirectory(dropDir, alias: alias)
+                throw RuntimeProviderError.uploadFailed(
+                    "scp exited with status \(scpResult.exitCode).\n\(Self.sanitizedStderr(scpResult.stderr))"
+                )
+            }
+        } catch is CancellationError {
+            bestEffortRemoveDropDirectory(dropDir, alias: alias)
+            throw CancellationError()
+        } catch let error as SSHCommandRunner.RunnerError {
+            bestEffortRemoveDropDirectory(dropDir, alias: alias)
+            switch error {
+            case .timedOut:
+                throw RuntimeProviderError.uploadFailed("The transfer timed out.")
+            case .launchFailed(let detail):
+                throw RuntimeProviderError.uploadFailed(detail)
+            }
+        }
+
+        return basenames.map { dropDir + "/" + $0 }
+    }
+
+    /// Removes a failed/cancelled drop directory. Fire-and-forget on a
+    /// detached task so a cancelled upload settles immediately and cleanup
+    /// itself can't be cancelled away. Only ever touches paths that passed
+    /// `isSafeDropDirectory`.
+    private func bestEffortRemoveDropDirectory(_ dropDir: String, alias: String) {
+        guard Self.isSafeDropDirectory(dropDir) else { return }
+        let script = "rm -rf \(POSIXShellQuote.quote(dropDir))"
+        let aliasCopy = alias
+        let runnerCopy = runner
+        Task.detached {
+            _ = try? await runnerCopy.runScript(alias: aliasCopy, script: script, timeout: .seconds(30))
         }
     }
 

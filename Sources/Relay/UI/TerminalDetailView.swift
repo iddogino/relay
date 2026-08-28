@@ -167,6 +167,60 @@ private struct TerminalStage: View {
             case .attached, .idle:
                 EmptyView()
             }
+
+            dropOverlays
+        }
+    }
+
+    @ViewBuilder private var dropOverlays: some View {
+        switch model.attachment.dropActivity {
+        case .targeted:
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    .padding(6)
+                VStack(spacing: 6) {
+                    Image(systemName: "arrow.up.doc")
+                        .font(.title)
+                    Text("Drop to upload to \(project.workspace.opaqueID)")
+                        .fontWeight(.medium)
+                    Text("Hold ⌥ to insert the local path instead")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(18)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+            .allowsHitTesting(false)
+        case .uploading(let label):
+            OverlayCard {
+                ProgressView()
+                Text(label)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 420)
+                    .multilineTextAlignment(.center)
+                Button("Cancel") { model.attachment.cancelUpload() }
+            }
+        case .idle:
+            EmptyView()
+        }
+
+        if let notice = model.attachment.dropNotice {
+            VStack {
+                Spacer()
+                Text(notice)
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 480)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .shadow(radius: 10, y: 4)
+                    .padding(.bottom, 16)
+            }
+            .transition(.opacity)
+            .allowsHitTesting(false)
         }
     }
 }

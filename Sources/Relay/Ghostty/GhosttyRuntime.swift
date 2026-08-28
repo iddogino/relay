@@ -15,6 +15,10 @@ final class GhosttyRuntime {
     private(set) var config: ghostty_config_t?
     private(set) var initError: String?
 
+    /// When set, terminal link clicks route here instead of opening
+    /// directly — the app layer rewrites loopback URLs to the remote host.
+    var urlOpener: ((URL) -> Void)?
+
     private init() {
         // Ensure NSApp exists — this runs from App.init, before SwiftUI
         // creates the shared application.
@@ -208,7 +212,15 @@ final class GhosttyRuntime {
                   let scheme = url.scheme?.lowercased(),
                   ["http", "https", "mailto", "file"].contains(scheme)
             else { return false }
-            DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if let opener = GhosttyRuntime.shared.urlOpener {
+                        opener(url)
+                    } else {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
             return true
 
         case GHOSTTY_ACTION_SHOW_CHILD_EXITED:

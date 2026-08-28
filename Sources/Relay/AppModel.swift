@@ -124,6 +124,38 @@ final class AppModel {
         }
         timer.tolerance = 5
         titleRefreshTimer = timer
+
+        GhosttyRuntime.shared.urlOpener = { [weak self] url in
+            self?.openTerminalURL(url)
+        }
+    }
+
+    // MARK: Terminal links
+
+    /// Cache of alias → browser-usable host, resolved via `ssh -G`.
+    private var resolvedLinkHosts: [String: String] = [:]
+
+    /// Opens a URL clicked in the terminal. Loopback URLs are rewritten to
+    /// the attached session's remote host first — "listening on
+    /// http://localhost:3000" printed by a remote dev server should open the
+    /// remote's port 3000 in the local browser, not the Mac's.
+    func openTerminalURL(_ url: URL) {
+        guard LocalhostURLRewriter.isRewritable(url),
+              let project = attachment.project else {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        let alias = project.workspace.opaqueID
+        Task { @MainActor in
+            let host: String
+            if let cached = resolvedLinkHosts[alias] {
+                host = cached
+            } else {
+                host = await SSHHostNameResolver.resolve(alias: alias)
+                resolvedLinkHosts[alias] = host
+            }
+            NSWorkspace.shared.open(LocalhostURLRewriter.rewrite(url, remoteHost: host) ?? url)
+        }
     }
 
     // MARK: Startup

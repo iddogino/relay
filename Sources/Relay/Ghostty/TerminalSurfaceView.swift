@@ -10,6 +10,12 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     private(set) var surface: ghostty_surface_t?
 
     /// Terminal-reported title (escape sequences).
+    /// File drag & drop (upload-to-remote). All optional: without handlers
+    /// the view simply refuses drops.
+    var onFilesDropped: ((_ urls: [URL], _ preferLocalPaths: Bool) -> Void)?
+    var onDragTargeted: ((Bool) -> Void)?
+    var canAcceptFileDrop: (() -> Bool)?
+
     var terminalTitle: String = "" {
         didSet { onTitleChange?(terminalTitle) }
     }
@@ -62,6 +68,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         self.surface = created
 
         updateTrackingAreas()
+        registerForDraggedTypes([.fileURL])
 
         // Command+key keyUp events never reach the responder chain; observe
         // them locally so key release reaches the terminal.
@@ -83,6 +90,59 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
+
+    // MARK: File drag & drop
+
+    private func fileURLs(from info: NSDraggingInfo) -> [URL]? {
+        let urls = info.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL]
+        guard let urls, !urls.isEmpty else { return nil }
+        return urls
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard onFilesDropped != nil,
+              canAcceptFileDrop?() ?? false,
+              fileURLs(from: sender) != nil
+        else { return [] }
+        onDragTargeted?(true)
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDragTargeted?(false)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        onDragTargeted?(false)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onDragTargeted?(false)
+        guard canAcceptFileDrop?() ?? false,
+              let urls = fileURLs(from: sender)
+        else { return false }
+        // ⌥ at drop time keeps the classic terminal behavior: insert the
+        // local path instead of uploading.
+        let preferLocal = NSEvent.modifierFlags.contains(.option)
+        onFilesDropped?(urls, preferLocal)
+        return true
+    }
+
+    /// Types `text` into the terminal as if entered locally (used to insert
+    /// uploaded file paths). Never interpreted as keystrokes or bindings.
+    func injectText(_ text: String) {
+        guard let surface else { return }
+        let bytes = Array(text.utf8)
+        bytes.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            base.withMemoryRebound(to: CChar.self, capacity: buffer.count) { cPointer in
+                ghostty_surface_text(surface, cPointer, UInt(buffer.count))
+            }
+        }
+    }
 
     /// Frees the surface, terminating the local child process. The remote
     /// session is unaffected (detach-only semantics). Must be called exactly

@@ -79,6 +79,11 @@ final class E2ERun {
                 print("\n=== \(host.alias): worktree + shutdown hook ===")
                 await runWorktreeSuite(host)
             }
+
+            for host in state.hosts {
+                print("\n=== \(host.alias): file upload ===")
+                await runUploadSuite(host)
+            }
         } catch {
             fail("setup: \(error)")
         }
@@ -442,6 +447,74 @@ final class E2ERun {
         """)
         check(killCheck.markers()["RTERM_HOOK"] == "0", "AC-24 Kill Session never runs the shutdown hook")
         // The kill victim's worktree is inside the temp root; removed with it.
+    }
+
+    // MARK: File upload (AC-25)
+
+    func runUploadSuite(_ host: E2EHostState) async {
+        // Local fixture: a hostile-named file plus a directory with nested
+        // content, exercising quoting and scp -r in one shot.
+        let localRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("relay-e2e-drop-\(runID)-\(host.alias)")
+        defer { try? FileManager.default.removeItem(at: localRoot) }
+        let fileName = "report 'v1'.txt"
+        do {
+            let nested = localRoot.appendingPathComponent("data set/inner")
+            try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+            try "drop-sentinel-\(runID)\n".write(
+                to: localRoot.appendingPathComponent(fileName), atomically: true, encoding: .utf8)
+            try "nested-sentinel-\(runID)\n".write(
+                to: nested.appendingPathComponent("inner.txt"), atomically: true, encoding: .utf8)
+        } catch {
+            fail("AC-25 local fixture: \(error)")
+            return
+        }
+
+        guard let project = await makeProject(host, name: "E2E upload \(host.alias)") else { return }
+        guard let session = await createSession(project, name: "upload probe") else { return }
+
+        var dropDir: String?
+        do {
+            let remote = try await provider.uploadFiles(
+                localPaths: [
+                    localRoot.appendingPathComponent(fileName).path,
+                    localRoot.appendingPathComponent("data set").path,
+                ],
+                for: session, project: project)
+            check(remote.count == 2, "AC-25 one remote path per dropped item")
+            if remote.count == 2 {
+                check(remote[0].hasSuffix("/" + fileName), "AC-25 hostile basename preserved verbatim")
+                dropDir = (remote[0] as NSString).deletingLastPathComponent
+                let cat = await ssh(host.alias, """
+                cat \(POSIXShellQuote.quote(remote[0])) 2>/dev/null
+                cat \(POSIXShellQuote.quote(remote[1] + "/inner/inner.txt")) 2>/dev/null
+                """)
+                check(cat.stdout.contains("drop-sentinel-\(runID)"), "AC-25 file content intact after upload")
+                check(cat.stdout.contains("nested-sentinel-\(runID)"), "AC-25 directory recursed, nested content intact")
+            }
+        } catch {
+            fail("AC-25 upload: \(error.localizedDescription)")
+        }
+
+        // Duplicate basenames collide in the flat drop directory and must be
+        // refused before any transfer happens.
+        do {
+            _ = try await provider.uploadFiles(
+                localPaths: ["/tmp/a/same.txt", "/tmp/b/same.txt"],
+                for: session, project: project)
+            fail("AC-25 duplicate basenames were not rejected")
+        } catch {
+            check(true, "AC-25 duplicate basenames rejected before transfer")
+        }
+
+        if let dropDir, dropDir.hasPrefix("/tmp/relay-drop.") {
+            _ = await ssh(host.alias, "rm -rf \(POSIXShellQuote.quote(dropDir))")
+            let gone = await ssh(
+                host.alias,
+                "[ -d \(POSIXShellQuote.quote(dropDir)) ] && printf 'RTERM_DIR=1\\n' || printf 'RTERM_DIR=0\\n'")
+            check(gone.markers()["RTERM_DIR"] == "0", "AC-25 remote drop directory removed")
+        }
+        try? await provider.destroySession(session, project: project)
     }
 
     // MARK: Cleanup (§21.4, AC-14)

@@ -20,14 +20,27 @@ final class TerminalAttachmentController {
         case failed(message: String)
     }
 
+    /// Drag & drop upload state for the attached terminal.
+    enum DropActivity: Equatable {
+        case idle
+        /// A file drag is hovering over the terminal.
+        case targeted
+        case uploading(label: String)
+    }
+
     private(set) var phase: Phase = .idle
     private(set) var session: RemoteSession?
     private(set) var project: Project?
     private(set) var surfaceView: TerminalSurfaceView?
     private(set) var terminalTitle: String = ""
+    private(set) var dropActivity: DropActivity = .idle
+    /// Transient user-facing message about the last drop (error or note).
+    private(set) var dropNotice: String?
 
     private let provider: any RuntimeProvider
     private var attachTask: Task<Void, Never>?
+    private var uploadTask: Task<Void, Never>?
+    private var dropNoticeTask: Task<Void, Never>?
     private var generation = 0
 
     private static let backoffDelays: [Duration] = [
@@ -64,6 +77,10 @@ final class TerminalAttachmentController {
         project = nil
         terminalTitle = ""
         phase = .idle
+        // A running upload continues (its result falls back to the
+        // clipboard); only the overlay state belongs to the old attachment.
+        dropActivity = .idle
+        dropNotice = nil
     }
 
     func retryNow() {
@@ -135,9 +152,127 @@ final class TerminalAttachmentController {
             guard let self, gen == self.generation else { return }
             self.handleProcessExit(previousAttempt: attempt)
         }
+        view.canAcceptFileDrop = { [weak self] in
+            guard let self, gen == self.generation,
+                  self.provider.capabilities.contains(.fileUpload),
+                  case .attached = self.phase
+            else { return false }
+            if case .uploading = self.dropActivity { return false }
+            return true
+        }
+        view.onDragTargeted = { [weak self] targeted in
+            guard let self, gen == self.generation else { return }
+            if case .uploading = self.dropActivity { return }
+            self.dropActivity = targeted ? .targeted : .idle
+        }
+        view.onFilesDropped = { [weak self] urls, preferLocalPaths in
+            guard let self, gen == self.generation else { return }
+            self.handleFileDrop(urls: urls, preferLocalPaths: preferLocalPaths)
+        }
         surfaceView = view
         lastAttachTime = Date()
         phase = .attached
+    }
+
+    // MARK: Drag & drop upload
+
+    private func handleFileDrop(urls: [URL], preferLocalPaths: Bool) {
+        guard case .attached = phase, let session, let project else { return }
+        if case .uploading = dropActivity { return }
+        let localPaths = urls.map(\.path)
+
+        if preferLocalPaths {
+            // ⌥-drop: classic behavior — insert the local paths.
+            surfaceView?.injectText(POSIXShellQuote.quoteJoin(localPaths) + " ")
+            return
+        }
+
+        let gen = generation
+        let alias = project.workspace.opaqueID
+        let baseLabel = urls.count == 1
+            ? "Uploading \u{201C}\(urls[0].lastPathComponent)\u{201D} to \(alias)…"
+            : "Uploading \(urls.count) items to \(alias)…"
+        dropActivity = .uploading(label: baseLabel)
+
+        // Upgrade the label with a size once it's known; never delay the
+        // transfer for it (large trees can take a moment to measure).
+        Task { @MainActor [weak self] in
+            let size = await Task.detached { Self.measureDropSize(paths: localPaths) }.value
+            guard let size, let self, gen == self.generation,
+                  case .uploading = self.dropActivity else { return }
+            let sizeLabel = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+            self.dropActivity = .uploading(label: baseLabel.replacingOccurrences(
+                of: "…", with: " (\(sizeLabel))…"))
+        }
+
+        uploadTask = Task { [provider] in
+            do {
+                let remotePaths = try await provider.uploadFiles(
+                    localPaths: localPaths, for: session, project: project)
+                let pasteText = POSIXShellQuote.quoteJoin(remotePaths) + " "
+                guard gen == self.generation else {
+                    // The user switched sessions mid-upload: don't type into
+                    // an unrelated terminal — hand the result over instead.
+                    NSPasteboard.general.declareTypes([.string], owner: nil)
+                    NSPasteboard.general.setString(String(pasteText.dropLast()), forType: .string)
+                    self.showDropNotice("Upload to \(alias) finished after the session changed — remote path copied to the clipboard.")
+                    return
+                }
+                self.surfaceView?.injectText(pasteText)
+                self.dropActivity = .idle
+            } catch is CancellationError {
+                if gen == self.generation {
+                    self.dropActivity = .idle
+                    self.showDropNotice("Upload canceled.")
+                }
+            } catch {
+                if gen == self.generation {
+                    self.dropActivity = .idle
+                    self.showDropNotice(error.localizedDescription)
+                } else {
+                    self.showDropNotice("Upload to \(alias) failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func cancelUpload() {
+        uploadTask?.cancel()
+    }
+
+    private func showDropNotice(_ message: String) {
+        dropNotice = message
+        dropNoticeTask?.cancel()
+        dropNoticeTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            self.dropNotice = nil
+        }
+    }
+
+    /// Total size of the dropped items (recursive), or nil when it can't be
+    /// measured quickly. Bounded so a giant tree can't stall the label.
+    private nonisolated static func measureDropSize(paths: [String]) -> Int64? {
+        let fm = FileManager.default
+        var total: Int64 = 0
+        var visited = 0
+        for path in paths {
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: path, isDirectory: &isDirectory) else { continue }
+            if isDirectory.boolValue {
+                guard let enumerator = fm.enumerator(atPath: path) else { continue }
+                while let entry = enumerator.nextObject() as? String {
+                    visited += 1
+                    if visited > 50_000 { return nil }
+                    let attrs = try? fm.attributesOfItem(atPath: (path as NSString).appendingPathComponent(entry))
+                    total += (attrs?[.size] as? Int64) ?? 0
+                }
+            } else {
+                let attrs = try? fm.attributesOfItem(atPath: path)
+                total += (attrs?[.size] as? Int64) ?? 0
+            }
+        }
+        return total
     }
 
     private var lastAttachTime = Date.distantPast

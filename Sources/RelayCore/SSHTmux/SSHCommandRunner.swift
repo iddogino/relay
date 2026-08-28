@@ -106,6 +106,8 @@ public struct SSHCommandRunner: Sendable {
         switch status {
         case .timedOut:
             throw RunnerError.timedOut
+        case .cancelled:
+            throw CancellationError()
         case .exited(let code):
             return CommandResult(exitCode: code, stdout: stdout, stderr: stderr)
         }
@@ -173,20 +175,25 @@ public struct SSHCommandRunner: Sendable {
     private enum ExitStatus {
         case exited(Int32)
         case timedOut
+        case cancelled
     }
 
-    /// Polls waitpid until the child exits. On timeout: SIGTERM, brief grace,
-    /// SIGKILL — then keeps polling; a killed child always reaps.
+    /// Polls waitpid until the child exits. On timeout — or cancellation of
+    /// the surrounding task — SIGTERM, brief grace, SIGKILL — then keeps
+    /// polling; a killed child always reaps.
     private static func reap(pid: pid_t, timeout: Duration) async -> ExitStatus {
         let deadline = ContinuousClock.now + timeout
         var sentTerm = false
         var sentKill = false
         var timedOut = false
+        var cancelled = false
+        var killStarted: ContinuousClock.Instant?
 
         while true {
             var status: Int32 = 0
             let rc = waitpid(pid, &status, WNOHANG)
             if rc == pid {
+                if cancelled { return .cancelled }
                 if timedOut { return .timedOut }
                 if (status & 0x7F) == 0 {
                     return .exited((status >> 8) & 0xFF)   // WEXITSTATUS
@@ -195,14 +202,22 @@ public struct SSHCommandRunner: Sendable {
             }
             if rc == -1 {
                 // ECHILD shouldn't happen (we're the only reaper); treat as done.
+                if cancelled { return .cancelled }
                 return timedOut ? .timedOut : .exited(-1)
+            }
+            if !cancelled && Task.isCancelled {
+                cancelled = true
             }
             if ContinuousClock.now >= deadline {
                 timedOut = true
+            }
+            if timedOut || cancelled {
                 if !sentTerm {
                     sentTerm = true
+                    killStarted = ContinuousClock.now
                     kill(pid, SIGTERM)
-                } else if !sentKill, ContinuousClock.now >= deadline + .milliseconds(500) {
+                } else if !sentKill, let started = killStarted,
+                          ContinuousClock.now >= started + .milliseconds(500) {
                     sentKill = true
                     kill(pid, SIGKILL)
                 }

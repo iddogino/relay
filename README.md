@@ -51,6 +51,20 @@ keeps its dead pane — and the error it printed — visible instead of
 silently vanishing. Shutdown commands run without a tty, so they use a
 login non-interactive shell with the same PATH safety net.
 
+Two conveniences make the remote feel local:
+
+- **Localhost links point at the right machine.** When something in the
+  terminal prints `http://localhost:3000` and you ⌘-click it, Relay rewrites
+  the loopback host to the session's remote (resolved via `ssh -G`) and opens
+  it in your local default browser. Ports, paths and queries are preserved;
+  `*.localhost` virtual hosts are left alone.
+- **Drop a file on the terminal to upload it.** The file (or folder) is
+  copied to a fresh scratch directory on the remote via scp and the remote
+  path is typed into the terminal, quoted. Hold ⌥ while dropping to insert
+  the local path instead. Uploads show progress, can be cancelled, and clean
+  up after themselves on failure; if you switch sessions mid-upload the
+  finished path lands on your clipboard instead of in the wrong terminal.
+
 **Archive Session** (⌘⇧E) ends a session cleanly: detach → kill the tmux
 session → run your shutdown command (with retry if it fails). **Kill Session**
 is the force escape hatch — it skips the shutdown command.

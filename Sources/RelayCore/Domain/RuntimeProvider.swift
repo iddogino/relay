@@ -19,6 +19,9 @@ public struct RuntimeCapabilities: OptionSet, Sendable {
 
     public static let persistentSessions = RuntimeCapabilities(rawValue: 1 << 0)
     public static let staticWorkspaces = RuntimeCapabilities(rawValue: 1 << 1)
+    /// The provider can copy local files into the session's workspace
+    /// (drag & drop upload).
+    public static let fileUpload = RuntimeCapabilities(rawValue: 1 << 6)
 
     // Reserved for future providers. No v1 UI.
     public static let provisionWorkspaces = RuntimeCapabilities(rawValue: 1 << 2)
@@ -66,6 +69,19 @@ public protocol RuntimeProvider: Sendable {
 
     /// Force/destructive escape hatch. Never runs the shutdown hook.
     func destroySession(_ session: RemoteSession, project: Project) async throws
+
+    /// Copies local files/directories into a fresh scratch location on the
+    /// session's machine and returns the resulting remote paths, in input
+    /// order. Only meaningful when `capabilities` contains `.fileUpload`.
+    /// Implementations must be cancellation-aware (a cancelled upload throws
+    /// `CancellationError` and leaves no half-referenced paths behind).
+    func uploadFiles(localPaths: [String], for session: RemoteSession, project: Project) async throws -> [String]
+}
+
+extension RuntimeProvider {
+    public func uploadFiles(localPaths: [String], for session: RemoteSession, project: Project) async throws -> [String] {
+        throw RuntimeProviderError.operationFailed("This provider does not support file uploads.")
+    }
 }
 
 public enum RuntimeProviderError: Error, Sendable, LocalizedError, Equatable {
@@ -77,6 +93,7 @@ public enum RuntimeProviderError: Error, Sendable, LocalizedError, Equatable {
     case sessionNotFound(workspace: String)
     case operationFailed(String)
     case cleanupFailed(String)
+    case uploadFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -96,6 +113,8 @@ public enum RuntimeProviderError: Error, Sendable, LocalizedError, Equatable {
             return message
         case .cleanupFailed(let message):
             return "Cleanup command failed.\n\(message)"
+        case .uploadFailed(let message):
+            return "Upload failed.\n\(message)"
         }
     }
 }
