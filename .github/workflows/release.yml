@@ -165,3 +165,55 @@ jobs:
           FLAGS=(--title "Relay $TAG" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag)
           if [ "$PRERELEASE" = "true" ]; then FLAGS+=(--prerelease); fi
           gh release create "$TAG" "${FLAGS[@]}" "$DMG_PATH" build/SHA256SUMS.txt
+
+      - name: Update appcast
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          PRERELEASE: ${{ steps.ver.outputs.prerelease }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
+            echo "error: SPARKLE_ED_PRIVATE_KEY secret is not set (Sparkle appcast signing)." >&2
+            exit 1
+          fi
+          curl -fsSLo "$RUNNER_TEMP/sparkle.tar.xz" \
+            https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6.tar.xz
+          mkdir -p "$RUNNER_TEMP/sparkle"
+          tar -xf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle" bin/sign_update
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/ed.key"
+          SIG_LINE=$("$RUNNER_TEMP/sparkle/bin/sign_update" --ed-key-file "$RUNNER_TEMP/ed.key" "$DMG_PATH")
+          rm -f "$RUNNER_TEMP/ed.key"
+          SIGNATURE=$(printf '%s' "$SIG_LINE" | sed -n 's/.*edSignature="\([^"]*\)".*/\1/p')
+          LENGTH=$(printf '%s' "$SIG_LINE" | sed -n 's/.*length="\([^"]*\)".*/\1/p')
+          if [ -z "$SIGNATURE" ] || [ -z "$LENGTH" ]; then
+            echo "error: could not parse sign_update output: $SIG_LINE" >&2
+            exit 1
+          fi
+          git clone --depth 1 --branch main \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "$RUNNER_TEMP/appcast-repo"
+          CHANNEL_ARG=""
+          if [ "$PRERELEASE" = "true" ]; then CHANNEL_ARG="--channel rc"; fi
+          python3 Scripts/update-appcast.py \
+            --appcast "$RUNNER_TEMP/appcast-repo/appcast.xml" \
+            --version "$BUILD_NUMBER" \
+            --short-version "$VERSION" \
+            --tag "$TAG" \
+            --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/$DMG_NAME" \
+            --length "$LENGTH" \
+            --signature "$SIGNATURE" \
+            $CHANNEL_ARG
+          cd "$RUNNER_TEMP/appcast-repo"
+          git config user.name "relay-release[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          git commit -m "appcast: $TAG (build $BUILD_NUMBER)"
+          for attempt in 1 2 3; do
+            if git push origin main; then exit 0; fi
+            git pull --rebase origin main
+          done
+          echo "error: could not push appcast update" >&2
+          exit 1

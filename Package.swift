@@ -6,6 +6,11 @@ let package = Package(
     platforms: [
         .macOS(.v15)
     ],
+    dependencies: [
+        // Auto-updates. The framework is embedded into the bundle (and its
+        // nested executables signed) by Scripts/build-app.sh.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6"),
+    ],
     targets: [
         // Pinned libghostty build. See docs/GHOSTTY_PIN.md and Scripts/build-libghostty.sh.
         .binaryTarget(
@@ -22,9 +27,15 @@ let package = Package(
         // The macOS app.
         .executableTarget(
             name: "Relay",
-            dependencies: ["RelayCore", "GhosttyKit"],
+            dependencies: [
+                "RelayCore",
+                "GhosttyKit",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
             path: "Sources/Relay",
             linkerSettings: [
+                // Sparkle.framework is embedded at Contents/Frameworks.
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
                 .linkedLibrary("c++"),
                 .linkedFramework("AppKit"),
                 .linkedFramework("Carbon"),

@@ -48,11 +48,36 @@ if [ -f "Resources/AppIcon.icns" ]; then
   cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+# Embed Sparkle.framework (auto-updates). rsync preserves the framework's
+# Versions symlink structure, which codesign requires.
+SPARKLE_FW="$(find .build/artifacts -type d -name "Sparkle.framework" -not -path "*ios*" | head -1)"
+if [ -z "$SPARKLE_FW" ]; then
+  echo "error: Sparkle.framework not found under .build/artifacts (run swift build first)." >&2
+  exit 1
+fi
+mkdir -p "$APP/Contents/Frameworks"
+rsync -a --delete "$SPARKLE_FW" "$APP/Contents/Frameworks/"
+
 IDENTITY="${CODESIGN_IDENTITY:--}"
-if [ "$IDENTITY" = "-" ]; then
-  codesign --force --sign - "$APP" >/dev/null 2>&1
-else
-  codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+sign() {
+  if [ "$IDENTITY" = "-" ]; then
+    codesign --force --sign - "$1" >/dev/null 2>&1
+  else
+    codesign --force --options runtime --timestamp --sign "$IDENTITY" "$1"
+  fi
+}
+
+# Nested Sparkle executables must be signed inside-out before the framework,
+# and the framework before the app (no --deep).
+FW="$APP/Contents/Frameworks/Sparkle.framework"
+for xpc in "$FW"/Versions/B/XPCServices/*.xpc; do
+  [ -e "$xpc" ] && sign "$xpc"
+done
+[ -e "$FW/Versions/B/Autoupdate" ] && sign "$FW/Versions/B/Autoupdate"
+[ -e "$FW/Versions/B/Updater.app" ] && sign "$FW/Versions/B/Updater.app"
+sign "$FW"
+sign "$APP"
+if [ "$IDENTITY" != "-" ]; then
   codesign --verify --strict --verbose=2 "$APP"
 fi
 

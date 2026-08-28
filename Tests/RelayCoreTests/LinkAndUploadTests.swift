@@ -97,3 +97,20 @@ struct DropUploadValidationTests {
         #expect(!SSHTmuxRuntimeProvider.isSafeDropDirectory("/tmp/relay-drop.$(rm)"))
     }
 }
+
+@Suite("update channel policy")
+struct UpdateChannelsTests {
+    @Test func stableInstallsSeeOnlyStable() {
+        #expect(UpdateChannels.allowed(currentVersion: "0.1.0", earlyBuildsOptIn: false).isEmpty)
+        #expect(UpdateChannels.allowed(currentVersion: "1.2.3", earlyBuildsOptIn: false).isEmpty)
+    }
+
+    @Test func prereleaseInstallsRideTheirChannel() {
+        #expect(UpdateChannels.allowed(currentVersion: "0.1.0-rc.5", earlyBuildsOptIn: false) == ["rc"])
+        #expect(UpdateChannels.allowed(currentVersion: "0.2.0-beta.1", earlyBuildsOptIn: false) == ["rc"])
+    }
+
+    @Test func stableInstallsCanOptIn() {
+        #expect(UpdateChannels.allowed(currentVersion: "0.1.0", earlyBuildsOptIn: true) == ["rc"])
+    }
+}

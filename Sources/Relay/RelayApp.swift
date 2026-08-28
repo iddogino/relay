@@ -4,6 +4,8 @@ import RelayCore
 @main
 struct RelayApp: App {
     @State private var model: AppModel
+    @StateObject private var updater = UpdaterModel()
+    @AppStorage(UpdaterModel.earlyBuildsDefaultsKey) private var receiveEarlyBuilds = false
 
     init() {
         // Initialize libghostty before any UI exists.
@@ -19,6 +21,13 @@ struct RelayApp: App {
         }
         .defaultSize(width: 1180, height: 760)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updater.checkForUpdates()
+                }
+                .disabled(!updater.canCheckForUpdates)
+                Toggle("Receive Early Builds", isOn: $receiveEarlyBuilds)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Session…") {
                     if let project = model.selectedProject ?? model.projects.first {

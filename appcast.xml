@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Relay</title>
+    <link>https://github.com/iddogino/relay</link>
+    <description>Relay updates. Maintained by CI (Scripts/update-appcast.py); do not edit items by hand.</description>
+    <language>en</language>
+  </channel>
+</rss>

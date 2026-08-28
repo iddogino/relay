@@ -30,5 +30,9 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Terminal emulation by libghostty (MIT). Not affiliated with the Ghostty project.</string>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/iddogino/relay/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>83fVWPb/G/hc2hYzYyoKW7eB/abuYzTSIJJYvMwIdvA=</string>
 </dict>
 </plist>

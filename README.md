@@ -73,9 +73,13 @@ is the force escape hatch — it skips the shutdown command.
 
 Grab the latest `Relay-<version>.dmg` from
 [Releases](https://github.com/iddogino/relay/releases), open it, and drag
-**Relay** into **Applications**. Builds are Developer ID-signed; if a build
-is not yet notarized, right-click Relay.app and choose **Open** on first
-launch.
+**Relay** into **Applications**. Builds are Developer ID-signed and
+notarized. After that the app keeps itself current via
+[Sparkle](https://sparkle-project.org): updates are offered in-app
+(Relay ▸ Check for Updates…), downloaded from GitHub Releases, and verified
+against both the appcast's EdDSA signature and Apple's notarization.
+Prerelease installs stay on the `rc` channel automatically; stable installs
+never see prereleases unless **Relay ▸ Receive Early Builds** is on.
 
 ## Building
 
@@ -114,10 +118,16 @@ The [release workflow](.github/workflows/release.yml) tests, builds and
 Developer ID-signs `Relay.app` (hardened runtime), packages a
 drag-to-Applications DMG, and publishes a GitHub release with the DMG and
 SHA-256 checksums attached — marked *prerelease* automatically for channel
-tags. Required repository secrets: `MACOS_CERTIFICATE_P12` (base64 `.p12`
-with a Developer ID Application identity) and `MACOS_CERTIFICATE_PASSWORD`.
-Optional: `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD` — when
-set, the DMG is also notarized and stapled.
+tags. It then EdDSA-signs the DMG and commits an updated
+[`appcast.xml`](appcast.xml) to `main` (via
+[Scripts/update-appcast.py](Scripts/update-appcast.py)), so installed
+copies pick the release up through Sparkle; rc tags land on the `rc`
+channel, stable tags on the default channel. Required repository secrets:
+`MACOS_CERTIFICATE_P12` (base64 `.p12` with a Developer ID Application
+identity), `MACOS_CERTIFICATE_PASSWORD`, and `SPARKLE_ED_PRIVATE_KEY`
+(Sparkle `generate_keys -x` export). Optional: `APPLE_ID`,
+`APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD` — when set, the DMG is also
+notarized and stapled.
 
 ## Design notes
 
