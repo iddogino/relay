@@ -117,6 +117,8 @@ struct ScriptSafetyTests {
             #expect(paneCommand.contains("-l -i -c"), "launch runs in an interactive login shell (pane has a tty)")
             // Failed launches keep their dead pane visible.
             #expect(calls.contains { $0.first == "set-option" && $0.contains("remain-on-exit") && $0.contains("failed") })
+            // The tmux status strip is hidden for app-owned sessions.
+            #expect(calls.contains { $0.first == "set-option" && $0.contains("status") && $0.contains("off") })
         }
     }
 

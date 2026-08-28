@@ -125,6 +125,7 @@ enum SSHTmuxScripts {
         cd \(pathExpr) 2>/dev/null || { printf 'RTERM_STATUS=no_dir\\n'; exit 22; }
         rp=$(pwd -P)
         "$tmux_path" new-session -d -s \(ctx.tmuxName) -n \(POSIXShellQuote.quote(ctx.windowName)) -c "$rp"\(envFlags)\(paneCommand) || { printf 'RTERM_STATUS=create_failed\\n'; exit 23; }
+        "$tmux_path" set-option -t \(ctx.tmuxName) status off 2>/dev/null || true
         \(remainOnExit)meta_fail=0
         \(setOptions)if [ "$meta_fail" -ne 0 ]; then
           "$tmux_path" kill-session -t =\(ctx.tmuxName) 2>/dev/null

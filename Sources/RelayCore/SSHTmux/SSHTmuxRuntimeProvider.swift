@@ -210,6 +210,13 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         var tmuxWord = knownTmuxPath(for: project) ?? "tmux"
         if !Self.isSafeExecutablePath(tmuxWord) { tmuxWord = "tmux" }
 
+        // The terminal is the app's chrome; tmux stays invisible. `status off`
+        // is session-scoped (only app-owned sessions are affected) and is
+        // enforced on every attach so sessions created by older builds get it
+        // too. tmux's command separator must reach tmux as a literal `;`:
+        // ssh space-joins the remote argv and the remote login shell parses
+        // the result, so it is sent as `\;` (backslash-escape is the one
+        // form every shell dialect reduces to a plain semicolon argument).
         return TerminalLaunchSpec(
             executable: URL(fileURLWithPath: SSHCommandRunner.sshPath),
             arguments: [
@@ -217,7 +224,8 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                 "-o", "ConnectTimeout=10",
                 "--",
                 alias,
-                tmuxWord, "attach-session", "-t", session.backendID,
+                tmuxWord, "set-option", "-t", session.backendID, "status", "off", "\\;",
+                "attach-session", "-t", session.backendID,
             ],
             environment: [
                 "TERM_PROGRAM": "Relay",
