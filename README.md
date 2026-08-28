@@ -135,8 +135,15 @@ notarized and stapled.
   SSH+tmux provider, persistence. No AppKit, no libghostty.
 - `Sources/Relay` — the app: SwiftUI UI, the libghostty adapter
   (`Ghostty/`), and the attach/reconnect controller.
-- One terminal attachment at a time: switching sessions detaches the previous
-  one locally (the remote session keeps running). Idle footprint stays tiny.
+- Sessions you visit stay **warm**: the last 4 viewed sessions keep their
+  ssh attachment and terminal state in the background, so switching between
+  them is instant, their scrollback survives, and their sidebar titles stay
+  live (hidden surfaces stop rendering via ghostty's occlusion API). Green
+  dot = live connection, grey = none; right-click ▸ Disconnect drops a
+  session's connection without touching the remote. Warm attachments die on
+  disconnect, archive/kill/remove, LRU eviction, window close, and app quit
+  — no connection ever outlives its sidebar row or the window. Never-visited
+  (grey) sessions get their titles from a 30s tmux sweep instead.
 - Management commands run as one-shot `ssh` invocations with `BatchMode=yes`,
   delivered to a remote `/bin/sh -s` over stdin — the remote login shell never
   parses generated script text, and every dynamic value is POSIX-quoted.

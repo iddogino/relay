@@ -55,7 +55,26 @@ struct ProjectEditorContext: Identifiable {
 @Observable
 final class AppModel {
     let provider: any RuntimeProvider
-    let attachment: TerminalAttachmentController
+    /// Warm terminal attachments, one per recently-visited session (LRU,
+    /// capped). The selected session's controller is what the detail view
+    /// renders; the others stay connected in the background so switching
+    /// back is instant and their titles stay live. Ownership contract: a
+    /// controller exists only for a session the user visited, and dies on
+    /// disconnect, archive/kill/remove, remote end, LRU eviction, window
+    /// close, or app quit.
+    private var attachmentPool: [SessionID: TerminalAttachmentController] = [:]
+    /// Least-recently-visited first.
+    private var warmOrder: [SessionID] = []
+    private static let warmAttachmentCap = 4
+    /// Placeholder the detail view renders when nothing is selected.
+    private let idleAttachment: TerminalAttachmentController
+
+    var attachment: TerminalAttachmentController {
+        guard let id = selectedSessionID, let controller = attachmentPool[id] else {
+            return idleAttachment
+        }
+        return controller
+    }
     private let store: ProjectStore
 
     // Remotes (rediscovered from provider, never persisted)
@@ -97,7 +116,7 @@ final class AppModel {
     init(provider: any RuntimeProvider, store: ProjectStore = ProjectStore()) {
         self.provider = provider
         self.store = store
-        self.attachment = TerminalAttachmentController(provider: provider)
+        self.idleAttachment = TerminalAttachmentController(provider: provider)
 
         // When a session ends we keep its sidebar row until the user acts
         // (Remove From Sidebar / New Session) or a refresh reconciles it away,
@@ -242,9 +261,15 @@ final class AppModel {
 
     func hideRemote(_ workspace: WorkspaceRef) {
         hiddenWorkspaces.insert(workspace)
-        // Hiding a remote hides its projects; drop any selection under it.
+        // Hiding a remote hides its projects; drop any selection under it,
+        // plus any warm attachments to it (hidden rows own no connections).
         if let project = selectedProject, project.workspace == workspace {
             selectedSessionID = nil
+        }
+        let projectIDs = Set(projects.filter { $0.workspace == workspace }.map(\.id))
+        for (id, controller) in attachmentPool
+        where controller.session.map({ projectIDs.contains($0.projectID) }) == true {
+            dropAttachment(for: id)
         }
         persist()
     }
@@ -279,39 +304,109 @@ final class AppModel {
         // attach/detach side effects out of the current render pass.
         let skipPersist = preserveSelectionOnDisk
         Task { @MainActor in
-            // The live surface title is fresher than the last title sweep;
-            // carry it into the departing session's row so switching away
-            // never downgrades the caption to a stale poll (up to 30s old —
-            // right after a launch that would be the tool's startup title).
-            self.carryOverLiveTitle()
+            // The departing session stays warm: its connection, scrollback,
+            // and live title survive in the background — only presentation
+            // (rendering + focus) is handed over.
+            if let old = oldValue, let previous = self.attachmentPool[old] {
+                self.carryOverLiveTitle(for: old)
+                previous.setPresented(false)
+            }
             guard let session = self.selectedSession,
                   let project = self.projects.first(where: { $0.id == session.projectID }) else {
-                self.attachment.detach()
                 if !skipPersist { self.persist() }
                 return
             }
-            self.attachment.attach(session: session, project: project)
+            self.warmAttachment(for: session, project: project)
             self.persist()
         }
     }
 
-    private func carryOverLiveTitle() {
-        guard let old = attachment.session,
-              case .attached = attachment.phase else { return }
-        let live = attachment.terminalTitle
-        guard !live.isEmpty else { return }
-        guard var list = sessions[old.projectID],
-              let index = list.firstIndex(where: { $0.id == old.id }) else { return }
-        list[index].paneTitle = live
-        sessions[old.projectID] = list
+    /// Ensures the session has a live controller: first visit attaches,
+    /// revisits are instant, and a controller that ran out of retries (or
+    /// saw its session end) gets a fresh start.
+    private func warmAttachment(for session: RemoteSession, project: Project) {
+        let controller: TerminalAttachmentController
+        if let existing = attachmentPool[session.id] {
+            controller = existing
+            switch existing.phase {
+            case .ended, .failed, .idle:
+                existing.attach(session: session, project: project)
+            default:
+                break
+            }
+        } else {
+            controller = TerminalAttachmentController(provider: provider)
+            attachmentPool[session.id] = controller
+            controller.attach(session: session, project: project)
+        }
+        controller.setPresented(true)
+        warmOrder.removeAll { $0 == session.id }
+        warmOrder.append(session.id)
+        while warmOrder.count > Self.warmAttachmentCap {
+            guard let victim = warmOrder.first(where: { $0 != selectedSessionID }) else { break }
+            dropAttachment(for: victim)
+        }
     }
 
-    /// Closing the window is detach-only, and must not clobber the
-    /// last-selected session stored for next-launch restore.
+    /// Tears down one warm attachment. Detach-only: the remote session
+    /// keeps running unless an archive/kill did that separately.
+    private func dropAttachment(for sessionID: SessionID) {
+        warmOrder.removeAll { $0 == sessionID }
+        guard let controller = attachmentPool[sessionID] else { return }
+        carryOverLiveTitle(for: sessionID)
+        controller.detach()
+        attachmentPool[sessionID] = nil
+    }
+
+    /// User-facing "Disconnect": drop the warm ssh attachment without
+    /// touching the remote session. A selected session is deselected first.
+    func disconnectSession(_ session: RemoteSession) {
+        if selectedSessionID == session.id {
+            selectedSessionID = nil
+        }
+        dropAttachment(for: session.id)
+    }
+
+    /// The connection phase for a session's warm controller, or nil when
+    /// the session has no live attachment (grey dot).
+    func connectionPhase(for sessionID: SessionID) -> TerminalAttachmentController.Phase? {
+        guard let controller = attachmentPool[sessionID] else { return nil }
+        if case .idle = controller.phase { return nil }
+        return controller.phase
+    }
+
+    /// Live surface title for any warm-attached session (selected or not);
+    /// cold sessions fall back to the 30s pane-title sweep.
+    func liveTitle(for sessionID: SessionID) -> String? {
+        guard let controller = attachmentPool[sessionID],
+              case .attached = controller.phase else { return nil }
+        let title = controller.terminalTitle
+        return title.isEmpty ? nil : title
+    }
+
+    /// The live surface title is fresher than the last title sweep; carry it
+    /// into the session's row so backgrounding or dropping an attachment
+    /// never downgrades the caption to a stale poll.
+    private func carryOverLiveTitle(for sessionID: SessionID) {
+        guard let controller = attachmentPool[sessionID],
+              case .attached = controller.phase,
+              let session = controller.session else { return }
+        let live = controller.terminalTitle
+        guard !live.isEmpty else { return }
+        guard var list = sessions[session.projectID],
+              let index = list.firstIndex(where: { $0.id == session.id }) else { return }
+        list[index].paneTitle = live
+        sessions[session.projectID] = list
+    }
+
+    /// Closing the window tears down every warm attachment (no window → no
+    /// connections), and must not clobber the last-selected session stored
+    /// for next-launch restore.
     func windowDidClose() {
         preserveSelectionOnDisk = true
         selectedSessionID = nil
         preserveSelectionOnDisk = false
+        for id in warmOrder.reversed() { dropAttachment(for: id) }
     }
 
     // MARK: Sessions
@@ -334,6 +429,15 @@ final class AppModel {
             guard sessionListEpoch[project.id, default: 0] == epoch else { return }
             sessions[project.id] = list
             sessionErrors[project.id] = nil
+            // Warm attachments for this project's vanished sessions have
+            // nothing to reattach to; drop them (the selected one keeps its
+            // controller so the "session ended" overlay can appear).
+            let liveIDs = Set(list.map(\.id))
+            for id in warmOrder
+            where id != selectedSessionID && !liveIDs.contains(id)
+                && attachmentPool[id]?.session?.projectID == project.id {
+                dropAttachment(for: id)
+            }
         } catch {
             sessionErrors[project.id] = error.localizedDescription
         }
@@ -376,6 +480,7 @@ final class AppModel {
         if selectedSessionID == session.id {
             selectedSessionID = nil
         }
+        dropAttachment(for: session.id)
         archivingSessions.insert(session.id)
         defer { archivingSessions.remove(session.id) }
         do {
@@ -408,6 +513,7 @@ final class AppModel {
         if selectedSessionID == session.id {
             selectedSessionID = nil
         }
+        dropAttachment(for: session.id)
         do {
             try await provider.destroySession(session, project: project)
             bumpSessionEpoch(project.id)
@@ -453,6 +559,7 @@ final class AppModel {
         if selectedSessionID == session.id {
             selectedSessionID = nil
         }
+        dropAttachment(for: session.id)
         noteSessionGone(session)
     }
 
@@ -473,6 +580,9 @@ final class AppModel {
     func removeProject(_ project: Project) {
         if let session = selectedSession, session.projectID == project.id {
             selectedSessionID = nil
+        }
+        for (id, controller) in attachmentPool where controller.session?.projectID == project.id {
+            dropAttachment(for: id)
         }
         projects.removeAll { $0.id == project.id }
         sessions[project.id] = nil

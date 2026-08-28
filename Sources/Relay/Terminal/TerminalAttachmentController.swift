@@ -42,6 +42,17 @@ final class TerminalAttachmentController {
     private var uploadTask: Task<Void, Never>?
     private var dropNoticeTask: Task<Void, Never>?
     private var generation = 0
+    /// Whether this attachment is the one on screen. Background (warm)
+    /// attachments keep their connection and terminal state but stop
+    /// rendering and report unfocused.
+    private var presented = true
+
+    /// Hands presentation (rendering + focus) to or away from this
+    /// attachment; the connection itself is unaffected.
+    func setPresented(_ newValue: Bool) {
+        presented = newValue
+        surfaceView?.setPresented(newValue)
+    }
 
     private static let backoffDelays: [Duration] = [
         .milliseconds(500), .seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(10),
@@ -170,6 +181,7 @@ final class TerminalAttachmentController {
             self.handleFileDrop(urls: urls, preferLocalPaths: preferLocalPaths)
         }
         surfaceView = view
+        view.setPresented(presented)
         lastAttachTime = Date()
         phase = .attached
     }

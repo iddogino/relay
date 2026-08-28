@@ -131,6 +131,15 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         return true
     }
 
+    /// Presentation state for warm-but-hidden surfaces: occluded surfaces
+    /// stop rendering, and a hidden surface reports unfocused. Focus on
+    /// re-present flows through the normal first-responder path.
+    func setPresented(_ presented: Bool) {
+        guard let surface else { return }
+        ghostty_surface_set_occlusion(surface, presented)
+        if !presented { ghostty_surface_set_focus(surface, false) }
+    }
+
     /// Types `text` into the terminal as if entered locally (used to insert
     /// uploaded file paths). Never interpreted as keystrokes or bindings.
     func injectText(_ text: String) {

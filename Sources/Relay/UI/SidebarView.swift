@@ -266,26 +266,25 @@ private struct SessionRow: View {
 
     private var isSelected: Bool { model.selectedSessionID == session.id }
     private var isArchiving: Bool { model.archivingSessions.contains(session.id) }
+    private var isConnected: Bool { model.connectionPhase(for: session.id) != nil }
 
+    /// Green = live ssh connection (selected or warm in the background);
+    /// grey = no local connection. Yellow/red show connection trouble.
     private var statusColor: Color {
-        guard isSelected else { return .secondary.opacity(0.5) }
-        switch model.attachment.phase {
+        switch model.connectionPhase(for: session.id) {
         case .attached: return .green
         case .connecting, .reconnecting: return .yellow
         case .ended, .failed: return .red
-        case .idle: return .secondary.opacity(0.5)
+        case .idle, nil: return .secondary.opacity(0.5)
         }
     }
 
     /// What runs inside the session, as reported by its terminal title
-    /// (e.g. Claude Code's "✳ task" status). The attached session uses the
-    /// live surface title; detached sessions use the tmux pane title.
+    /// (e.g. Claude Code's "✳ task" status). Connected sessions use the
+    /// live surface title; grey sessions fall back to the tmux pane title
+    /// from the 30s sweep.
     private var statusTitle: String? {
-        if isSelected, case .attached = model.attachment.phase,
-           !model.attachment.terminalTitle.isEmpty {
-            return model.attachment.terminalTitle
-        }
-        return session.paneTitle
+        model.liveTitle(for: session.id) ?? session.paneTitle
     }
 
     var body: some View {
@@ -312,6 +311,10 @@ private struct SessionRow: View {
         }
         .opacity(isArchiving ? 0.5 : 1)
         .contextMenu {
+            Button("Disconnect") {
+                model.disconnectSession(session)
+            }
+            .disabled(!isConnected)
             Button("Archive Session…") {
                 Task { await model.archiveSession(session) }
             }
