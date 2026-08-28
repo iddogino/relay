@@ -8,6 +8,7 @@ struct RelayApp: App {
     init() {
         // Initialize libghostty before any UI exists.
         _ = GhosttyRuntime.shared
+        AppearancePreference.stored().apply()
         _model = State(initialValue: AppModel(provider: SSHTmuxRuntimeProvider()))
     }
 
@@ -42,6 +43,13 @@ struct RelayApp: App {
                 Toggle("Show Hidden Remotes", isOn: Binding(
                     get: { model.showHiddenRemotes },
                     set: { model.showHiddenRemotes = $0 }))
+                Picker("Appearance", selection: Binding(
+                    get: { model.appearance },
+                    set: { model.appearance = $0 })) {
+                    ForEach(AppearancePreference.allCases) { preference in
+                        Text(preference.displayName).tag(preference)
+                    }
+                }
             }
             CommandMenu("Session") {
                 Button("Archive Session…") {

@@ -8,6 +8,37 @@ struct AppAlert: Identifiable {
     let message: String
 }
 
+/// Manual appearance override (View ▸ Appearance). Stored in UserDefaults.
+enum AppearancePreference: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    static let defaultsKey = "appearancePreference"
+
+    static func stored() -> AppearancePreference {
+        AppearancePreference(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "") ?? .system
+    }
+
+    @MainActor
+    func apply() {
+        UserDefaults.standard.set(rawValue, forKey: Self.defaultsKey)
+        switch self {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
 /// Context for the project editor sheet: adding to a remote, or editing.
 struct ProjectEditorContext: Identifiable {
     enum Mode {
@@ -50,6 +81,9 @@ final class AppModel {
     /// When true, clearing the selection detaches but does not persist the
     /// cleared value (used for window close, which races app termination).
     private var preserveSelectionOnDisk = false
+    var appearance: AppearancePreference = AppearancePreference.stored() {
+        didSet { appearance.apply() }
+    }
     private(set) var archivingSessions: Set<SessionID> = []
     var alert: AppAlert?
     var projectEditor: ProjectEditorContext?
