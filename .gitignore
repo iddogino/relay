@@ -4,3 +4,4 @@ build/
 Vendor/ghostty/
 Vendor/toolchain/
 .DS_Store
+.env
