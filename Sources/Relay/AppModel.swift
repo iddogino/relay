@@ -279,6 +279,11 @@ final class AppModel {
         // attach/detach side effects out of the current render pass.
         let skipPersist = preserveSelectionOnDisk
         Task { @MainActor in
+            // The live surface title is fresher than the last title sweep;
+            // carry it into the departing session's row so switching away
+            // never downgrades the caption to a stale poll (up to 30s old —
+            // right after a launch that would be the tool's startup title).
+            self.carryOverLiveTitle()
             guard let session = self.selectedSession,
                   let project = self.projects.first(where: { $0.id == session.projectID }) else {
                 self.attachment.detach()
@@ -288,6 +293,17 @@ final class AppModel {
             self.attachment.attach(session: session, project: project)
             self.persist()
         }
+    }
+
+    private func carryOverLiveTitle() {
+        guard let old = attachment.session,
+              case .attached = attachment.phase else { return }
+        let live = attachment.terminalTitle
+        guard !live.isEmpty else { return }
+        guard var list = sessions[old.projectID],
+              let index = list.firstIndex(where: { $0.id == old.id }) else { return }
+        list[index].paneTitle = live
+        sessions[old.projectID] = list
     }
 
     /// Closing the window is detach-only, and must not clobber the
