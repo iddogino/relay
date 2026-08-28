@@ -1,6 +1,34 @@
 import SwiftUI
 import RelayCore
 
+/// The sidebar's layout grid. Every row is a fixed-width glyph gutter
+/// followed by text, and child rows shift by exactly one step — so the
+/// text forms two clean columns (projects, sessions) and glyphs align
+/// within each level. SwiftUI `Label`s are avoided on purpose: their icon
+/// column metrics are private and don't line up with custom rows.
+private enum SidebarGrid {
+    static let glyphWidth: CGFloat = 18
+    static let gap: CGFloat = 5
+    static let childIndent: CGFloat = 20
+    /// Where text starts inside a row, for aligning second lines.
+    static let textInset: CGFloat = glyphWidth + gap
+}
+
+/// One grid-aligned sidebar row: glyph centered in the fixed gutter, then
+/// the content.
+private struct GridRow<Glyph: View, Content: View>: View {
+    @ViewBuilder let glyph: Glyph
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(spacing: SidebarGrid.gap) {
+            glyph
+                .frame(width: SidebarGrid.glyphWidth)
+            content
+        }
+    }
+}
+
 struct SidebarView: View {
     @Bindable var model: AppModel
 
@@ -24,9 +52,13 @@ struct SidebarView: View {
                     Button {
                         model.showHiddenRemotes = true
                     } label: {
-                        Label("\(model.hiddenWorkspaces.count) hidden remote\(model.hiddenWorkspaces.count == 1 ? "" : "s")", systemImage: "eye.slash")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
+                        GridRow {
+                            Image(systemName: "eye.slash")
+                        } content: {
+                            Text("\(model.hiddenWorkspaces.count) hidden remote\(model.hiddenWorkspaces.count == 1 ? "" : "s")")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                     }
                     .buttonStyle(.plain)
                     .help("Show hidden remotes")
@@ -73,8 +105,12 @@ private struct RemoteSection: View {
                 Button {
                     model.projectEditor = ProjectEditorContext(mode: .create(workspace: descriptor.id))
                 } label: {
-                    Label("Add Project…", systemImage: "plus.circle")
-                        .foregroundStyle(.secondary)
+                    GridRow {
+                        Image(systemName: "plus.circle")
+                    } content: {
+                        Text("Add Project…")
+                    }
+                    .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
             }
@@ -82,9 +118,10 @@ private struct RemoteSection: View {
                 ProjectRows(model: model, project: project, remoteMissing: missing)
             }
         } header: {
-            HStack(spacing: 5) {
+            GridRow {
                 Image(systemName: hidden ? "eye.slash" : (missing ? "exclamationmark.triangle" : "server.rack"))
                     .foregroundStyle(missing ? .orange : .secondary)
+            } content: {
                 Text(descriptor.displayName)
                 if missing {
                     Text("Missing Remote")
@@ -136,15 +173,13 @@ private struct ProjectRows: View {
 
     var body: some View {
         // Project header row
-        HStack(spacing: 6) {
-            Label {
-                Text(project.name)
-                    .fontWeight(.medium)
-                    .lineLimit(1)
-            } icon: {
-                Image(systemName: "folder")
-                    .foregroundStyle(Color.accentColor)
-            }
+        GridRow {
+            Image(systemName: "folder")
+                .foregroundStyle(Color.accentColor)
+        } content: {
+            Text(project.name)
+                .fontWeight(.medium)
+                .lineLimit(1)
             Spacer()
             if model.sessionsLoading.contains(project.id) {
                 ProgressView().controlSize(.mini)
@@ -171,36 +206,40 @@ private struct ProjectRows: View {
 
         // Session rows
         if let error = model.sessionErrors[project.id] {
-            Label {
+            GridRow {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            } content: {
                 Text(error)
                     .font(.caption)
                     .lineLimit(3)
                     .foregroundStyle(.secondary)
-            } icon: {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
             }
-            .padding(.leading, 12)
+            .padding(.leading, SidebarGrid.childIndent)
             Button {
                 Task { await model.refreshSessions(for: project) }
             } label: {
-                Label("Retry", systemImage: "arrow.clockwise")
-                    .font(.caption)
+                GridRow {
+                    Image(systemName: "arrow.clockwise")
+                } content: {
+                    Text("Retry")
+                }
+                .font(.caption)
             }
             .buttonStyle(.borderless)
-            .padding(.leading, 12)
+            .padding(.leading, SidebarGrid.childIndent)
         }
 
         ForEach(model.sessions[project.id] ?? []) { session in
             SessionRow(model: model, session: session)
-                .padding(.leading, 12)
+                .padding(.leading, SidebarGrid.childIndent)
                 .tag(session.id)
         }
 
         // Cleanup-failed tombstones
         ForEach(model.tombstones.filter { $0.projectID == project.id }) { tombstone in
             TombstoneRow(model: model, tombstone: tombstone)
-                .padding(.leading, 12)
+                .padding(.leading, SidebarGrid.childIndent)
         }
 
         // New session row
@@ -208,11 +247,15 @@ private struct ProjectRows: View {
             Button {
                 model.newSessionProject = project
             } label: {
-                Label("New Session", systemImage: "plus.circle")
-                    .foregroundStyle(.secondary)
+                GridRow {
+                    Image(systemName: "plus.circle")
+                } content: {
+                    Text("New Session")
+                }
+                .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .padding(.leading, 12)
+            .padding(.leading, SidebarGrid.childIndent)
         }
     }
 }
@@ -246,10 +289,11 @@ private struct SessionRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 7) {
+        GridRow {
             Circle()
                 .fill(statusColor)
                 .frame(width: 7, height: 7)
+        } content: {
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.displayName)
                     .lineLimit(1)
@@ -287,22 +331,22 @@ private struct TombstoneRow: View {
     private var isRetrying: Bool { model.archivingSessions.contains(tombstone.id) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 7) {
-                Image(systemName: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
-                    .foregroundStyle(.orange)
+        GridRow {
+            Image(systemName: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
+                .foregroundStyle(.orange)
+        } content: {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(tombstone.session.displayName)
                     .lineLimit(1)
                     .foregroundStyle(.secondary)
-                Spacer()
-                if isRetrying {
-                    ProgressView().controlSize(.mini)
-                }
+                Text("Cleanup failed")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
             }
-            Text("Cleanup failed")
-                .font(.caption2)
-                .foregroundStyle(.orange)
-                .padding(.leading, 21)
+            Spacer()
+            if isRetrying {
+                ProgressView().controlSize(.mini)
+            }
         }
         .help(tombstone.failureMessage)
         .contextMenu {
