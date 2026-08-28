@@ -25,6 +25,9 @@ changing the remote machine in any way.
   (run in every new session — `claude`, `codex`, your worktree bootstrap
   script, anything) and an optional *shutdown command* (run when you archive a
   session — e.g. clean up that worktree).
+- Aliases you never shell into (a git host, an OrbStack proxy) can be tucked
+  away with **Hide Remote** in the sidebar context menu; View ▸ Show Hidden
+  Remotes brings them back.
 - **Sessions** are ordinary remote tmux sessions owned by the app. Close the
   laptop, lose Wi-Fi, quit the app — the remote work keeps running. Select the
   session again and Relay reattaches. They stay reachable from any terminal

@@ -53,6 +53,25 @@ struct PersistenceTests {
         #expect(fresh.projects.isEmpty)
     }
 
+    @Test func hiddenWorkspacesRoundTripAndOldStateFilesLoad() async throws {
+        let url = tempStoreURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = ProjectStore(fileURL: url)
+
+        // Round trip with hidden workspaces.
+        let hidden = WorkspaceRef(provider: .sshTmux, opaqueID: "github.com")
+        try await store.save(PersistedState(hiddenWorkspaces: [hidden]))
+        #expect(try await store.load().hiddenWorkspaces == [hidden])
+
+        // A state file from an older build (no hiddenWorkspaces key, and
+        // missing other optional keys) must load, not trip corrupt-state.
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try #"{"projects": [], "tombstones": []}"#.write(to: url, atomically: true, encoding: .utf8)
+        let migrated = try await store.load()
+        #expect(migrated.hiddenWorkspaces.isEmpty)
+        #expect(migrated.projects.isEmpty)
+    }
+
     @Test func projectsWithMissingAliasSurvive() async throws {
         // Persistence must not drop projects whose SSH alias disappeared.
         let url = tempStoreURL()

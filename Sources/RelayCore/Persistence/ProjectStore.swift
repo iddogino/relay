@@ -25,17 +25,33 @@ public struct PersistedState: Codable, Sendable {
     public var tombstones: [CleanupTombstone]
     public var lastSelectedSessionID: SessionID?
     public var collapsedProjectIDs: Set<ProjectID>
+    /// Remotes the user chose to hide from the sidebar.
+    public var hiddenWorkspaces: Set<WorkspaceRef>
 
     public init(
         projects: [Project] = [],
         tombstones: [CleanupTombstone] = [],
         lastSelectedSessionID: SessionID? = nil,
-        collapsedProjectIDs: Set<ProjectID> = []
+        collapsedProjectIDs: Set<ProjectID> = [],
+        hiddenWorkspaces: Set<WorkspaceRef> = []
     ) {
         self.projects = projects
         self.tombstones = tombstones
         self.lastSelectedSessionID = lastSelectedSessionID
         self.collapsedProjectIDs = collapsedProjectIDs
+        self.hiddenWorkspaces = hiddenWorkspaces
+    }
+
+    // Every field decodes with a default so state files written by older
+    // builds (or with fields yet to exist) load instead of tripping the
+    // corrupt-state path.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.projects = try container.decodeIfPresent([Project].self, forKey: .projects) ?? []
+        self.tombstones = try container.decodeIfPresent([CleanupTombstone].self, forKey: .tombstones) ?? []
+        self.lastSelectedSessionID = try container.decodeIfPresent(SessionID.self, forKey: .lastSelectedSessionID)
+        self.collapsedProjectIDs = try container.decodeIfPresent(Set<ProjectID>.self, forKey: .collapsedProjectIDs) ?? []
+        self.hiddenWorkspaces = try container.decodeIfPresent(Set<WorkspaceRef>.self, forKey: .hiddenWorkspaces) ?? []
     }
 }
 

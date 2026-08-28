@@ -38,6 +38,11 @@ struct RelayApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             }
+            CommandGroup(after: .sidebar) {
+                Toggle("Show Hidden Remotes", isOn: Binding(
+                    get: { model.showHiddenRemotes },
+                    set: { model.showHiddenRemotes = $0 }))
+            }
             CommandMenu("Session") {
                 Button("Archive Session…") {
                     if let session = model.selectedSession {

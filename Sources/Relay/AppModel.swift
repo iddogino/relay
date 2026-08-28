@@ -34,6 +34,9 @@ final class AppModel {
     // Local configuration
     private(set) var projects: [Project] = []
     private(set) var tombstones: [CleanupTombstone] = []
+    private(set) var hiddenWorkspaces: Set<WorkspaceRef> = []
+    /// Transient: when on, hidden remotes render (dimmed) so they can be unhidden.
+    var showHiddenRemotes = false
 
     // Remote-reconciled session lists
     private(set) var sessions: [ProjectID: [RemoteSession]] = [:]
@@ -85,6 +88,7 @@ final class AppModel {
             let state = try await store.load()
             projects = state.projects
             tombstones = state.tombstones
+            hiddenWorkspaces = state.hiddenWorkspaces
             restoredSelection = state.lastSelectedSessionID
         } catch ProjectStoreError.corruptState(let backupPath) {
             alert = AppAlert(
@@ -136,8 +140,11 @@ final class AppModel {
 
     /// Remotes to render: discovered ones, plus placeholders for projects
     /// whose remote disappeared from SSH config (shown as Missing Remote).
-    var sidebarRemotes: [(descriptor: WorkspaceDescriptor, missing: Bool)] {
-        var rows: [(WorkspaceDescriptor, Bool)] = remotes.map { ($0, false) }
+    /// User-hidden remotes are filtered out unless `showHiddenRemotes` is on.
+    var sidebarRemotes: [(descriptor: WorkspaceDescriptor, missing: Bool, hidden: Bool)] {
+        var rows: [(WorkspaceDescriptor, Bool, Bool)] = remotes.map {
+            ($0, false, hiddenWorkspaces.contains($0.id))
+        }
         let known = Set(remotes.map(\.id))
         for project in projects where !known.contains(project.workspace) {
             if !rows.contains(where: { $0.0.id == project.workspace }) {
@@ -146,11 +153,28 @@ final class AppModel {
                         id: project.workspace,
                         displayName: project.workspace.opaqueID,
                         providerID: project.workspace.provider),
-                    true
+                    true,
+                    hiddenWorkspaces.contains(project.workspace)
                 ))
             }
         }
-        return rows
+        return rows.filter { !$0.2 || showHiddenRemotes }
+    }
+
+    var hasHiddenRemotes: Bool { !hiddenWorkspaces.isEmpty }
+
+    func hideRemote(_ workspace: WorkspaceRef) {
+        hiddenWorkspaces.insert(workspace)
+        // Hiding a remote hides its projects; drop any selection under it.
+        if let project = selectedProject, project.workspace == workspace {
+            selectedSessionID = nil
+        }
+        persist()
+    }
+
+    func showRemote(_ workspace: WorkspaceRef) {
+        hiddenWorkspaces.remove(workspace)
+        persist()
     }
 
     func projects(for workspace: WorkspaceRef) -> [Project] {
@@ -350,7 +374,8 @@ final class AppModel {
             projects: projects,
             tombstones: tombstones,
             lastSelectedSessionID: selectedSessionID,
-            collapsedProjectIDs: []
+            collapsedProjectIDs: [],
+            hiddenWorkspaces: hiddenWorkspaces
         )
         // Chain saves so an older snapshot can never overwrite a newer one.
         persistChain = Task { [store, previous = persistChain] in
