@@ -206,19 +206,31 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         guard TmuxNaming.isSafeSessionName(session.backendID) else {
             throw RuntimeProviderError.invalidInput("Unsafe session identifier.")
         }
-        // The attach command line is parsed by the remote user's login shell,
-        // so it is built exclusively from validated-safe tokens (no quoting
-        // dialect assumptions).
         var tmuxWord = knownTmuxPath(for: project) ?? "tmux"
         if !Self.isSafeExecutablePath(tmuxWord) { tmuxWord = "tmux" }
 
-        // The terminal is the app's chrome; tmux stays invisible. `status off`
-        // is session-scoped (only app-owned sessions are affected) and is
-        // enforced on every attach so sessions created by older builds get it
-        // too. tmux's command separator must reach tmux as a literal `;`:
-        // ssh space-joins the remote argv and the remote login shell parses
-        // the result, so it is sent as `\;` (backslash-escape is the one
-        // form every shell dialect reduces to a plain semicolon argument).
+        // The attach runs a small POSIX script via `sh -c` (single-quoted, so
+        // the remote login shell never interprets its contents; every dynamic
+        // value in it is validated-safe or quoted).
+        //
+        // The terminal is the app's chrome; tmux stays invisible:
+        // - When the server carries the smcup@ override (Relay-only servers;
+        //   the client then runs in the main screen, so scrolled lines land
+        //   in the terminal's native scrollback), the pane's tmux history is
+        //   replayed first — full backscroll is available natively the
+        //   moment the session connects.
+        // - `status off` and `mouse off` are session-scoped and enforced on
+        //   every attach so sessions created by older builds get them too;
+        //   mouse off leaves selection and wheel to the terminal (native
+        //   selection, app-owned scrolling).
+        let name = session.backendID
+        let attachScript = """
+        tp=\(POSIXShellQuote.quote(tmuxWord))
+        if "$tp" show-options -s terminal-overrides 2>/dev/null | grep -q smcup@; then
+          "$tp" capture-pane -e -p -S -2000 -t \(name) 2>/dev/null || true
+        fi
+        exec "$tp" set-option -t \(name) status off ';' set-option -t \(name) mouse off ';' attach-session -t \(name)
+        """
         return TerminalLaunchSpec(
             executable: URL(fileURLWithPath: SSHCommandRunner.sshPath),
             arguments: [
@@ -226,8 +238,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                 "-o", "ConnectTimeout=10",
                 "--",
                 alias,
-                tmuxWord, "set-option", "-t", session.backendID, "status", "off", "\\;",
-                "attach-session", "-t", session.backendID,
+                "sh", "-c", POSIXShellQuote.quote(attachScript),
             ],
             environment: [
                 "TERM_PROGRAM": "Relay",

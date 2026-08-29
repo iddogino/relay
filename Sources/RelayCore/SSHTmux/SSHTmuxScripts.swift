@@ -145,14 +145,22 @@ enum SSHTmuxScripts {
             && "$tmux_path" set-option -s escape-time 10 2>/dev/null || true
           "$tmux_path" set-option -s focus-events on 2>/dev/null || true
           "$tmux_path" set-option -sa terminal-features ',xterm-256color:RGB' 2>/dev/null || true
+          # Keep attach clients out of the alternate screen so scrolled lines
+          # land in the local terminal's native scrollback (and history can
+          # be replayed into it on attach).
+          case "$("$tmux_path" show-options -sv terminal-overrides 2>/dev/null)" in
+            *smcup@*) ;;
+            *) "$tmux_path" set-option -sa terminal-overrides ',xterm-256color:smcup@:rmcup@' 2>/dev/null || true ;;
+          esac
         fi
         "$tmux_path" new-session -d -s \(ctx.tmuxName) -n \(POSIXShellQuote.quote(ctx.windowName)) -c "$rp"\(envFlags)\(paneCommand) || { printf 'RTERM_STATUS=create_failed\\n'; exit 23; }
         # Native-terminal polish, session-scoped half (never affects the
-        # user's own sessions): no status strip, mouse-wheel scrollback,
+        # user's own sessions): no status strip, mouse left entirely to the
+        # terminal (native selection and scrolling — tmux never intercepts),
         # passthrough sequences (image protocols etc.), and pane-title
         # forwarding so the app header can show what's running.
         "$tmux_path" set-option -t \(ctx.tmuxName) status off 2>/dev/null || true
-        "$tmux_path" set-option -t \(ctx.tmuxName) mouse on 2>/dev/null || true
+        "$tmux_path" set-option -t \(ctx.tmuxName) mouse off 2>/dev/null || true
         "$tmux_path" set-option -t \(ctx.tmuxName) allow-passthrough on 2>/dev/null || true
         "$tmux_path" set-option -t \(ctx.tmuxName) set-titles on 2>/dev/null || true
         "$tmux_path" set-option -t \(ctx.tmuxName) set-titles-string '#T' 2>/dev/null || true
