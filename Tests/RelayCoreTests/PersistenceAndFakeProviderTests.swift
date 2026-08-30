@@ -24,11 +24,13 @@ struct PersistenceTests {
         )
         var state = PersistedState(projects: [project])
         state.lastSelectedSessionID = SessionID()
+        state.sessionOrder = [SessionID(), SessionID()]
         try await store.save(state)
 
         let loaded = try await store.load()
         #expect(loaded.projects == [project])
         #expect(loaded.lastSelectedSessionID == state.lastSelectedSessionID)
+        #expect(loaded.sessionOrder == state.sessionOrder)
     }
 
     @Test func missingFileLoadsEmpty() async throws {

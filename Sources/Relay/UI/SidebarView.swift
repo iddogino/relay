@@ -2,14 +2,12 @@ import SwiftUI
 import RelayCore
 
 /// The sidebar's layout grid. Every row is a fixed-width glyph gutter
-/// followed by text, and child rows shift by exactly one step — so the
-/// text forms two clean columns (projects, sessions) and glyphs align
-/// within each level. SwiftUI `Label`s are avoided on purpose: their icon
-/// column metrics are private and don't line up with custom rows.
+/// followed by text, so glyphs and text form clean columns within each
+/// level. SwiftUI `Label`s are avoided on purpose: their icon column
+/// metrics are private and don't line up with custom rows.
 private enum SidebarGrid {
     static let glyphWidth: CGFloat = 18
     static let gap: CGFloat = 5
-    static let childIndent: CGFloat = 20
     /// Where text starts inside a row, for aligning second lines.
     static let textInset: CGFloat = glyphWidth + gap
 }
@@ -29,59 +27,36 @@ private struct GridRow<Glyph: View, Content: View>: View {
     }
 }
 
+/// One "Projects" section of DisclosureGroups: project rows at the top
+/// level, session rows as their children. Reordering is two nested
+/// ForEach+onMove scopes on purpose — SwiftUI constrains each drag (and its
+/// insertion indicator) to the rows of the ForEach that owns it, so
+/// projects can only be dropped between projects and sessions only within
+/// their own project. A single flat ForEach would draw insertion lines at
+/// every row gap, including meaningless ones.
 struct SidebarView: View {
     @Bindable var model: AppModel
 
     var body: some View {
         List(selection: $model.selectedSessionID) {
-            if model.remotesLoaded && model.sidebarRemotes.isEmpty {
-                ContentUnavailableView(
-                    "No SSH Hosts",
-                    systemImage: "network.slash",
-                    description: Text("Add hosts to ~/.ssh/config and they'll appear here.")
-                )
+            if model.remotesLoaded && model.projects.isEmpty {
+                emptyState
             } else {
-                ForEach(model.sidebarRemotes, id: \.descriptor.id) { entry in
-                    RemoteSection(
-                        model: model,
-                        descriptor: entry.descriptor,
-                        missing: entry.missing,
-                        hidden: entry.hidden)
-                }
-                if model.hasHiddenRemotes && !model.showHiddenRemotes {
-                    Button {
-                        model.showHiddenRemotes = true
-                    } label: {
-                        GridRow {
-                            Image(systemName: "eye.slash")
-                        } content: {
-                            Text("\(model.hiddenWorkspaces.count) hidden remote\(model.hiddenWorkspaces.count == 1 ? "" : "s")")
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                Section {
+                    ForEach(model.projects) { project in
+                        ProjectGroup(model: model, project: project)
                     }
-                    .buttonStyle(.plain)
-                    .help("Show hidden remotes")
+                    .onMove { source, destination in
+                        model.moveProjects(fromOffsets: source, toOffset: destination)
+                    }
+                } header: {
+                    sectionHeader
                 }
+                .collapsible(false)
             }
         }
         .listStyle(.sidebar)
         .navigationTitle("Relay")
-        .toolbar {
-            ToolbarItem {
-                Menu {
-                    ForEach(model.remotes.filter { !model.hiddenWorkspaces.contains($0.id) }) { remote in
-                        Button(remote.displayName) {
-                            model.projectEditor = ProjectEditorContext(mode: .create(workspace: remote.id))
-                        }
-                    }
-                } label: {
-                    Label("Add Project", systemImage: "plus")
-                }
-                .disabled(model.remotes.allSatisfy { model.hiddenWorkspaces.contains($0.id) })
-                .help("Add a project to a remote")
-            }
-        }
         .overlay(alignment: .bottom) {
             if !model.remotesLoaded {
                 ProgressView()
@@ -90,105 +65,155 @@ struct SidebarView: View {
             }
         }
     }
-}
 
-private struct RemoteSection: View {
-    @Bindable var model: AppModel
-    let descriptor: WorkspaceDescriptor
-    let missing: Bool
-    let hidden: Bool
+    private var sectionHeader: some View {
+        HStack(spacing: 2) {
+            Text("Projects")
+            Spacer()
+            Menu {
+                Button("Refresh All") {
+                    Task { await model.refreshAll() }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.button)
+            .buttonStyle(.borderless)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            Button {
+                model.projectEditor = ProjectEditorContext(mode: .create(workspace: nil))
+            } label: {
+                Image(systemName: "plus")
+            }
+            .buttonStyle(.borderless)
+            .disabled(model.remotes.isEmpty)
+            .help("Add a project")
+        }
+    }
 
-    var body: some View {
-        Section {
-            let projects = model.projects(for: descriptor.id)
-            if projects.isEmpty && !missing && !hidden {
-                Button {
-                    model.projectEditor = ProjectEditorContext(mode: .create(workspace: descriptor.id))
-                } label: {
-                    GridRow {
-                        Image(systemName: "plus.circle")
-                    } content: {
-                        Text("Add Project…")
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            ForEach(projects) { project in
-                ProjectRows(model: model, project: project, remoteMissing: missing)
-            }
-        } header: {
-            GridRow {
-                Image(systemName: hidden ? "eye.slash" : (missing ? "exclamationmark.triangle" : "server.rack"))
-                    .foregroundStyle(missing ? .orange : .secondary)
-            } content: {
-                Text(descriptor.displayName)
-                if missing {
-                    Text("Missing Remote")
-                        .font(.caption2)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(.orange.opacity(0.2), in: Capsule())
-                        .foregroundStyle(.orange)
-                }
-            }
-            .opacity(hidden ? 0.5 : 1)
-            .contextMenu {
-                if !missing && !hidden {
-                    Button("Add Project…") {
-                        model.projectEditor = ProjectEditorContext(mode: .create(workspace: descriptor.id))
-                    }
-                }
-                Button("Copy SSH Alias") {
-                    NSPasteboard.general.declareTypes([.string], owner: nil)
-                    NSPasteboard.general.setString(descriptor.id.opaqueID, forType: .string)
-                }
-                Button("Refresh") {
-                    Task {
-                        await model.refreshRemotes()
-                        for project in model.projects(for: descriptor.id) {
-                            await model.refreshSessions(for: project)
-                        }
-                    }
-                }
-                Divider()
-                if hidden {
-                    Button("Show Remote") {
-                        model.showRemote(descriptor.id)
-                    }
-                } else {
-                    Button("Hide Remote") {
-                        model.hideRemote(descriptor.id)
-                    }
+    @ViewBuilder private var emptyState: some View {
+        if model.remotes.isEmpty {
+            ContentUnavailableView(
+                "No SSH Hosts",
+                systemImage: "network.slash",
+                description: Text("Add hosts to ~/.ssh/config and they'll appear here.")
+            )
+        } else {
+            ContentUnavailableView {
+                Label("No Projects", systemImage: "folder.badge.plus")
+            } description: {
+                Text("A project is a folder on one of your hosts.")
+            } actions: {
+                Button("Add Project…") {
+                    model.projectEditor = ProjectEditorContext(mode: .create(workspace: nil))
                 }
             }
         }
     }
 }
 
-private struct ProjectRows: View {
+private struct ProjectGroup: View {
+    @Bindable var model: AppModel
+    let project: Project
+
+    private var remoteMissing: Bool { model.isRemoteMissing(project) }
+
+    private var isExpanded: Binding<Bool> {
+        Binding(
+            get: { !model.collapsedProjects.contains(project.id) },
+            set: { model.setProjectCollapsed(project, collapsed: !$0) })
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: isExpanded) {
+            if let message = model.sessionErrors[project.id] {
+                SessionsErrorRow(model: model, project: project, message: message)
+                    .moveDisabled(true)
+            }
+            ForEach(model.sessions[project.id] ?? []) { session in
+                SessionRow(model: model, session: session)
+                    .tag(session.id)
+            }
+            .onMove { source, destination in
+                model.moveSessions(in: project.id, fromOffsets: source, toOffset: destination)
+            }
+            ForEach(model.tombstones.filter { $0.projectID == project.id }) { tombstone in
+                TombstoneRow(model: model, tombstone: tombstone)
+                    .moveDisabled(true)
+            }
+            if !remoteMissing {
+                NewSessionRow(model: model, project: project)
+                    .moveDisabled(true)
+            }
+        } label: {
+            ProjectRow(model: model, project: project, remoteMissing: remoteMissing)
+        }
+    }
+}
+
+private struct ProjectRow: View {
     @Bindable var model: AppModel
     let project: Project
     let remoteMissing: Bool
 
+    private var hostAlias: String { project.workspace.opaqueID }
+
+    /// Host reachability: green = online (live attachment, or the last
+    /// contact succeeded), red = the last contact failed, grey = no
+    /// evidence yet.
+    private var hostStatus: AppModel.HostStatus {
+        model.hostStatus(for: project.workspace)
+    }
+
+    private var dotColor: Color {
+        switch hostStatus {
+        case .online: .green
+        case .offline: .red
+        case .unknown: .secondary.opacity(0.5)
+        }
+    }
+
+    private var helpText: String {
+        if remoteMissing { return "\(hostAlias) is missing from ~/.ssh/config" }
+        switch hostStatus {
+        case .online: return "\(hostAlias) — online"
+        case .offline: return "\(hostAlias) — unreachable"
+        case .unknown: return hostAlias
+        }
+    }
+
     var body: some View {
-        // Project header row
         GridRow {
             Image(systemName: "folder")
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(.secondary)
         } content: {
             Text(project.name)
                 .fontWeight(.medium)
                 .lineLimit(1)
-            Spacer()
+                .layoutPriority(1)
+            Spacer(minLength: 8)
+            Text(hostAlias)
+                .font(.caption)
+                .foregroundStyle(remoteMissing ? AnyShapeStyle(.orange) : AnyShapeStyle(.tertiary))
+                .lineLimit(1)
+                .truncationMode(.tail)
             if model.sessionsLoading.contains(project.id) {
                 ProgressView().controlSize(.mini)
+            } else if remoteMissing {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            } else {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 7, height: 7)
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            Task { await model.refreshSessions(for: project) }
-        }
+        // NOTE: no row-level tap gesture here — a tap recognizer swallows
+        // the mouse-down the List needs to start a row drag, killing
+        // project reordering.
+        .help(helpText)
         .contextMenu {
             Button("New Session…") { model.newSessionProject = project }
                 .disabled(remoteMissing)
@@ -198,64 +223,42 @@ private struct ProjectRows: View {
             Button("Refresh Sessions") {
                 Task { await model.refreshSessions(for: project) }
             }
+            Button("Copy SSH Alias") {
+                NSPasteboard.general.declareTypes([.string], owner: nil)
+                NSPasteboard.general.setString(hostAlias, forType: .string)
+            }
             Divider()
             Button("Remove Project…", role: .destructive) {
                 model.confirmRemoveProject = project
             }
         }
+    }
+}
 
-        // Session rows
-        if let error = model.sessionErrors[project.id] {
+private struct SessionsErrorRow: View {
+    @Bindable var model: AppModel
+    let project: Project
+    let message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
             GridRow {
                 Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
             } content: {
-                Text(error)
+                Text(message)
                     .font(.caption)
                     .lineLimit(3)
                     .foregroundStyle(.secondary)
             }
-            .padding(.leading, SidebarGrid.childIndent)
             Button {
                 Task { await model.refreshSessions(for: project) }
             } label: {
-                GridRow {
-                    Image(systemName: "arrow.clockwise")
-                } content: {
-                    Text("Retry")
-                }
-                .font(.caption)
+                Text("Retry")
+                    .font(.caption)
             }
             .buttonStyle(.borderless)
-            .padding(.leading, SidebarGrid.childIndent)
-        }
-
-        ForEach(model.sessions[project.id] ?? []) { session in
-            SessionRow(model: model, session: session)
-                .padding(.leading, SidebarGrid.childIndent)
-                .tag(session.id)
-        }
-
-        // Cleanup-failed tombstones
-        ForEach(model.tombstones.filter { $0.projectID == project.id }) { tombstone in
-            TombstoneRow(model: model, tombstone: tombstone)
-                .padding(.leading, SidebarGrid.childIndent)
-        }
-
-        // New session row
-        if !remoteMissing {
-            Button {
-                model.newSessionProject = project
-            } label: {
-                GridRow {
-                    Image(systemName: "plus.circle")
-                } content: {
-                    Text("New Session")
-                }
-                .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .padding(.leading, SidebarGrid.childIndent)
+            .padding(.leading, SidebarGrid.textInset)
         }
     }
 }
@@ -324,6 +327,25 @@ private struct SessionRow: View {
                 model.confirmKillSession = session
             }
         }
+    }
+}
+
+private struct NewSessionRow: View {
+    @Bindable var model: AppModel
+    let project: Project
+
+    var body: some View {
+        Button {
+            model.newSessionProject = project
+        } label: {
+            GridRow {
+                Image(systemName: "plus.circle")
+            } content: {
+                Text("New Session")
+            }
+            .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
     }
 }
 

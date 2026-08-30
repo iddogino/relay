@@ -14,6 +14,13 @@ struct RelayApp: App {
         _model = State(initialValue: AppModel(provider: SSHTmuxRuntimeProvider()))
     }
 
+    /// Standard cap choices, plus the current value if it was set to
+    /// something else (e.g. via `defaults write`) so the picker never shows
+    /// an empty selection.
+    private var warmCapOptions: [Int] {
+        Array(Set([1, 2, 4, 6, 8] + [model.warmAttachmentCap])).sorted()
+    }
+
     var body: some Scene {
         Window("Relay", id: "main") {
             MainWindowView(model: model)
@@ -49,9 +56,6 @@ struct RelayApp: App {
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             }
             CommandGroup(after: .sidebar) {
-                Toggle("Show Hidden Remotes", isOn: Binding(
-                    get: { model.showHiddenRemotes },
-                    set: { model.showHiddenRemotes = $0 }))
                 Picker("Appearance", selection: Binding(
                     get: { model.appearance },
                     set: { model.appearance = $0 })) {
@@ -82,6 +86,18 @@ struct RelayApp: App {
                     }
                 }
                 .disabled(model.selectedSession == nil)
+
+                Divider()
+
+                // How many recently-visited sessions keep their ssh
+                // connections warm (green dot) after switching away.
+                Picker("Warm Connections", selection: Binding(
+                    get: { model.warmAttachmentCap },
+                    set: { model.warmAttachmentCap = $0 })) {
+                    ForEach(warmCapOptions, id: \.self) { cap in
+                        Text("\(cap) Session\(cap == 1 ? "" : "s")").tag(cap)
+                    }
+                }
             }
         }
     }

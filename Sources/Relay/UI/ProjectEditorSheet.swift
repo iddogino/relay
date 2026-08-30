@@ -9,17 +9,13 @@ struct ProjectEditorSheet: View {
     @State private var path: String = ""
     @State private var launchCommand: String = ""
     @State private var shutdownCommand: String = ""
+    /// The host the project lives on. Picked at creation; fixed afterwards
+    /// (a project's sessions live on its host — moving it is meaningless).
+    @State private var workspace: WorkspaceRef?
     @State private var validating = false
     @State private var validationError: String?
     @FocusState private var nameFocused: Bool
     @Environment(\.dismiss) private var dismiss
-
-    private var workspace: WorkspaceRef {
-        switch context.mode {
-        case .create(let workspace): return workspace
-        case .edit(let project): return project.workspace
-        }
-    }
 
     private var isEditing: Bool {
         if case .edit = context.mode { return true }
@@ -35,9 +31,17 @@ struct ProjectEditorSheet: View {
             Form {
                 TextField("Name", text: $name, prompt: Text("My iOS App"))
                     .focused($nameFocused)
-                LabeledContent("Remote") {
-                    Text(workspace.opaqueID)
-                        .foregroundStyle(.secondary)
+                if isEditing {
+                    LabeledContent("Host") {
+                        Text(workspace?.opaqueID ?? "")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Picker("Host", selection: $workspace) {
+                        ForEach(model.remotes) { remote in
+                            Text(remote.displayName).tag(Optional(remote.id))
+                        }
+                    }
                 }
                 TextField("Folder", text: $path, prompt: Text("~/code/my-app"))
                     .fontDesign(.monospaced)
@@ -119,7 +123,7 @@ struct ProjectEditorSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .disabled(validating || name.trimmingCharacters(in: .whitespaces).isEmpty || path.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(validating || workspace == nil || name.trimmingCharacters(in: .whitespaces).isEmpty || path.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             .padding(.top, 16)
         }
@@ -130,7 +134,11 @@ struct ProjectEditorSheet: View {
     }
 
     private func populate() {
-        if case .edit(let project) = context.mode {
+        switch context.mode {
+        case .create(let preselected):
+            workspace = preselected ?? model.remotes.first?.id
+        case .edit(let project):
+            workspace = project.workspace
             name = project.name
             path = project.pathInput
             launchCommand = project.launchCommand ?? ""
@@ -150,7 +158,8 @@ struct ProjectEditorSheet: View {
 
         var candidate: Project
         switch context.mode {
-        case .create(let workspace):
+        case .create:
+            guard let workspace else { return }
             candidate = Project(
                 name: trimmedName,
                 workspace: workspace,

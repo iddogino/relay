@@ -39,10 +39,11 @@ enum AppearancePreference: String, CaseIterable, Identifiable {
     }
 }
 
-/// Context for the project editor sheet: adding to a remote, or editing.
+/// Context for the project editor sheet: creating (optionally with a
+/// preselected host) or editing.
 struct ProjectEditorContext: Identifiable {
     enum Mode {
-        case create(workspace: WorkspaceRef)
+        case create(workspace: WorkspaceRef?)
         case edit(Project)
     }
     let id = UUID()
@@ -65,7 +66,18 @@ final class AppModel {
     private var attachmentPool: [SessionID: TerminalAttachmentController] = [:]
     /// Least-recently-visited first.
     private var warmOrder: [SessionID] = []
-    private static let warmAttachmentCap = 4
+    /// How many recently-visited sessions keep their connections warm.
+    /// Device-local preference (Session ▸ Warm Connections). Lowering it
+    /// evicts immediately, LRU-first; the selected session is never evicted.
+    var warmAttachmentCap: Int {
+        didSet {
+            guard warmAttachmentCap != oldValue else { return }
+            UserDefaults.standard.set(warmAttachmentCap, forKey: Self.warmAttachmentCapKey)
+            trimWarmPool()
+        }
+    }
+    static let warmAttachmentCapKey = "warmAttachmentCap"
+    private static let warmAttachmentCapDefault = 4
     /// Placeholder the detail view renders when nothing is selected.
     private let idleAttachment: TerminalAttachmentController
 
@@ -81,12 +93,13 @@ final class AppModel {
     private(set) var remotes: [WorkspaceDescriptor] = []
     private(set) var remotesLoaded = false
 
-    // Local configuration
+    // Local configuration. `projects` order is the sidebar order.
     private(set) var projects: [Project] = []
     private(set) var tombstones: [CleanupTombstone] = []
-    private(set) var hiddenWorkspaces: Set<WorkspaceRef> = []
-    /// Transient: when on, hidden remotes render (dimmed) so they can be unhidden.
-    var showHiddenRemotes = false
+    /// Drag-to-reorder overlay for session rows (see SessionOrdering).
+    private var sessionOrder: [SessionID] = []
+    /// Projects whose session rows are folded away in the sidebar.
+    private(set) var collapsedProjects: Set<ProjectID> = []
 
     // Remote-reconciled session lists
     private(set) var sessions: [ProjectID: [RemoteSession]] = [:]
@@ -117,6 +130,12 @@ final class AppModel {
         self.provider = provider
         self.store = store
         self.idleAttachment = TerminalAttachmentController(provider: provider)
+        // Clamped on read so a hand-edited default can't disable attachment
+        // (0/missing means unset) or leak connections without bound.
+        let storedCap = UserDefaults.standard.integer(forKey: Self.warmAttachmentCapKey)
+        self.warmAttachmentCap = storedCap == 0
+            ? Self.warmAttachmentCapDefault
+            : max(1, min(storedCap, 16))
 
         // When a session ends we keep its sidebar row until the user acts
         // (Remove From Sidebar / New Session) or a refresh reconciles it away,
@@ -184,7 +203,8 @@ final class AppModel {
             let state = try await store.load()
             projects = state.projects
             tombstones = state.tombstones
-            hiddenWorkspaces = state.hiddenWorkspaces
+            sessionOrder = state.sessionOrder
+            collapsedProjects = state.collapsedProjectIDs
             restoredSelection = state.lastSelectedSessionID
         } catch ProjectStoreError.corruptState(let backupPath) {
             alert = AppAlert(
@@ -234,53 +254,18 @@ final class AppModel {
         remotesLoaded = true
     }
 
-    /// Remotes to render: discovered ones, plus placeholders for projects
-    /// whose remote disappeared from SSH config (shown as Missing Remote).
-    /// User-hidden remotes are filtered out unless `showHiddenRemotes` is on.
-    var sidebarRemotes: [(descriptor: WorkspaceDescriptor, missing: Bool, hidden: Bool)] {
-        var rows: [(WorkspaceDescriptor, Bool, Bool)] = remotes.map {
-            ($0, false, hiddenWorkspaces.contains($0.id))
-        }
-        let known = Set(remotes.map(\.id))
-        for project in projects where !known.contains(project.workspace) {
-            if !rows.contains(where: { $0.0.id == project.workspace }) {
-                rows.append((
-                    WorkspaceDescriptor(
-                        id: project.workspace,
-                        displayName: project.workspace.opaqueID,
-                        providerID: project.workspace.provider),
-                    true,
-                    hiddenWorkspaces.contains(project.workspace)
-                ))
-            }
-        }
-        return rows.filter { !$0.2 || showHiddenRemotes }
+    /// True when the project's host no longer appears in SSH config. Only
+    /// meaningful once discovery has completed (before that, nothing is
+    /// "missing" — it just hasn't been found yet).
+    func isRemoteMissing(_ project: Project) -> Bool {
+        remotesLoaded && !remotes.contains { $0.id == project.workspace }
     }
 
-    var hasHiddenRemotes: Bool { !hiddenWorkspaces.isEmpty }
-
-    func hideRemote(_ workspace: WorkspaceRef) {
-        hiddenWorkspaces.insert(workspace)
-        // Hiding a remote hides its projects; drop any selection under it,
-        // plus any warm attachments to it (hidden rows own no connections).
-        if let project = selectedProject, project.workspace == workspace {
-            selectedSessionID = nil
+    func refreshAll() async {
+        await refreshRemotes()
+        for project in projects {
+            await refreshSessions(for: project)
         }
-        let projectIDs = Set(projects.filter { $0.workspace == workspace }.map(\.id))
-        for (id, controller) in attachmentPool
-        where controller.session.map({ projectIDs.contains($0.projectID) }) == true {
-            dropAttachment(for: id)
-        }
-        persist()
-    }
-
-    func showRemote(_ workspace: WorkspaceRef) {
-        hiddenWorkspaces.remove(workspace)
-        persist()
-    }
-
-    func projects(for workspace: WorkspaceRef) -> [Project] {
-        projects.filter { $0.workspace == workspace }
     }
 
     // MARK: Selection
@@ -342,7 +327,11 @@ final class AppModel {
         controller.setPresented(true)
         warmOrder.removeAll { $0 == session.id }
         warmOrder.append(session.id)
-        while warmOrder.count > Self.warmAttachmentCap {
+        trimWarmPool()
+    }
+
+    private func trimWarmPool() {
+        while warmOrder.count > warmAttachmentCap {
             guard let victim = warmOrder.first(where: { $0 != selectedSessionID }) else { break }
             dropAttachment(for: victim)
         }
@@ -373,6 +362,37 @@ final class AppModel {
         guard let controller = attachmentPool[sessionID] else { return nil }
         if case .idle = controller.phase { return nil }
         return controller.phase
+    }
+
+    // MARK: Host reachability
+
+    enum HostStatus {
+        case online, offline, unknown
+    }
+
+    /// Outcome of the most recent operation that dialed a host.
+    private struct HostContact {
+        var reachable: Bool
+        var at: Date
+    }
+
+    private var hostContact: [WorkspaceRef: HostContact] = [:]
+
+    private func noteHostContact(_ workspace: WorkspaceRef, ok: Bool) {
+        hostContact[workspace] = HostContact(reachable: ok, at: Date())
+    }
+
+    /// Whether the host is online, for the project row's dot. Evidence-based
+    /// rather than actively probed: a live attachment proves it, otherwise
+    /// the last contact's outcome (explicit refreshes and the 30s title
+    /// sweep both dial the host) decides. No contact yet means unknown.
+    func hostStatus(for workspace: WorkspaceRef) -> HostStatus {
+        for controller in attachmentPool.values
+        where controller.project?.workspace == workspace {
+            if case .attached = controller.phase { return .online }
+        }
+        guard let contact = hostContact[workspace] else { return .unknown }
+        return contact.reachable ? .online : .offline
     }
 
     /// Live surface title for any warm-attached session (selected or not);
@@ -426,19 +446,30 @@ final class AppModel {
         let epoch = sessionListEpoch[project.id, default: 0]
         do {
             let list = try await provider.listSessions(for: project)
+            noteHostContact(project.workspace, ok: true)
             guard sessionListEpoch[project.id, default: 0] == epoch else { return }
-            sessions[project.id] = list
+            let previousIDs = (sessions[project.id] ?? []).map(\.id)
+            sessions[project.id] = SessionOrdering.apply(order: sessionOrder, to: list)
             sessionErrors[project.id] = nil
+            let liveIDs = Set(list.map(\.id))
+            // Order entries for sessions that vanished remotely are dead;
+            // pruning here (where project membership is still known) keeps
+            // the overlay from accreting stale IDs.
+            let vanished = previousIDs.filter { !liveIDs.contains($0) }
+            if !vanished.isEmpty {
+                sessionOrder.removeAll { vanished.contains($0) }
+                persist()
+            }
             // Warm attachments for this project's vanished sessions have
             // nothing to reattach to; drop them (the selected one keeps its
             // controller so the "session ended" overlay can appear).
-            let liveIDs = Set(list.map(\.id))
             for id in warmOrder
             where id != selectedSessionID && !liveIDs.contains(id)
                 && attachmentPool[id]?.session?.projectID == project.id {
                 dropAttachment(for: id)
             }
         } catch {
+            noteHostContact(project.workspace, ok: false)
             sessionErrors[project.id] = error.localizedDescription
         }
     }
@@ -450,10 +481,18 @@ final class AppModel {
     private func refreshSessionTitles() async {
         guard NSApp.windows.contains(where: { $0.isVisible }) else { return }
         for project in projects {
-            guard let known = sessions[project.id], !known.isEmpty,
-                  !sessionsLoading.contains(project.id),
-                  let fresh = try? await provider.listSessions(for: project)
-            else { continue }
+            guard !sessionsLoading.contains(project.id), !isRemoteMissing(project) else { continue }
+            let fresh: [RemoteSession]
+            do {
+                fresh = try await provider.listSessions(for: project)
+                noteHostContact(project.workspace, ok: true)
+            } catch {
+                // The sweep doubles as the host-reachability heartbeat, so a
+                // failed dial is recorded, not just skipped.
+                noteHostContact(project.workspace, ok: false)
+                continue
+            }
+            guard let known = sessions[project.id], !known.isEmpty else { continue }
             let titles = Dictionary(fresh.map { ($0.id, $0.paneTitle) },
                                     uniquingKeysWith: { first, _ in first })
             guard var updated = sessions[project.id] else { continue }
@@ -471,8 +510,39 @@ final class AppModel {
     func noteCreatedSession(_ session: RemoteSession, project: Project) {
         bumpSessionEpoch(project.id)
         sessions[project.id, default: []].append(session)
+        // New sessions take the bottom slot of their project's list and stay
+        // there across refreshes.
+        sessionOrder.removeAll { $0 == session.id }
+        sessionOrder.append(session.id)
         selectedSessionID = session.id
         Task { await refreshSessions(for: project) }
+    }
+
+    func setProjectCollapsed(_ project: Project, collapsed: Bool) {
+        let changed = collapsed
+            ? collapsedProjects.insert(project.id).inserted
+            : collapsedProjects.remove(project.id) != nil
+        if changed { persist() }
+    }
+
+    // MARK: Sidebar ordering
+
+    func moveProjects(fromOffsets source: IndexSet, toOffset destination: Int) {
+        projects.move(fromOffsets: source, toOffset: destination)
+        persist()
+    }
+
+    func moveSessions(in projectID: ProjectID, fromOffsets source: IndexSet, toOffset destination: Int) {
+        guard var list = sessions[projectID] else { return }
+        list.move(fromOffsets: source, toOffset: destination)
+        sessions[projectID] = list
+        // Re-record the whole project's arrangement: the overlay is global,
+        // but only relative order within a project matters, so appending the
+        // project's IDs in their new order is sufficient and idempotent.
+        let moved = Set(list.map(\.id))
+        sessionOrder.removeAll { moved.contains($0) }
+        sessionOrder.append(contentsOf: list.map(\.id))
+        persist()
     }
 
     func archiveSession(_ session: RemoteSession) async {
@@ -488,6 +558,7 @@ final class AppModel {
             bumpSessionEpoch(project.id)
             sessions[project.id]?.removeAll { $0.id == session.id }
             tombstones.removeAll { $0.id == session.id }
+            sessionOrder.removeAll { $0 == session.id }
             persist()
             await refreshSessions(for: project)
         } catch let error as RuntimeProviderError {
@@ -496,6 +567,7 @@ final class AppModel {
                 bumpSessionEpoch(project.id)
                 sessions[project.id]?.removeAll { $0.id == session.id }
                 tombstones.removeAll { $0.id == session.id }
+                sessionOrder.removeAll { $0 == session.id }
                 tombstones.append(CleanupTombstone(
                     session: session,
                     projectID: project.id,
@@ -518,6 +590,8 @@ final class AppModel {
             try await provider.destroySession(session, project: project)
             bumpSessionEpoch(project.id)
             sessions[project.id]?.removeAll { $0.id == session.id }
+            sessionOrder.removeAll { $0 == session.id }
+            persist()
             await refreshSessions(for: project)
         } catch {
             alert = AppAlert(title: "Couldn't Kill Session", message: error.localizedDescription)
@@ -561,6 +635,8 @@ final class AppModel {
         }
         dropAttachment(for: session.id)
         noteSessionGone(session)
+        sessionOrder.removeAll { $0 == session.id }
+        persist()
     }
 
     // MARK: Projects
@@ -584,10 +660,12 @@ final class AppModel {
         for (id, controller) in attachmentPool where controller.session?.projectID == project.id {
             dropAttachment(for: id)
         }
+        let sessionIDs = Set((sessions[project.id] ?? []).map(\.id))
         projects.removeAll { $0.id == project.id }
         sessions[project.id] = nil
         sessionErrors[project.id] = nil
         tombstones.removeAll { $0.projectID == project.id }
+        sessionOrder.removeAll { sessionIDs.contains($0) }
         persist()
     }
 
@@ -600,8 +678,8 @@ final class AppModel {
             projects: projects,
             tombstones: tombstones,
             lastSelectedSessionID: selectedSessionID,
-            collapsedProjectIDs: [],
-            hiddenWorkspaces: hiddenWorkspaces
+            collapsedProjectIDs: collapsedProjects,
+            sessionOrder: sessionOrder
         )
         // Chain saves so an older snapshot can never overwrite a newer one.
         persistChain = Task { [store, previous = persistChain] in

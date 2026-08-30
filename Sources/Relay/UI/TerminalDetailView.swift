@@ -247,14 +247,14 @@ private struct EmptyDetailView: View {
             Label("Relay", systemImage: "terminal")
         } description: {
             if model.projects.isEmpty {
-                Text("Add a project to a remote to get started.")
+                Text("Add a project — a folder on one of your hosts — to get started.")
             } else {
                 Text("Select a session, or create one with ⌘N.")
             }
         } actions: {
-            if model.projects.isEmpty, let firstRemote = model.remotes.first {
+            if model.projects.isEmpty, !model.remotes.isEmpty {
                 Button("Add Project…") {
-                    model.projectEditor = ProjectEditorContext(mode: .create(workspace: firstRemote.id))
+                    model.projectEditor = ProjectEditorContext(mode: .create(workspace: nil))
                 }
                 .buttonStyle(.borderedProminent)
             } else if let project = model.selectedProject ?? model.projects.first {

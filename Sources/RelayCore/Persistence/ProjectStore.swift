@@ -27,19 +27,23 @@ public struct PersistedState: Codable, Sendable {
     public var collapsedProjectIDs: Set<ProjectID>
     /// Remotes the user chose to hide from the sidebar.
     public var hiddenWorkspaces: Set<WorkspaceRef>
+    /// The user's drag-to-reorder session arrangement (see SessionOrdering).
+    public var sessionOrder: [SessionID]
 
     public init(
         projects: [Project] = [],
         tombstones: [CleanupTombstone] = [],
         lastSelectedSessionID: SessionID? = nil,
         collapsedProjectIDs: Set<ProjectID> = [],
-        hiddenWorkspaces: Set<WorkspaceRef> = []
+        hiddenWorkspaces: Set<WorkspaceRef> = [],
+        sessionOrder: [SessionID] = []
     ) {
         self.projects = projects
         self.tombstones = tombstones
         self.lastSelectedSessionID = lastSelectedSessionID
         self.collapsedProjectIDs = collapsedProjectIDs
         self.hiddenWorkspaces = hiddenWorkspaces
+        self.sessionOrder = sessionOrder
     }
 
     // Every field decodes with a default so state files written by older
@@ -52,6 +56,7 @@ public struct PersistedState: Codable, Sendable {
         self.lastSelectedSessionID = try container.decodeIfPresent(SessionID.self, forKey: .lastSelectedSessionID)
         self.collapsedProjectIDs = try container.decodeIfPresent(Set<ProjectID>.self, forKey: .collapsedProjectIDs) ?? []
         self.hiddenWorkspaces = try container.decodeIfPresent(Set<WorkspaceRef>.self, forKey: .hiddenWorkspaces) ?? []
+        self.sessionOrder = try container.decodeIfPresent([SessionID].self, forKey: .sessionOrder) ?? []
     }
 }
 
