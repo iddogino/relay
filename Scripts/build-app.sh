@@ -44,8 +44,47 @@ if [ -d "$SHARE/terminfo" ]; then
   rsync -a --delete "$SHARE/terminfo" "$APP/Contents/Resources/"
 fi
 
-if [ -f "Resources/AppIcon.icns" ]; then
+# App icon. Resources/Relay.icon (Icon Composer) compiles into the layered
+# macOS 26+ icon — light/dark/tinted appearances — plus the flattened .icns
+# actool derives for older systems. actool understands .icon only from
+# Xcode 26: when the selected toolchain is older, try every installed
+# Xcode, and failing that ship the pre-rendered Resources/AppIcon.icns
+# (same artwork, flattened light appearance only).
+compile_icon() {
+  local out="$1" dev="${2:-}"
+  local -a run=(xcrun actool)
+  [ -n "$dev" ] && run=(env "DEVELOPER_DIR=$dev" xcrun actool)
+  "${run[@]}" \
+    --output-format human-readable-text \
+    --output-partial-info-plist "$out/icon-partial.plist" \
+    --app-icon Relay --development-region en --target-device mac \
+    --minimum-deployment-target 15.0 --platform macosx \
+    --compile "$out" Resources/Relay.icon >/dev/null 2>&1 &&
+    [ -f "$out/Assets.car" ] && [ -f "$out/Relay.icns" ]
+}
+
+ICON_OUT="build/icon-compile"
+rm -rf "$ICON_OUT" && mkdir -p "$ICON_OUT"
+ICON_COMPILED=0
+if [ -d "Resources/Relay.icon" ]; then
+  if compile_icon "$ICON_OUT"; then
+    ICON_COMPILED=1
+  else
+    for XCODE in $(ls -d /Applications/Xcode*.app 2>/dev/null | sort -rV); do
+      if compile_icon "$ICON_OUT" "$XCODE"; then ICON_COMPILED=1; break; fi
+    done
+  fi
+fi
+if [ "$ICON_COMPILED" = 1 ]; then
+  cp "$ICON_OUT/Assets.car" "$APP/Contents/Resources/Assets.car"
+  cp "$ICON_OUT/Relay.icns" "$APP/Contents/Resources/Relay.icns"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile Relay" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string Relay" "$APP/Contents/Info.plist" 2>/dev/null ||
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIconName Relay" "$APP/Contents/Info.plist"
+  echo "App icon: Relay.icon compiled (light/dark/tinted + icns fallback)"
+else
   cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+  echo "App icon: pre-rendered AppIcon.icns (no .icon-capable actool found)"
 fi
 
 # Embed Sparkle.framework (auto-updates). rsync preserves the framework's

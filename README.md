@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/icon.png" width="128" alt="Relay app icon">
+</p>
+
 # Relay
 
 [![CI](https://github.com/iddogino/relay/actions/workflows/ci.yml/badge.svg)](https://github.com/iddogino/relay/actions/workflows/ci.yml)
