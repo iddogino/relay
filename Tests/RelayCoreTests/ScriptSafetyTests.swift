@@ -193,6 +193,42 @@ struct ScriptSafetyTests {
         }
     }
 
+    @Test func previewResolveNeverExecutesHostileLinkText() async throws {
+        try await withSandbox { sandbox in
+            let pwnMarker = sandbox.dir.appendingPathComponent("pwned").path
+            let hostile = "/tmp/x\"; touch \(pwnMarker); echo \"$(touch \(pwnMarker))`touch \(pwnMarker)`"
+            let script = SSHTmuxScripts.resolvePreviewFile(
+                tmuxName: "rterm-0123456789abcdef",
+                linkPath: hostile,
+                knownTmuxPath: sandbox.fakeTmux.path
+            )
+            let result = try await runScript(script)
+            #expect(result.exitCode == 0, "stderr: \(result.stderr)")
+            // The hostile text is treated purely as a (nonexistent) filename.
+            #expect(result.markers()[SSHTmuxScripts.Marker.preview] == "missing")
+            #expect(!FileManager.default.fileExists(atPath: pwnMarker),
+                    "hostile link text executed shell code")
+        }
+    }
+
+    @Test func previewResolveReportsARealFile() async throws {
+        try await withSandbox { sandbox in
+            let file = sandbox.projectDir.appendingPathComponent("report's [v2].pdf")
+            try Data(repeating: 7, count: 1234).write(to: file)
+            let script = SSHTmuxScripts.resolvePreviewFile(
+                tmuxName: "rterm-0123456789abcdef",
+                linkPath: file.path,
+                knownTmuxPath: sandbox.fakeTmux.path
+            )
+            let result = try await runScript(script)
+            #expect(result.exitCode == 0, "stderr: \(result.stderr)")
+            let markers = result.markers()
+            #expect(markers[SSHTmuxScripts.Marker.preview] == "ok")
+            #expect(markers[SSHTmuxScripts.Marker.previewSize] == "1234")
+            #expect(markers[SSHTmuxScripts.Marker.previewPath]?.hasSuffix("report's [v2].pdf") == true)
+        }
+    }
+
     @Test func validateScriptResolvesCanonicalPath() async throws {
         try await withSandbox { sandbox in
             // Validation resolves the tmux on PATH; give it ours.

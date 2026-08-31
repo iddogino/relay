@@ -17,7 +17,10 @@ final class GhosttyRuntime {
 
     /// When set, terminal link clicks route here instead of opening
     /// directly — the app layer rewrites loopback URLs to the remote host.
-    var urlOpener: ((URL) -> Void)?
+    /// Receives the raw text of a clicked link. Ghostty's matcher covers
+    /// scheme URLs and bare file paths, so this is a string, not a URL —
+    /// classification happens in the app layer.
+    var urlOpener: ((String) -> Void)?
 
     private init() {
         // Ensure NSApp exists — this runs from App.init, before SwiftUI
@@ -207,16 +210,13 @@ final class GhosttyRuntime {
             let openURL = action.action.open_url
             guard openURL.url != nil, openURL.len > 0 else { return false }
             let buffer = UnsafeBufferPointer(start: openURL.url, count: Int(openURL.len))
-            guard let urlString = String(bytes: buffer.map { UInt8(bitPattern: $0) }, encoding: .utf8),
-                  let url = URL(string: urlString),
-                  let scheme = url.scheme?.lowercased(),
-                  ["http", "https", "mailto", "file"].contains(scheme)
+            guard let urlString = String(bytes: buffer.map { UInt8(bitPattern: $0) }, encoding: .utf8)
             else { return false }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     if let opener = GhosttyRuntime.shared.urlOpener {
-                        opener(url)
-                    } else {
+                        opener(urlString)
+                    } else if let url = URL(string: urlString) {
                         NSWorkspace.shared.open(url)
                     }
                 }

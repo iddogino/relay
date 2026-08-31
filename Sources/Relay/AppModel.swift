@@ -169,8 +169,8 @@ final class AppModel {
         timer.tolerance = 5
         titleRefreshTimer = timer
 
-        GhosttyRuntime.shared.urlOpener = { [weak self] url in
-            self?.openTerminalURL(url)
+        GhosttyRuntime.shared.urlOpener = { [weak self] text in
+            self?.openTerminalLink(text)
         }
     }
 
@@ -178,6 +178,22 @@ final class AppModel {
 
     /// Cache of alias → browser-usable host, resolved via `ssh -G`.
     private var resolvedLinkHosts: [String: String] = [:]
+
+    /// Dispatches a link clicked in the terminal: web URLs open in the
+    /// browser (loopback hosts rewritten to the remote), file-ish matches
+    /// are fetched from the session's machine and shown in Quick Look.
+    func openTerminalLink(_ text: String) {
+        switch TerminalLink.classify(text) {
+        case .web(let url):
+            openTerminalURL(url)
+        case .email(let url):
+            NSWorkspace.shared.open(url)
+        case .remoteFile(let path):
+            previewRemoteFile(path)
+        case nil:
+            break
+        }
+    }
 
     /// Opens a URL clicked in the terminal. Loopback URLs are rewritten to
     /// the attached session's remote host first — "listening on
@@ -199,6 +215,46 @@ final class AppModel {
                 resolvedLinkHosts[alias] = host
             }
             NSWorkspace.shared.open(LocalhostURLRewriter.rewrite(url, remoteHost: host) ?? url)
+        }
+    }
+
+    // MARK: Remote file preview
+
+    /// Transient status/error for a file-link preview fetch.
+    private(set) var previewNotice: String?
+    private var previewTask: Task<Void, Never>?
+    private var previewNoticeTask: Task<Void, Never>?
+
+    /// Fetches a file the user clicked in the terminal into the OS temp
+    /// area and shows it in Quick Look. One fetch at a time; repeat clicks
+    /// during a fetch are ignored.
+    func previewRemoteFile(_ path: String) {
+        guard previewTask == nil,
+              let session = selectedSession,
+              let project = projects.first(where: { $0.id == session.projectID }) else { return }
+        let name = (path as NSString).lastPathComponent
+        previewNoticeTask?.cancel()
+        previewNotice = "Fetching \u{201C}\(name)\u{201D} from \(project.workspace.opaqueID)…"
+        previewTask = Task { [provider] in
+            defer { self.previewTask = nil }
+            do {
+                let local = try await provider.fetchPreviewFile(
+                    linkPath: path, for: session, project: project)
+                self.previewNotice = nil
+                QuickLookPreviewer.shared.preview(local)
+            } catch {
+                self.showPreviewNotice(error.localizedDescription)
+            }
+        }
+    }
+
+    private func showPreviewNotice(_ message: String) {
+        previewNotice = message
+        previewNoticeTask?.cancel()
+        previewNoticeTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled else { return }
+            self.previewNotice = nil
         }
     }
 

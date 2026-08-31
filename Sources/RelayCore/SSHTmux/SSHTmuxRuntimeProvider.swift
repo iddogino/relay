@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// v1 runtime provider: existing SSH hosts + vanilla remote tmux.
@@ -387,6 +388,80 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             files: UnifiedDiffParser.parse(body),
             truncated: body.utf8.count >= SSHTmuxScripts.diffByteCap
         )
+    }
+
+    // MARK: File preview
+
+    public func fetchPreviewFile(linkPath: String, for session: RemoteSession, project: Project) async throws -> URL {
+        let alias = try self.alias(for: project)
+        guard !alias.contains(":") else {
+            throw RuntimeProviderError.invalidInput("SSH alias \"\(alias)\" can't be used as an scp source.")
+        }
+        guard TmuxNaming.isSafeSessionName(session.backendID) else {
+            throw RuntimeProviderError.invalidInput("Unsafe session identifier.")
+        }
+        guard !POSIXShellQuote.containsControlCharacters(linkPath) else {
+            throw RuntimeProviderError.invalidInput("The link contains control characters.")
+        }
+
+        let result = try await run(
+            alias: alias,
+            script: SSHTmuxScripts.resolvePreviewFile(
+                tmuxName: session.backendID,
+                linkPath: linkPath,
+                knownTmuxPath: knownTmuxPath(for: project))
+        )
+        guard result.exitCode == 0 else { throw mapFailure(alias: alias, result: result) }
+        let markers = result.markers()
+        let name = (linkPath as NSString).lastPathComponent
+        switch markers[SSHTmuxScripts.Marker.preview] {
+        case "ok":
+            break
+        case "dir":
+            throw RuntimeProviderError.operationFailed("\u{201C}\(name)\u{201D} is a folder — only files can be previewed.")
+        case "too_big":
+            let size = Int64(markers[SSHTmuxScripts.Marker.previewSize] ?? "") ?? 0
+            let label = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+            throw RuntimeProviderError.operationFailed("\u{201C}\(name)\u{201D} is \(label) — too large to preview.")
+        default:
+            throw RuntimeProviderError.operationFailed("\u{201C}\(name)\u{201D} doesn't exist (or isn't readable) on \(alias).")
+        }
+        guard let remotePath = markers[SSHTmuxScripts.Marker.previewPath], remotePath.hasPrefix("/") else {
+            throw RuntimeProviderError.operationFailed("Malformed preview response from \(alias).")
+        }
+
+        // Local landing spot: the OS temp area (periodically reclaimed by
+        // macOS), one directory per (host, remote path) so repeat previews
+        // of the same file reuse a stable location.
+        let digest = SHA256.hash(data: Data("\(alias)\n\(remotePath)".utf8))
+        let key = digest.map { String(format: "%02x", $0) }.joined().prefix(16)
+        var basename = (remotePath as NSString).lastPathComponent
+            .filter { !$0.unicodeScalars.allSatisfy(CharacterSet.controlCharacters.contains) }
+        if basename.isEmpty { basename = "file" }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("relay-preview")
+            .appendingPathComponent(String(key))
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent(basename)
+        let partial = directory.appendingPathComponent(".part-\(UUID().uuidString)")
+
+        // Always fetch fresh: sessions rewrite files constantly and staleness
+        // is worse than an extra transfer.
+        let scpResult = try await SSHCommandRunner.runProcess(
+            executable: "/usr/bin/scp",
+            arguments: ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--",
+                        "\(alias):\(remotePath)", partial.path],
+            stdin: nil,
+            timeout: .seconds(600)
+        )
+        guard scpResult.exitCode == 0 else {
+            try? FileManager.default.removeItem(at: partial)
+            throw RuntimeProviderError.operationFailed(
+                "Couldn't fetch \u{201C}\(name)\u{201D} from \(alias).\n\(Self.sanitizedStderr(scpResult.stderr))")
+        }
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: partial, to: destination)
+        return destination
     }
 
     // MARK: Internals

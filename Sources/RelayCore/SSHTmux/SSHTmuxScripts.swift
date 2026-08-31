@@ -22,6 +22,9 @@ enum SSHTmuxScripts {
         static let pullRequest = "RTERM_PR"
         /// Sentinel line separating markers from a raw diff body.
         static let diffBegin = "RTERM_DIFF_BEGIN"
+        static let preview = "RTERM_PREVIEW"
+        static let previewPath = "RTERM_PREVIEW_PATH"
+        static let previewSize = "RTERM_PREVIEW_SIZE"
     }
 
     /// Shell fragment that resolves a usable tmux binary into `$tmux_path`,
@@ -310,6 +313,49 @@ enum SSHTmuxScripts {
         [ -n "$base" ] && printf 'RTERM_GIT_BASE=%s\\n' "$base"
         printf 'RTERM_DIFF_BEGIN\\n'
         git -C "$p" diff --no-color --no-ext-diff "$mb" -- 2>/dev/null | head -c \(diffByteCap)
+        exit 0
+        """
+    }
+
+    // MARK: File preview
+
+    /// Byte cap for files fetched for preview.
+    static let previewByteCap = 209_715_200 // 200 MB
+
+    /// Resolves a clicked file link against the session pane's context and
+    /// reports whether it's fetchable: `~/` expands against $HOME, relative
+    /// paths against the pane's current directory, and the result must be a
+    /// readable regular file under the size cap. The link text is a single
+    /// quoted value — it never executes.
+    static func resolvePreviewFile(tmuxName: String, linkPath: String, knownTmuxPath: String?) -> String {
+        precondition(TmuxNaming.isSafeSessionName(tmuxName))
+        return """
+        set -u
+        \(tmuxPreamble(knownTmuxPath: knownTmuxPath))
+        raw=\(POSIXShellQuote.quote(linkPath))
+        case "$raw" in
+          /*) f="$raw" ;;
+          '~/'*) f="$HOME${raw#'~'}" ;;
+          *)
+            p=$("$tmux_path" display-message -p -t \(tmuxName) -F '#{pane_current_path}' 2>/dev/null) || p=""
+            [ -n "$p" ] || { printf 'RTERM_PREVIEW=missing\\n'; exit 0; }
+            f="$p/$raw"
+            ;;
+        esac
+        if [ -d "$f" ]; then printf 'RTERM_PREVIEW=dir\\n'; exit 0; fi
+        if [ ! -f "$f" ] || [ ! -r "$f" ]; then printf 'RTERM_PREVIEW=missing\\n'; exit 0; fi
+        size=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+        case "$size" in ''|*[!0-9]*) printf 'RTERM_PREVIEW=missing\\n'; exit 0 ;; esac
+        if [ "$size" -gt \(previewByteCap) ]; then
+          printf 'RTERM_PREVIEW=too_big\\n'
+          printf 'RTERM_PREVIEW_SIZE=%s\\n' "$size"
+          exit 0
+        fi
+        d=$(cd "$(dirname -- "$f")" 2>/dev/null && pwd -P) || { printf 'RTERM_PREVIEW=missing\\n'; exit 0; }
+        b=$(basename -- "$f")
+        printf 'RTERM_PREVIEW=ok\\n'
+        printf 'RTERM_PREVIEW_PATH=%s\\n' "$d/$b"
+        printf 'RTERM_PREVIEW_SIZE=%s\\n' "$size"
         exit 0
         """
     }

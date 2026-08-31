@@ -85,6 +85,13 @@ public protocol RuntimeProvider: Sendable {
     /// The session's full diff against the same base `gitState` uses, or
     /// nil when the session isn't in a git context.
     func gitDiff(for session: RemoteSession, project: Project) async throws -> SessionGitDiff?
+
+    /// Copies one file from the session's machine into a disposable local
+    /// location (the OS temp area, reclaimed automatically) and returns its
+    /// URL, for previewing a file link clicked in the terminal. `linkPath`
+    /// is the path as the terminal printed it — absolute, `~/`, or relative
+    /// to the session's current directory.
+    func fetchPreviewFile(linkPath: String, for session: RemoteSession, project: Project) async throws -> URL
 }
 
 /// A parsed session diff, ready to render.
@@ -111,6 +118,10 @@ extension RuntimeProvider {
     public func gitState(for session: RemoteSession, project: Project) async throws -> SessionGitState? { nil }
 
     public func gitDiff(for session: RemoteSession, project: Project) async throws -> SessionGitDiff? { nil }
+
+    public func fetchPreviewFile(linkPath: String, for session: RemoteSession, project: Project) async throws -> URL {
+        throw RuntimeProviderError.operationFailed("This provider can't preview remote files.")
+    }
 }
 
 public enum RuntimeProviderError: Error, Sendable, LocalizedError, Equatable {

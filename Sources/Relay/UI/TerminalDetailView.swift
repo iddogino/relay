@@ -229,6 +229,23 @@ private struct TerminalStage: View {
             EmptyView()
         }
 
+        if let notice = model.previewNotice {
+            VStack {
+                Spacer()
+                Text(notice)
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 480)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .shadow(radius: 10, y: 4)
+                    .padding(.bottom, 16)
+            }
+            .transition(.opacity)
+            .allowsHitTesting(false)
+        }
+
         if let notice = model.attachment.dropNotice {
             VStack {
                 Spacer()
