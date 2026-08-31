@@ -82,14 +82,17 @@ struct SidebarView: View {
             .menuIndicator(.hidden)
             .fixedSize()
             Button {
-                model.projectEditor = ProjectEditorContext(mode: .create(workspace: nil))
+                model.createSheetPresented = true
             } label: {
                 Image(systemName: "plus")
             }
             .buttonStyle(.borderless)
-            .disabled(model.remotes.isEmpty)
-            .help("Add a project")
+            .disabled(model.remotes.isEmpty && model.projects.isEmpty)
+            .help("New session or project")
         }
+        // Trailing inset chosen so the + sits on the project rows' status
+        // dot column below it.
+        .padding(.trailing, 10)
     }
 
     @ViewBuilder private var emptyState: some View {

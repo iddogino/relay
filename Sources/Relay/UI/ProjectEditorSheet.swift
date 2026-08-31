@@ -4,6 +4,9 @@ import RelayCore
 struct ProjectEditorSheet: View {
     @Bindable var model: AppModel
     let context: ProjectEditorContext
+    /// True when hosted inside another sheet (CreateSheet), which supplies
+    /// the chrome: title, outer padding, and width.
+    var embedded = false
 
     @State private var name: String = ""
     @State private var path: String = ""
@@ -24,9 +27,11 @@ struct ProjectEditorSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(isEditing ? "Project Settings" : "Add Project")
-                .font(.title3.weight(.semibold))
-                .padding(.bottom, 14)
+            if !embedded {
+                Text(isEditing ? "Project Settings" : "Add Project")
+                    .font(.title3.weight(.semibold))
+                    .padding(.bottom, 14)
+            }
 
             Form {
                 TextField("Name", text: $name, prompt: Text("My iOS App"))
@@ -127,8 +132,8 @@ struct ProjectEditorSheet: View {
             }
             .padding(.top, 16)
         }
-        .padding(20)
-        .frame(width: 480)
+        .padding(embedded ? 0 : 20)
+        .frame(width: embedded ? nil : 480)
         .onAppear(perform: populate)
         .task { nameFocused = true }
     }
@@ -193,19 +198,53 @@ struct ProjectEditorSheet: View {
 
 struct NewSessionSheet: View {
     @Bindable var model: AppModel
+    /// The default project (the picker's initial selection when shown).
     let project: Project
+    /// True when hosted inside another sheet (CreateSheet), which supplies
+    /// the chrome: title, outer padding, and width.
+    var embedded = false
+    /// Shows a project picker instead of pinning the passed project.
+    var allowsProjectChoice = false
 
     @State private var name = ""
     @State private var runLaunchCommand = true
     @State private var creating = false
     @State private var errorMessage: String?
+    @State private var chosenProjectID: ProjectID?
     @FocusState private var nameFocused: Bool
     @Environment(\.dismiss) private var dismiss
 
+    private var activeProject: Project {
+        guard allowsProjectChoice, let id = chosenProjectID,
+              let chosen = model.projects.first(where: { $0.id == id }) else { return project }
+        return chosen
+    }
+
+    /// Project names can repeat across hosts; disambiguate only when they do.
+    private func pickerLabel(for candidate: Project) -> String {
+        let collides = model.projects.contains {
+            $0.id != candidate.id && $0.name == candidate.name
+        }
+        return collides ? "\(candidate.name) — \(candidate.workspace.opaqueID)" : candidate.name
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("New Session")
-                .font(.title3.weight(.semibold))
+            if !embedded {
+                Text("New Session")
+                    .font(.title3.weight(.semibold))
+            }
+
+            if allowsProjectChoice {
+                Picker("Project", selection: $chosenProjectID) {
+                    ForEach(model.projects) { candidate in
+                        Text(pickerLabel(for: candidate)).tag(Optional(candidate.id))
+                    }
+                }
+                .onAppear {
+                    if chosenProjectID == nil { chosenProjectID = project.id }
+                }
+            }
 
             TextField("Name", text: $name, prompt: Text("fix auth flow"))
                 .textFieldStyle(.roundedBorder)
@@ -214,7 +253,7 @@ struct NewSessionSheet: View {
                 .task { nameFocused = true }
 
             VStack(alignment: .leading, spacing: 4) {
-                if let launch = project.launchCommand, !launch.isEmpty {
+                if let launch = activeProject.launchCommand, !launch.isEmpty {
                     Toggle(isOn: $runLaunchCommand) {
                         Text("Run the project launch command")
                             .font(.caption)
@@ -230,12 +269,12 @@ struct NewSessionSheet: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
                     } else {
-                        Text("Opens a plain shell in \(project.pathInput) on \(project.workspace.opaqueID).")
+                        Text("Opens a plain shell in \(activeProject.pathInput) on \(activeProject.workspace.opaqueID).")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("Opens a shell in \(project.pathInput) on \(project.workspace.opaqueID).")
+                    Text("Opens a shell in \(activeProject.pathInput) on \(activeProject.workspace.opaqueID).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -271,26 +310,81 @@ struct NewSessionSheet: View {
                 .disabled(creating || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(20)
-        .frame(width: 400)
+        .padding(embedded ? 0 : 20)
+        .frame(width: embedded ? nil : 400)
     }
 
     private func create() async {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !creating else { return }
+        let target = activeProject
         creating = true
         defer { creating = false }
         errorMessage = nil
         do {
             let session = try await model.provider.createSession(
-                for: project,
+                for: target,
                 request: NewSessionRequest(displayName: trimmed, runLaunchCommand: runLaunchCommand))
             await MainActor.run {
-                model.noteCreatedSession(session, project: project)
+                model.noteCreatedSession(session, project: target)
                 dismiss()
             }
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+/// The sidebar +'s sheet: one entry point for both kinds of creation, a
+/// segmented switch between a new session (the common reach) and a new
+/// project. Both segments embed the standalone sheets so the logic lives
+/// in one place.
+struct CreateSheet: View {
+    @Bindable var model: AppModel
+
+    private enum Tab {
+        case session, project
+    }
+
+    @State private var tab: Tab
+
+    init(model: AppModel) {
+        self.model = model
+        // No projects yet → session creation is impossible; lead with project.
+        _tab = State(initialValue: model.projects.isEmpty ? .project : .session)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Picker("Create", selection: $tab) {
+                Text("New Session").tag(Tab.session)
+                Text("New Project").tag(Tab.project)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            switch tab {
+            case .session:
+                if let defaultProject = model.selectedProject ?? model.projects.first {
+                    NewSessionSheet(
+                        model: model,
+                        project: defaultProject,
+                        embedded: true,
+                        allowsProjectChoice: true)
+                } else {
+                    Text("Add a project first — sessions live inside projects.")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 20)
+                }
+            case .project:
+                ProjectEditorSheet(
+                    model: model,
+                    context: ProjectEditorContext(mode: .create(workspace: nil)),
+                    embedded: true)
+            }
+        }
+        .padding(20)
+        .frame(width: 480)
     }
 }

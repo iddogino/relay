@@ -121,6 +121,8 @@ final class AppModel {
     var alert: AppAlert?
     var projectEditor: ProjectEditorContext?
     var newSessionProject: Project?
+    /// The sidebar's + sheet: create a session or a project, user's choice.
+    var createSheetPresented = false
     var confirmKillSession: RemoteSession?
     var confirmRemoveProject: Project?
 

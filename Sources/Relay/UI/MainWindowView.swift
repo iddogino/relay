@@ -28,6 +28,9 @@ struct MainWindowView: View {
         .sheet(item: $model.newSessionProject) { project in
             NewSessionSheet(model: model, project: project)
         }
+        .sheet(isPresented: $model.createSheetPresented) {
+            CreateSheet(model: model)
+        }
         .confirmationDialog(
             "Kill Session?",
             isPresented: killDialogPresented,
