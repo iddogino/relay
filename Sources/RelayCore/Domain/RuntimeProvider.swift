@@ -76,12 +76,41 @@ public protocol RuntimeProvider: Sendable {
     /// Implementations must be cancellation-aware (a cancelled upload throws
     /// `CancellationError` and leaves no half-referenced paths behind).
     func uploadFiles(localPaths: [String], for session: RemoteSession, project: Project) async throws -> [String]
+
+    /// Git state of the session's working directory (diff counts, branch,
+    /// linked PR), or nil when the session isn't in a git context. Optional:
+    /// the default implementation reports no git context.
+    func gitState(for session: RemoteSession, project: Project) async throws -> SessionGitState?
+
+    /// The session's full diff against the same base `gitState` uses, or
+    /// nil when the session isn't in a git context.
+    func gitDiff(for session: RemoteSession, project: Project) async throws -> SessionGitDiff?
+}
+
+/// A parsed session diff, ready to render.
+public struct SessionGitDiff: Sendable, Equatable {
+    public var branch: String
+    public var baseRef: String?
+    public var files: [DiffFile]
+    /// True when the provider capped a very large diff body.
+    public var truncated: Bool
+
+    public init(branch: String, baseRef: String? = nil, files: [DiffFile] = [], truncated: Bool = false) {
+        self.branch = branch
+        self.baseRef = baseRef
+        self.files = files
+        self.truncated = truncated
+    }
 }
 
 extension RuntimeProvider {
     public func uploadFiles(localPaths: [String], for session: RemoteSession, project: Project) async throws -> [String] {
         throw RuntimeProviderError.operationFailed("This provider does not support file uploads.")
     }
+
+    public func gitState(for session: RemoteSession, project: Project) async throws -> SessionGitState? { nil }
+
+    public func gitDiff(for session: RemoteSession, project: Project) async throws -> SessionGitDiff? { nil }
 }
 
 public enum RuntimeProviderError: Error, Sendable, LocalizedError, Equatable {

@@ -12,6 +12,16 @@ enum SSHTmuxScripts {
         static let tmuxVersion = "RTERM_TMUX_VERSION"
         static let resolvedPath = "RTERM_PWD"
         static let exists = "RTERM_EXISTS"
+        static let git = "RTERM_GIT"
+        static let gitBranch = "RTERM_GIT_BRANCH"
+        static let gitBase = "RTERM_GIT_BASE"
+        static let gitAdditions = "RTERM_GIT_ADD"
+        static let gitDeletions = "RTERM_GIT_DEL"
+        static let gitFiles = "RTERM_GIT_FILES"
+        static let gitOrigin = "RTERM_GIT_ORIGIN"
+        static let pullRequest = "RTERM_PR"
+        /// Sentinel line separating markers from a raw diff body.
+        static let diffBegin = "RTERM_DIFF_BEGIN"
     }
 
     /// Shell fragment that resolves a usable tmux binary into `$tmux_path`,
@@ -212,6 +222,95 @@ enum SSHTmuxScripts {
           exit 25
         fi
         printf 'RTERM_STATUS=ok\\n'
+        """
+    }
+
+    // MARK: Git state
+
+    /// Byte cap for diff bodies sent back over the wire; huge diffs arrive
+    /// truncated (the UI says so) instead of stalling the connection.
+    static let diffByteCap = 400_000
+
+    /// Shared fragment: resolve the session pane's current directory into
+    /// `$p` and its git comparison context into `$branch` / `$base` / `$mb`
+    /// (merge-base with the default remote branch, falling back to plain
+    /// HEAD). Prints `RTERM_GIT=none` and exits 0 when the pane isn't in a
+    /// git work tree — not-a-repo is a state, not an error.
+    ///
+    /// NOTE: `display-message -t` silently rejects the `=` exact-match
+    /// prefix, so the session name is targeted plain (generated names are
+    /// fixed-length and cannot prefix-collide).
+    private static func gitContextFragment(tmuxName: String) -> String {
+        precondition(TmuxNaming.isSafeSessionName(tmuxName))
+        return """
+        p=$("$tmux_path" display-message -p -t \(tmuxName) -F '#{pane_current_path}' 2>/dev/null) || p=""
+        [ -n "$p" ] && [ -d "$p" ] || { printf 'RTERM_GIT=none\\n'; exit 0; }
+        command -v git >/dev/null 2>&1 || { printf 'RTERM_GIT=none\\n'; exit 0; }
+        git -C "$p" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { printf 'RTERM_GIT=none\\n'; exit 0; }
+        branch=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=HEAD
+        base=""
+        for cand in "$(git -C "$p" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" origin/main origin/master; do
+          [ -n "$cand" ] || continue
+          if git -C "$p" rev-parse -q --verify "$cand^{commit}" >/dev/null 2>&1; then base="$cand"; break; fi
+        done
+        mb=""
+        [ -n "$base" ] && mb=$(git -C "$p" merge-base HEAD "$base" 2>/dev/null) || mb=""
+        [ -n "$mb" ] || { mb=HEAD; base=""; }
+        """
+    }
+
+    /// Reports the session pane's git state: branch, comparison base,
+    /// aggregate diff counts, origin URL — and, when the branch's pushed sha
+    /// matches an advertised `refs/pull/N/head`, the PR number. The PR probe
+    /// is pure git protocol using the remote host's own credentials; no
+    /// tokens or API involvement.
+    static func gitState(tmuxName: String, knownTmuxPath: String?) -> String {
+        """
+        set -u
+        \(tmuxPreamble(knownTmuxPath: knownTmuxPath))
+        \(gitContextFragment(tmuxName: tmuxName))
+        printf 'RTERM_GIT=ok\\n'
+        printf 'RTERM_GIT_BRANCH=%s\\n' "$branch"
+        [ -n "$base" ] && printf 'RTERM_GIT_BASE=%s\\n' "$base"
+        git -C "$p" diff --numstat "$mb" -- 2>/dev/null | awk '
+          $1 ~ /^[0-9]+$/ { a += $1 }
+          $2 ~ /^[0-9]+$/ { d += $2 }
+          { f += 1 }
+          END { printf "RTERM_GIT_ADD=%d\\nRTERM_GIT_DEL=%d\\nRTERM_GIT_FILES=%d\\n", a, d, f }
+        '
+        origin=$(git -C "$p" remote get-url origin 2>/dev/null) || origin=""
+        [ -n "$origin" ] && printf 'RTERM_GIT_ORIGIN=%s\\n' "$origin"
+        case "$origin" in
+          *github.com*)
+            refs=$(git -C "$p" ls-remote -q origin 'refs/pull/*/head' "refs/heads/$branch" 2>/dev/null) || refs=""
+            if [ -n "$refs" ]; then
+              sha=$(printf '%s\\n' "$refs" | awk -v r="refs/heads/$branch" '$2 == r { print $1; exit }')
+              [ -n "$sha" ] || sha=$(git -C "$p" rev-parse HEAD 2>/dev/null) || sha=""
+              if [ -n "$sha" ]; then
+                pr=$(printf '%s\\n' "$refs" | awk -v s="$sha" '$1 == s && index($2, "refs/pull/") == 1 { split($2, parts, "/"); if (parts[4] == "head") { print parts[3]; exit } }')
+                [ -n "$pr" ] && printf 'RTERM_PR=%s\\n' "$pr"
+              fi
+            fi
+          ;;
+        esac
+        exit 0
+        """
+    }
+
+    /// Emits the session pane's unified diff against the same base
+    /// `gitState` uses: markers first, then the `RTERM_DIFF_BEGIN` sentinel,
+    /// then the raw (uncolored) diff body, capped at `diffByteCap` bytes.
+    static func gitDiff(tmuxName: String, knownTmuxPath: String?) -> String {
+        """
+        set -u
+        \(tmuxPreamble(knownTmuxPath: knownTmuxPath))
+        \(gitContextFragment(tmuxName: tmuxName))
+        printf 'RTERM_GIT=ok\\n'
+        printf 'RTERM_GIT_BRANCH=%s\\n' "$branch"
+        [ -n "$base" ] && printf 'RTERM_GIT_BASE=%s\\n' "$base"
+        printf 'RTERM_DIFF_BEGIN\\n'
+        git -C "$p" diff --no-color --no-ext-diff "$mb" -- 2>/dev/null | head -c \(diffByteCap)
+        exit 0
         """
     }
 

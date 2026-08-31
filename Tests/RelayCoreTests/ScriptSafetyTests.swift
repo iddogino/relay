@@ -172,6 +172,27 @@ struct ScriptSafetyTests {
         }
     }
 
+    @Test func gitStateScriptHandlesMissingPaneAsNotARepo() async throws {
+        try await withSandbox { sandbox in
+            let script = SSHTmuxScripts.gitState(
+                tmuxName: "rterm-0123456789abcdef",
+                knownTmuxPath: sandbox.fakeTmux.path
+            )
+            let result = try await runScript(script)
+            // The fake tmux prints nothing for display-message, so the
+            // script must take the graceful "no git context" exit.
+            #expect(result.exitCode == 0, "stderr: \(result.stderr)")
+            #expect(result.markers()[SSHTmuxScripts.Marker.git] == "none")
+
+            // Regression guard: display-message targets the plain session
+            // name — tmux silently rejects the `=` exact-match prefix here.
+            let calls = try sandbox.invocations()
+            let display = try #require(calls.first { $0.first == "display-message" })
+            #expect(display.contains("rterm-0123456789abcdef"))
+            #expect(!display.contains("=rterm-0123456789abcdef"))
+        }
+    }
+
     @Test func validateScriptResolvesCanonicalPath() async throws {
         try await withSandbox { sandbox in
             // Validation resolves the tmux on PATH; give it ours.

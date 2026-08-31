@@ -158,7 +158,11 @@ final class AppModel {
         // titles in periodically while a window is showing. Title-only: this
         // sweep never adds or removes rows.
         let timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in await self?.refreshSessionTitles() }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.refreshGitState()
+                await self.refreshSessionTitles()
+            }
         }
         timer.tolerance = 5
         titleRefreshTimer = timer
@@ -302,6 +306,11 @@ final class AppModel {
                 return
             }
             self.warmAttachment(for: session, project: project)
+            self.refreshGitState()
+            if self.diffTrayVisible {
+                self.diff = nil
+                Task { await self.loadDiff() }
+            }
             self.persist()
         }
     }
@@ -516,6 +525,58 @@ final class AppModel {
         sessionOrder.append(session.id)
         selectedSessionID = session.id
         Task { await refreshSessions(for: project) }
+    }
+
+    // MARK: Git state & diff tray
+
+    /// Latest git snapshot per session (cached so revisits render
+    /// immediately). Only the selected session is actively refreshed.
+    private(set) var gitStates: [SessionID: SessionGitState] = [:]
+    private var gitStateTask: Task<Void, Never>?
+
+    var diffTrayVisible = false {
+        didSet {
+            guard diffTrayVisible, !oldValue else { return }
+            Task { await self.loadDiff() }
+        }
+    }
+    private(set) var diff: SessionGitDiff?
+    private(set) var diffLoading = false
+    private(set) var diffError: String?
+
+    func gitState(for sessionID: SessionID) -> SessionGitState? {
+        gitStates[sessionID]
+    }
+
+    /// Refreshes the selected session's git snapshot. Serialized (a slow
+    /// probe never stacks); results for a stale selection still land in the
+    /// cache but never clobber another session's entry.
+    func refreshGitState() {
+        guard gitStateTask == nil,
+              let session = selectedSession,
+              let project = projects.first(where: { $0.id == session.projectID }),
+              !isRemoteMissing(project) else { return }
+        gitStateTask = Task { [provider] in
+            defer { self.gitStateTask = nil }
+            guard let state = try? await provider.gitState(for: session, project: project) else {
+                self.gitStates[session.id] = nil
+                return
+            }
+            self.gitStates[session.id] = state
+        }
+    }
+
+    func loadDiff() async {
+        guard let session = selectedSession,
+              let project = projects.first(where: { $0.id == session.projectID }) else { return }
+        diffLoading = true
+        diffError = nil
+        defer { diffLoading = false }
+        do {
+            diff = try await provider.gitDiff(for: session, project: project)
+        } catch {
+            diffError = error.localizedDescription
+        }
     }
 
     func setProjectCollapsed(_ project: Project, collapsed: Bool) {

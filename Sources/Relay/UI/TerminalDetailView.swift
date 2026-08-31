@@ -22,15 +22,38 @@ struct TerminalDetailView: View {
         }
         .toolbar {
             ToolbarItemGroup {
-                if let project = model.selectedProject {
-                    Button {
-                        model.newSessionProject = project
-                    } label: {
-                        Label("New Session", systemImage: "plus")
+                if let session = model.selectedSession,
+                   let git = model.gitState(for: session.id) {
+                    if let pr = git.pullRequest {
+                        Button {
+                            NSWorkspace.shared.open(pr.url)
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "arrow.triangle.pull")
+                                Text("#\(pr.number)")
+                                    .font(.system(size: 11, design: .monospaced))
+                            }
+                        }
+                        .help("Open pull request #\(pr.number) on GitHub")
                     }
-                    .help("New session in \(project.name) (⌘N)")
+                    Button {
+                        model.diffTrayVisible.toggle()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text("+\(git.additions)")
+                                .foregroundStyle(.green)
+                            Text("−\(git.deletions)")
+                                .foregroundStyle(.red)
+                        }
+                        .font(.system(size: 11, design: .monospaced))
+                    }
+                    .help("Changes on \(git.branch)\(git.baseRef.map { " vs \($0)" } ?? "") — click for the diff")
                 }
             }
+        }
+        .inspector(isPresented: $model.diffTrayVisible) {
+            DiffTrayView(model: model)
+                .inspectorColumnWidth(min: 340, ideal: 480, max: 900)
         }
     }
 }

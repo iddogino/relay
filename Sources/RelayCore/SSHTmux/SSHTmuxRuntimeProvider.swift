@@ -317,6 +317,78 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         try await killManagedSession(session, project: project, alias: alias)
     }
 
+    // MARK: Git state
+
+    public func gitState(for session: RemoteSession, project: Project) async throws -> SessionGitState? {
+        let alias = try self.alias(for: project)
+        guard TmuxNaming.isSafeSessionName(session.backendID) else {
+            throw RuntimeProviderError.invalidInput("Unsafe session identifier.")
+        }
+        let result = try await run(
+            alias: alias,
+            script: SSHTmuxScripts.gitState(tmuxName: session.backendID, knownTmuxPath: knownTmuxPath(for: project))
+        )
+        guard result.exitCode == 0 else { throw mapFailure(alias: alias, result: result) }
+        let markers = result.markers()
+        guard markers[SSHTmuxScripts.Marker.git] == "ok" else { return nil }
+
+        var pullRequest: PullRequestRef?
+        if let prString = markers[SSHTmuxScripts.Marker.pullRequest],
+           let number = Int(prString), number > 0,
+           let origin = markers[SSHTmuxScripts.Marker.gitOrigin],
+           let url = GitHubRemote.pullRequestURL(origin: origin, number: number) {
+            pullRequest = PullRequestRef(number: number, url: url)
+        }
+        return SessionGitState(
+            branch: markers[SSHTmuxScripts.Marker.gitBranch] ?? "HEAD",
+            baseRef: markers[SSHTmuxScripts.Marker.gitBase],
+            additions: Int(markers[SSHTmuxScripts.Marker.gitAdditions] ?? "") ?? 0,
+            deletions: Int(markers[SSHTmuxScripts.Marker.gitDeletions] ?? "") ?? 0,
+            filesChanged: Int(markers[SSHTmuxScripts.Marker.gitFiles] ?? "") ?? 0,
+            pullRequest: pullRequest
+        )
+    }
+
+    public func gitDiff(for session: RemoteSession, project: Project) async throws -> SessionGitDiff? {
+        let alias = try self.alias(for: project)
+        guard TmuxNaming.isSafeSessionName(session.backendID) else {
+            throw RuntimeProviderError.invalidInput("Unsafe session identifier.")
+        }
+        let result: SSHCommandRunner.CommandResult
+        do {
+            result = try await runner.runScript(
+                alias: alias,
+                script: SSHTmuxScripts.gitDiff(tmuxName: session.backendID, knownTmuxPath: knownTmuxPath(for: project)),
+                timeout: .seconds(60)
+            )
+        } catch SSHCommandRunner.RunnerError.timedOut {
+            throw RuntimeProviderError.workspaceUnreachable(workspace: alias, detail: "Connection timed out.")
+        } catch let error as SSHCommandRunner.RunnerError {
+            throw RuntimeProviderError.operationFailed("Couldn't start ssh: \(error)")
+        }
+        guard result.exitCode == 0 else { throw mapFailure(alias: alias, result: result) }
+
+        // Markers come before the sentinel; everything after it is the raw
+        // diff body (which may itself contain RTERM-looking lines, hence the
+        // split rather than markers()).
+        let sentinel = SSHTmuxScripts.Marker.diffBegin + "\n"
+        guard let sentinelRange = result.stdout.range(of: sentinel) else {
+            guard result.markers()[SSHTmuxScripts.Marker.git] == "ok" else { return nil }
+            throw RuntimeProviderError.operationFailed("Malformed diff response from \(alias).")
+        }
+        let head = String(result.stdout[..<sentinelRange.lowerBound])
+        let headMarkers = SSHCommandRunner.CommandResult(
+            exitCode: 0, stdout: head, stderr: "").markers()
+        guard headMarkers[SSHTmuxScripts.Marker.git] == "ok" else { return nil }
+        let body = String(result.stdout[sentinelRange.upperBound...])
+        return SessionGitDiff(
+            branch: headMarkers[SSHTmuxScripts.Marker.gitBranch] ?? "HEAD",
+            baseRef: headMarkers[SSHTmuxScripts.Marker.gitBase],
+            files: UnifiedDiffParser.parse(body),
+            truncated: body.utf8.count >= SSHTmuxScripts.diffByteCap
+        )
+    }
+
     // MARK: Internals
 
     private func killManagedSession(_ session: RemoteSession, project: Project, alias: String) async throws {
