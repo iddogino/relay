@@ -52,42 +52,54 @@ struct ProjectEditorSheet: View {
                     .fontDesign(.monospaced)
 
                 Section {
-                    TextField("Launch command", text: $launchCommand, prompt: Text("claude"), axis: .vertical)
-                        .lineLimit(1...4)
-                        .fontDesign(.monospaced)
                     LabeledContent("") {
                         Menu {
                             Section("Claude Code") {
                                 Button("claude") {
-                                    launchCommand = "claude"
+                                    applyPreset(launch: "claude", cleanup: nil)
                                 }
                                 Button("claude in a new worktree") {
-                                    launchCommand = #"claude --worktree="$RTERM_SESSION_SLUG""#
+                                    // claude --worktree=NAME puts the tree at
+                                    // .claude/worktrees/NAME on a LOCKED
+                                    // branch named worktree-NAME (verified
+                                    // empirically), hence the unlock.
+                                    applyPreset(
+                                        launch: #"claude --worktree="$RTERM_SESSION_SLUG""#,
+                                        cleanup: #"git worktree unlock ".claude/worktrees/$RTERM_SESSION_SLUG" 2>/dev/null; git worktree remove ".claude/worktrees/$RTERM_SESSION_SLUG" && git branch -d "worktree-$RTERM_SESSION_SLUG""#)
                                 }
                             }
-                            Section("Codex") {
-                                Button("codex") {
-                                    launchCommand = "codex"
+                            ForEach(Self.wrapperAgents, id: \.command) { agent in
+                                Section(agent.name) {
+                                    Button(agent.command) {
+                                        applyPreset(launch: agent.command, cleanup: nil)
+                                    }
+                                    Button("\(agent.command) in a new worktree") {
+                                        applyPreset(
+                                            launch: Self.worktreeLaunch(running: agent.command),
+                                            cleanup: Self.worktreeCleanup)
+                                    }
                                 }
                             }
                             Section("Git worktree") {
                                 Button("worktree + shell (with cleanup)") {
-                                    launchCommand = #"git worktree add ".worktrees/$RTERM_SESSION_SLUG" && cd ".worktrees/$RTERM_SESSION_SLUG" && exec "$SHELL""#
-                                    if shutdownCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                        shutdownCommand = #"git worktree remove ".worktrees/$RTERM_SESSION_SLUG" && git branch -d "$RTERM_SESSION_SLUG""#
-                                    }
+                                    applyPreset(
+                                        launch: Self.worktreeLaunch(running: #""$SHELL""#),
+                                        cleanup: Self.worktreeCleanup)
                                 }
                             }
                         } label: {
                             Label("Presets", systemImage: "sparkles")
-                                .font(.caption)
+                                .frame(maxWidth: .infinity)
                         }
-                        .controlSize(.small)
-                        .fixedSize()
                     }
-                    TextField("Shutdown command", text: $shutdownCommand, prompt: Text("optional"), axis: .vertical)
-                        .lineLimit(1...4)
-                        .fontDesign(.monospaced)
+                    .padding(.top, 12)
+                    .padding(.bottom, 6)
+                    LabeledContent("Launch command") {
+                        CommandEditor(text: $launchCommand, prompt: "claude")
+                    }
+                    LabeledContent("Shutdown command") {
+                        CommandEditor(text: $shutdownCommand, prompt: "optional")
+                    }
                 } footer: {
                     Text("The launch command starts each new session; the shutdown command runs when a session is archived. Both run in the project folder with RTERM_* variables set — including $RTERM_SESSION_SLUG, the session name slugified for branch/folder names.")
                         .font(.caption)
@@ -136,6 +148,33 @@ struct ProjectEditorSheet: View {
         .frame(width: embedded ? nil : 480)
         .onAppear(perform: populate)
         .task { nameFocused = true }
+    }
+
+    /// Agents without a native worktree flag get the generic git-worktree
+    /// wrapper.
+    private static let wrapperAgents: [(name: String, command: String)] = [
+        ("Codex", "codex"),
+        ("Pi", "pi"),
+        ("OpenCode", "opencode"),
+    ]
+
+    /// Launch: fresh worktree named after the session, run `command` in it.
+    /// `git worktree add` with a plain path creates a branch named after its
+    /// basename — the slug — which is what the cleanup deletes.
+    private static func worktreeLaunch(running command: String) -> String {
+        #"git worktree add ".worktrees/$RTERM_SESSION_SLUG" && cd ".worktrees/$RTERM_SESSION_SLUG" && exec "# + command
+    }
+
+    private static let worktreeCleanup =
+        #"git worktree remove ".worktrees/$RTERM_SESSION_SLUG" && git branch -d "$RTERM_SESSION_SLUG""#
+
+    /// Presets always set the launch command; the cleanup only fills an
+    /// empty shutdown field (never clobbers something the user wrote).
+    private func applyPreset(launch: String, cleanup: String?) {
+        launchCommand = launch
+        if let cleanup, shutdownCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            shutdownCommand = cleanup
+        }
     }
 
     private func populate() {
@@ -193,6 +232,36 @@ struct ProjectEditorSheet: View {
         } catch {
             validationError = error.localizedDescription
         }
+    }
+}
+
+/// Multi-line command input: a bordered TextEditor that wraps long
+/// commands. (TextField's vertical axis doesn't reflow reliably on macOS —
+/// long presets were clipping to one line.)
+private struct CommandEditor: View {
+    @Binding var text: String
+    let prompt: String
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            TextEditor(text: $text)
+                .font(.system(size: 12, design: .monospaced))
+                .autocorrectionDisabled()
+                .scrollContentBackground(.hidden)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 3)
+            if text.isEmpty {
+                Text(prompt)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(height: 56)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary, lineWidth: 1))
     }
 }
 
