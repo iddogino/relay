@@ -30,6 +30,9 @@ public struct TmuxDiscoveredSession: Sendable, Equatable {
     public let sessionID: SessionID
     public let displayName: String
     public let createdAt: Date
+    /// The `RTERM_SESSION_SLUG` the session was launched with (stored as
+    /// `@rterm_slug`). nil for sessions created before slugs were recorded.
+    public let launchSlug: String?
     /// The active pane's title (set by OSC escape sequences — e.g. Claude
     /// Code's "✳ task" status). nil when unset (tmux defaults it to the
     /// remote hostname, which carries no information).
@@ -52,6 +55,7 @@ public enum TmuxSessionCodec {
             "#{@rterm_session_id}",
             "#{@rterm_session_name_b64}",
             "#{@rterm_created_at}",
+            "#{@rterm_slug}",
             "#{host}",
             "#{pane_title}",
         ].joined(separator: String(fieldSeparator))
@@ -71,7 +75,7 @@ public enum TmuxSessionCodec {
     public static func parse(line: String) -> TmuxDiscoveredSession? {
         let fields = line.split(separator: fieldSeparator, omittingEmptySubsequences: false)
             .map(String.init)
-        guard fields.count >= 8 else { return nil }
+        guard fields.count >= 9 else { return nil }
         let tmuxName = fields[0]
         guard TmuxNaming.isSafeSessionName(tmuxName) else { return nil }
         guard fields[1] == schemaVersion else { return nil }
@@ -81,11 +85,17 @@ public enum TmuxSessionCodec {
               let createdAtEpoch = TimeInterval(fields[5])
         else { return nil }
 
+        // The launch slug ends up in shell environments (cleanup hooks), so
+        // only a well-formed one is adopted; a mangled value degrades to
+        // "not recorded" rather than poisoning the session row.
+        let slug = fields[6]
+        let launchSlug = isSafeSlug(slug) ? slug : nil
+
         // Everything past the host field is the pane title verbatim (it may
         // contain the separator). tmux defaults an untouched pane's title to
         // the server hostname — that is noise, not a status.
-        let host = fields[6]
-        let title = fields[7...].joined(separator: String(fieldSeparator))
+        let host = fields[7]
+        let title = fields[8...].joined(separator: String(fieldSeparator))
             .trimmingCharacters(in: .whitespaces)
 
         return TmuxDiscoveredSession(
@@ -94,7 +104,17 @@ public enum TmuxSessionCodec {
             sessionID: SessionID(uuid: sessionUUID),
             displayName: displayName,
             createdAt: Date(timeIntervalSince1970: createdAtEpoch),
+            launchSlug: launchSlug,
             paneTitle: (title.isEmpty || title == host) ? nil : title
         )
+    }
+
+    /// The shape `SessionSlug.make` produces: lowercase ASCII letters,
+    /// digits, and dashes.
+    public static func isSafeSlug(_ slug: String) -> Bool {
+        guard !slug.isEmpty, slug.count <= 64 else { return false }
+        return slug.allSatisfy { char in
+            char.isASCII && ((char.isLetter && char.isLowercase) || char.isNumber || char == "-")
+        }
     }
 }

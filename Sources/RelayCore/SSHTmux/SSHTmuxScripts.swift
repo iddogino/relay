@@ -228,6 +228,45 @@ enum SSHTmuxScripts {
         """
     }
 
+    // MARK: Rename
+
+    /// Rewrites the session's display-name metadata
+    /// (`@rterm_session_name_b64`). The tmux session name — the stable
+    /// backend ID — never changes. Before the name changes, `@rterm_slug`
+    /// is backfilled (if absent) with the slug of the CURRENT name, so a
+    /// session created before slugs were recorded keeps a cleanup-correct
+    /// slug across its first rename. NOTE: `set-option -t` rejects the `=`
+    /// exact-match prefix (same silent trap as display-message), so the
+    /// target is the plain name; `has-session` does take `=`.
+    static func renameSession(
+        tmuxName: String,
+        displayNameB64: String,
+        fallbackSlug: String,
+        knownTmuxPath: String?
+    ) -> String {
+        precondition(TmuxNaming.isSafeSessionName(tmuxName))
+        return """
+        set -u
+        \(tmuxPreamble(knownTmuxPath: knownTmuxPath))
+        if ! "$tmux_path" has-session -t =\(tmuxName) 2>/dev/null; then
+          printf 'RTERM_STATUS=not_found\\n'
+          exit 24
+        fi
+        slug=$("$tmux_path" show-options -qv -t \(tmuxName) @rterm_slug 2>/dev/null) || slug=""
+        if [ -z "$slug" ]; then
+          if ! "$tmux_path" set-option -t \(tmuxName) @rterm_slug \(POSIXShellQuote.quote(fallbackSlug)); then
+            printf 'RTERM_STATUS=rename_failed\\n'
+            exit 25
+          fi
+        fi
+        if ! "$tmux_path" set-option -t \(tmuxName) @rterm_session_name_b64 \(POSIXShellQuote.quote(displayNameB64)); then
+          printf 'RTERM_STATUS=rename_failed\\n'
+          exit 25
+        fi
+        printf 'RTERM_STATUS=ok\\n'
+        """
+    }
+
     // MARK: Git state
 
     /// Byte cap for diff bodies sent back over the wire; huge diffs arrive

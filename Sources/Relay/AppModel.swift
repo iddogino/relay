@@ -138,12 +138,14 @@ final class AppModel {
         self.warmAttachmentCap = storedCap == 0
             ? Self.warmAttachmentCapDefault
             : max(1, min(storedCap, 16))
+        self.gitHubClientID = UserDefaults.standard.string(forKey: Self.gitHubClientIDKey) ?? ""
 
         // When a session ends we keep its sidebar row until the user acts
         // (Remove From Sidebar / New Session) or a refresh reconciles it away,
         // so the "session ended" state is visible rather than vanishing.
 
         Task { await self.bootstrap() }
+        Task { await self.recheckGitHubAuth() }
 
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
@@ -155,6 +157,25 @@ final class AppModel {
             }
         }
 
+        // ⌘-held tracking for the sidebar's ⌘1–⌘9 badges. Local monitors
+        // run on the main thread; the resign observer clears a stuck flag
+        // when the release lands in another app (⌘-Tab away).
+        NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            MainActor.assumeIsolated {
+                self?.commandKeyHeld = event.modifierFlags.contains(.command)
+            }
+            return event
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.commandKeyHeld = false
+            }
+        }
+
         // Detached sessions keep reporting status through their pane titles
         // (tmux tracks OSC titles server-side), so the sidebar merges fresh
         // titles in periodically while a window is showing. Title-only: this
@@ -163,6 +184,7 @@ final class AppModel {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.refreshGitState()
+                self.refreshPRStatus()
                 await self.refreshSessionTitles()
             }
         }
@@ -618,9 +640,15 @@ final class AppModel {
             defer { self.gitStateTask = nil }
             guard let state = try? await provider.gitState(for: session, project: project) else {
                 self.gitStates[session.id] = nil
+                self.prStatuses[session.id] = nil
                 return
             }
             self.gitStates[session.id] = state
+            if state.pullRequest == nil {
+                self.prStatuses[session.id] = nil
+            } else {
+                self.refreshPRStatus()
+            }
         }
     }
 
@@ -637,11 +665,209 @@ final class AppModel {
         }
     }
 
+    // MARK: GitHub connection & PR status
+
+    /// Whether the app can talk to the GitHub API (powers the PR badge).
+    /// Resolved at launch and on demand: the local gh CLI's token when
+    /// present, else a device-flow token from the keychain — either way
+    /// validated with a live `/user` call before claiming "connected".
+    private(set) var gitHub: GitHubConnection = .checking
+    /// The validated token, held only in memory (the keychain / gh keyring
+    /// stay the durable homes).
+    private var gitHubToken: String?
+    var gitHubLoginPresented = false
+    private(set) var gitHubLogin: GitHubLoginProgress?
+    private var gitHubLoginTask: Task<Void, Never>?
+
+    /// OAuth app client ID for the device-flow login. Public identifier,
+    /// not a secret — lives in UserDefaults.
+    var gitHubClientID: String = "" {
+        didSet {
+            guard gitHubClientID != oldValue else { return }
+            UserDefaults.standard.set(gitHubClientID, forKey: Self.gitHubClientIDKey)
+        }
+    }
+    static let gitHubClientIDKey = "githubOAuthClientID"
+
+    private(set) var prStatuses: [SessionID: PullRequestStatus] = [:]
+    private var prStatusTask: Task<Void, Never>?
+
+    func prStatus(for sessionID: SessionID) -> PullRequestStatus? {
+        prStatuses[sessionID]
+    }
+
+    func recheckGitHubAuth() async {
+        gitHub = .checking
+        gitHubToken = nil
+        var lastFailure: GitHubConnection?
+        if let cliToken = await GHCLI.token() {
+            let outcome = await validatedConnection(token: cliToken, method: .cli)
+            if outcome.isConnected {
+                gitHub = outcome
+                refreshPRStatus()
+                return
+            }
+            lastFailure = outcome
+        }
+        if let stored = GitHubTokenStore.load() {
+            let outcome = await validatedConnection(token: stored, method: .device)
+            if outcome.isConnected {
+                gitHub = outcome
+                refreshPRStatus()
+                return
+            }
+            lastFailure = outcome
+        }
+        gitHub = lastFailure ?? .notConnected
+    }
+
+    private func validatedConnection(
+        token: String,
+        method: GitHubAuthMethod
+    ) async -> GitHubConnection {
+        do {
+            let login = try await GitHubAPIClient(token: token).viewerLogin()
+            gitHubToken = token
+            return .connected(method: method, login: login)
+        } catch GitHubAPIClient.APIError.unauthorized {
+            let source = method == .cli ? "the gh CLI's token" : "the saved GitHub token"
+            return .failed("GitHub rejected \(source).")
+        } catch {
+            return .failed("Couldn't reach GitHub — check the connection and retry.")
+        }
+    }
+
+    /// Starts the device flow with the configured client ID and polls until
+    /// GitHub authorizes (token → keychain), the code expires, or the user
+    /// closes the sheet.
+    func beginGitHubLogin() {
+        let clientID = gitHubClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clientID.isEmpty else {
+            gitHubLogin = .failed("Enter the OAuth app's Client ID first.")
+            return
+        }
+        gitHubClientID = clientID
+        gitHubLoginTask?.cancel()
+        gitHubLogin = .requesting
+        gitHubLoginTask = Task {
+            do {
+                let flow = GitHubDeviceFlow()
+                let auth = try await flow.begin(clientID: clientID)
+                self.gitHubLogin = .waiting(
+                    userCode: auth.userCode,
+                    verificationURL: auth.verificationURL)
+                var interval = auth.interval
+                let deadline = ContinuousClock.now + .seconds(auth.expiresIn)
+                while !Task.isCancelled {
+                    try await Task.sleep(for: .seconds(interval))
+                    guard ContinuousClock.now < deadline else {
+                        self.gitHubLogin = .failed("The code expired before it was entered. Try again.")
+                        return
+                    }
+                    switch try await flow.poll(
+                        clientID: clientID,
+                        deviceCode: auth.deviceCode,
+                        currentInterval: interval
+                    ) {
+                    case .authorized(let token):
+                        GitHubTokenStore.save(token)
+                        self.gitHub = await self.validatedConnection(token: token, method: .device)
+                        self.gitHubLogin = nil
+                        self.gitHubLoginPresented = false
+                        self.refreshPRStatus()
+                        return
+                    case .pending(let retryAfter):
+                        interval = retryAfter
+                    case .denied:
+                        self.gitHubLogin = .failed("Authorization was denied on GitHub.")
+                        return
+                    case .expired:
+                        self.gitHubLogin = .failed("The code expired before it was entered. Try again.")
+                        return
+                    }
+                }
+            } catch is CancellationError {
+                // Sheet closed; nothing to show.
+            } catch let GitHubDeviceFlow.FlowError.badResponse(message) {
+                self.gitHubLogin = .failed(message)
+            } catch {
+                self.gitHubLogin = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    func cancelGitHubLogin() {
+        gitHubLoginTask?.cancel()
+        gitHubLoginTask = nil
+        gitHubLogin = nil
+    }
+
+    /// Removes the device-flow token. A logged-in gh CLI will reconnect on
+    /// the recheck — that credential belongs to gh, not to Relay.
+    func signOutGitHub() {
+        GitHubTokenStore.delete()
+        gitHubToken = nil
+        prStatuses = [:]
+        Task { await recheckGitHubAuth() }
+    }
+
+    /// Refreshes the selected session's PR status via the GitHub API.
+    /// Serialized like `refreshGitState`; needs a connection and a detected
+    /// PR. Transient failures keep the last status; a 401 flips the app
+    /// into the auth-error state (a dead token reveals itself by failing).
+    func refreshPRStatus() {
+        guard prStatusTask == nil,
+              case .connected = gitHub, let token = gitHubToken,
+              let session = selectedSession,
+              let pr = gitStates[session.id]?.pullRequest,
+              let coords = GitHubRemote.pullCoordinates(from: pr.url) else { return }
+        prStatusTask = Task {
+            defer { prStatusTask = nil }
+            do {
+                let status = try await GitHubAPIClient(token: token).pullStatus(
+                    owner: coords.owner, repo: coords.repo, number: coords.number)
+                self.prStatuses[session.id] = status
+            } catch GitHubAPIClient.APIError.unauthorized {
+                self.gitHubToken = nil
+                self.gitHub = .failed("GitHub rejected the stored credentials — recheck or log in again.")
+            } catch {
+                // Offline / rate-limited: keep showing the last known status.
+            }
+        }
+    }
+
     func setProjectCollapsed(_ project: Project, collapsed: Bool) {
         let changed = collapsed
             ? collapsedProjects.insert(project.id).inserted
             : collapsedProjects.remove(project.id) != nil
         if changed { persist() }
+    }
+
+    // MARK: Session shortcuts (⌘1–⌘9)
+
+    /// True while the command key is down — the sidebar shows ⌘N badges.
+    private(set) var commandKeyHeld = false
+
+    /// Sessions in sidebar display order (project order × per-project
+    /// session order): the ⌘1–⌘9 tab order. Only VISIBLE rows count —
+    /// collapsing a project hands its numbers to the rows below (matches
+    /// what the ⌘-held badges show).
+    var shortcutOrderedSessions: [RemoteSession] {
+        projects
+            .filter { !collapsedProjects.contains($0.id) }
+            .flatMap { sessions[$0.id] ?? [] }
+    }
+
+    func shortcutNumber(for sessionID: SessionID) -> Int? {
+        guard let index = shortcutOrderedSessions.prefix(9)
+            .firstIndex(where: { $0.id == sessionID }) else { return nil }
+        return index + 1
+    }
+
+    func selectSession(number: Int) {
+        let ordered = shortcutOrderedSessions
+        guard (1...9).contains(number), number <= ordered.count else { return }
+        selectedSessionID = ordered[number - 1].id
     }
 
     // MARK: Sidebar ordering
@@ -662,6 +888,40 @@ final class AppModel {
         sessionOrder.removeAll { moved.contains($0) }
         sessionOrder.append(contentsOf: list.map(\.id))
         persist()
+    }
+
+    /// Renames a session in place (sidebar edit). Metadata-only on the
+    /// remote — the backend session ID never changes, so attachments and
+    /// selection are untouched. Invalid/unchanged names are a silent no-op
+    /// (the row just snaps back, Finder-style).
+    func renameSession(_ session: RemoteSession, to rawName: String) async {
+        guard let project = projects.first(where: { $0.id == session.projectID }),
+              case .success(let name) = SessionNameValidator.validate(rawName),
+              name != session.displayName else { return }
+        do {
+            try await provider.renameSession(session, to: name, project: project)
+            // Reflect immediately; the next refresh re-reads the same value
+            // from the remote metadata.
+            if var list = sessions[project.id],
+               let index = list.firstIndex(where: { $0.id == session.id }) {
+                let old = list[index]
+                list[index] = RemoteSession(
+                    id: old.id,
+                    projectID: old.projectID,
+                    displayName: name,
+                    createdAt: old.createdAt,
+                    backendID: old.backendID,
+                    // The launch slug survives renames; a pre-slug session
+                    // just had its slug backfilled by the rename script, so
+                    // the old computed value is still the right one.
+                    launchSlug: old.launchSlug
+                        ?? SessionSlug.make(displayName: old.displayName, sessionID: old.id),
+                    paneTitle: old.paneTitle)
+                sessions[project.id] = list
+            }
+        } catch {
+            alert = AppAlert(title: "Couldn't Rename Session", message: error.localizedDescription)
+        }
     }
 
     func archiveSession(_ session: RemoteSession) async {

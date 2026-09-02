@@ -266,9 +266,30 @@ private struct SessionsErrorRow: View {
     }
 }
 
+/// The ⌘N hint shown at a session row's trailing edge while ⌘ is held —
+/// the row's tab number for ⌘1–⌘9 switching.
+private struct ShortcutKeyBadge: View {
+    let number: Int
+
+    var body: some View {
+        Text("⌘\(number)")
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1.5)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(.quaternary.opacity(0.6)))
+    }
+}
+
 private struct SessionRow: View {
     @Bindable var model: AppModel
     let session: RemoteSession
+
+    @State private var isEditingName = false
+    @State private var draftName = ""
+    @FocusState private var nameFieldFocused: Bool
 
     private var isSelected: Bool { model.selectedSessionID == session.id }
     private var isArchiving: Bool { model.archivingSessions.contains(session.id) }
@@ -293,6 +314,20 @@ private struct SessionRow: View {
         model.liveTitle(for: session.id) ?? session.paneTitle
     }
 
+    private func beginRename() {
+        draftName = session.displayName
+        isEditingName = true
+    }
+
+    /// Ends editing; an empty or unchanged draft just snaps back.
+    private func commitRename() {
+        guard isEditingName else { return }
+        isEditingName = false
+        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != session.displayName else { return }
+        Task { await model.renameSession(session, to: name) }
+    }
+
     var body: some View {
         GridRow {
             Circle()
@@ -300,8 +335,29 @@ private struct SessionRow: View {
                 .frame(width: 7, height: 7)
         } content: {
             VStack(alignment: .leading, spacing: 1) {
-                Text(session.displayName)
-                    .lineLimit(1)
+                if isEditingName {
+                    TextField("Session Name", text: $draftName)
+                        .textFieldStyle(.plain)
+                        .focused($nameFieldFocused)
+                        .onSubmit { commitRename() }
+                        .onExitCommand { isEditingName = false }
+                        .onAppear { nameFieldFocused = true }
+                        // Click-away unfocuses → commit, Finder-style.
+                        .onChange(of: nameFieldFocused) { _, focused in
+                            if !focused { commitRename() }
+                        }
+                } else if isSelected {
+                    // Finder-style: clicking the name of the already-selected
+                    // row begins the rename. The gesture is scoped to the
+                    // text only — a row-level gesture would swallow the
+                    // mouse-down the List needs to start a row drag.
+                    Text(session.displayName)
+                        .lineLimit(1)
+                        .onTapGesture { beginRename() }
+                } else {
+                    Text(session.displayName)
+                        .lineLimit(1)
+                }
                 if let statusTitle, statusTitle != session.displayName {
                     Text(statusTitle)
                         .font(.caption)
@@ -313,10 +369,16 @@ private struct SessionRow: View {
             Spacer()
             if isArchiving {
                 ProgressView().controlSize(.mini)
+            } else if model.commandKeyHeld, let number = model.shortcutNumber(for: session.id) {
+                ShortcutKeyBadge(number: number)
             }
         }
         .opacity(isArchiving ? 0.5 : 1)
         .contextMenu {
+            Button("Rename") {
+                beginRename()
+            }
+            .disabled(isArchiving)
             Button("Disconnect") {
                 model.disconnectSession(session)
             }

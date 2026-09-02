@@ -39,10 +39,11 @@ struct TmuxCodecTests {
         sessionID: String = UUID().uuidString,
         nameB64: String = TmuxSessionCodec.encodeDisplayName("my session"),
         createdAt: String = "1724800000",
+        slug: String = "my-session",
         host: String = "remote-box.local",
         paneTitle: String = "✳ fixing auth flow"
     ) -> String {
-        [name, schema, projectID, sessionID, nameB64, createdAt, host, paneTitle]
+        [name, schema, projectID, sessionID, nameB64, createdAt, slug, host, paneTitle]
             .joined(separator: "\t")
     }
 
@@ -62,7 +63,20 @@ struct TmuxCodecTests {
         #expect(parsed.projectID == ProjectID(uuid: projectUUID))
         #expect(parsed.displayName == "my session")
         #expect(parsed.createdAt == Date(timeIntervalSince1970: 1_724_800_000))
+        #expect(parsed.launchSlug == "my-session")
         #expect(parsed.paneTitle == "✳ fixing auth flow")
+    }
+
+    @Test func slugDegradesToNilInsteadOfPoisoning() throws {
+        // Sessions created before slugs were recorded render the field empty.
+        let absent = try #require(TmuxSessionCodec.parse(line: makeLine(slug: "")))
+        #expect(absent.launchSlug == nil)
+        // The slug lands in cleanup-hook shell environments — a mangled
+        // value degrades to "not recorded", never adopted.
+        let hostile = try #require(TmuxSessionCodec.parse(line: makeLine(slug: "$(rm -rf ~)")))
+        #expect(hostile.launchSlug == nil)
+        let uppercase = try #require(TmuxSessionCodec.parse(line: makeLine(slug: "Not-A-Slug")))
+        #expect(uppercase.launchSlug == nil)
     }
 
     @Test func paneTitleNoiseBecomesNil() throws {
@@ -95,7 +109,7 @@ struct TmuxCodecTests {
         #expect(TmuxSessionCodec.parse(line: makeLine(sessionID: "nope")) == nil)
         #expect(TmuxSessionCodec.parse(line: makeLine(nameB64: "!!! not base64 !!!")) == nil)
         #expect(TmuxSessionCodec.parse(line: makeLine(createdAt: "not-a-number")) == nil)
-        // Too few fields (a line in the pre-title format is not adopted).
+        // Too few fields (a line in an older query format is not adopted).
         let short = ["rterm-2f8a17d9d71e4dbe", "1", UUID().uuidString, UUID().uuidString,
                      TmuxSessionCodec.encodeDisplayName("x"), "123"].joined(separator: "\t")
         #expect(TmuxSessionCodec.parse(line: short) == nil)
@@ -105,7 +119,8 @@ struct TmuxCodecTests {
         // A session not created by the app (name without our prefix) is never
         // adopted even if it happens to carry look-alike fields.
         let line = ["users-own-session", "1", UUID().uuidString, UUID().uuidString,
-                    TmuxSessionCodec.encodeDisplayName("x"), "123", "h", "t"].joined(separator: "\t")
+                    TmuxSessionCodec.encodeDisplayName("x"), "123", "x-slug", "h", "t"]
+            .joined(separator: "\t")
         #expect(TmuxSessionCodec.parse(line: line) == nil)
     }
 }

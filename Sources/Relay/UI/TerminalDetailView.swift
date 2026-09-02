@@ -25,16 +25,7 @@ struct TerminalDetailView: View {
                 if let session = model.selectedSession,
                    let git = model.gitState(for: session.id) {
                     if let pr = git.pullRequest {
-                        Button {
-                            NSWorkspace.shared.open(pr.url)
-                        } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: "arrow.triangle.pull")
-                                Text("#\(pr.number)")
-                                    .font(.system(size: 11, design: .monospaced))
-                            }
-                        }
-                        .help("Open pull request #\(pr.number) on GitHub")
+                        PRBadge(model: model, sessionID: session.id, pr: pr)
                     }
                     Button {
                         model.diffTrayVisible.toggle()

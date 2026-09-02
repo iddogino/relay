@@ -119,6 +119,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                     displayName: discovered.displayName,
                     createdAt: discovered.createdAt,
                     backendID: discovered.tmuxName,
+                    launchSlug: discovered.launchSlug,
                     paneTitle: discovered.paneTitle
                 )
             }
@@ -137,12 +138,17 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         let tmuxName = TmuxNaming.generateSessionName()
         let createdAt = Date()
 
+        // The slug is remembered as metadata because the launch environment
+        // bakes it into paths (worktree presets): cleanup must reuse the
+        // launch-time value even if the session is later renamed.
+        let slug = SessionSlug.make(displayName: displayName, sessionID: sessionID)
         var metadata: [(String, String)] = [
             ("@rterm_schema", TmuxSessionCodec.schemaVersion),
             ("@rterm_project_id", project.id.uuid.uuidString),
             ("@rterm_session_id", sessionID.uuid.uuidString),
             ("@rterm_session_name_b64", TmuxSessionCodec.encodeDisplayName(displayName)),
             ("@rterm_created_at", String(Int(createdAt.timeIntervalSince1970))),
+            ("@rterm_slug", slug),
         ]
         for (key, value) in request.extraMetadata.sorted(by: { $0.key < $1.key }) {
             guard key.hasPrefix("@"),
@@ -154,7 +160,6 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             metadata.append((key, value))
         }
 
-        let slug = SessionSlug.make(displayName: displayName, sessionID: sessionID)
         let context = SSHTmuxScripts.CreateContext(
             tmuxName: tmuxName,
             windowName: slug,
@@ -198,7 +203,8 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             projectID: project.id,
             displayName: displayName,
             createdAt: createdAt,
-            backendID: tmuxName
+            backendID: tmuxName,
+            launchSlug: slug
         )
     }
 
@@ -282,7 +288,10 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                 ("RTERM_PROJECT_PATH", project.resolvedPath),
                 ("RTERM_SESSION_ID", session.id.uuid.uuidString),
                 ("RTERM_SESSION_NAME", session.displayName),
-                ("RTERM_SESSION_SLUG", SessionSlug.make(displayName: session.displayName, sessionID: session.id)),
+                // Launch-time slug when recorded — a renamed session must
+                // clean up the paths it actually created.
+                ("RTERM_SESSION_SLUG", session.launchSlug
+                    ?? SessionSlug.make(displayName: session.displayName, sessionID: session.id)),
                 ("RTERM_REMOTE", alias),
                 ("RTERM_SHUTDOWN_REASON", "archive"),
             ]
@@ -316,6 +325,34 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
     public func destroySession(_ session: RemoteSession, project: Project) async throws {
         let alias = try self.alias(for: project)
         try await killManagedSession(session, project: project, alias: alias)
+    }
+
+    public func renameSession(_ session: RemoteSession, to name: String, project: Project) async throws {
+        let alias = try self.alias(for: project)
+        guard TmuxNaming.isSafeSessionName(session.backendID) else {
+            throw RuntimeProviderError.invalidInput("Unsafe session identifier.")
+        }
+        let validated = try SessionNameValidator.validate(name).get()
+        // If the remote never recorded a launch slug, the current (pre-
+        // rename) name is still the launch name — its slug is backfilled so
+        // cleanup keeps targeting the paths the session actually created.
+        let fallbackSlug = session.launchSlug
+            ?? SessionSlug.make(displayName: session.displayName, sessionID: session.id)
+        let result = try await run(
+            alias: alias,
+            script: SSHTmuxScripts.renameSession(
+                tmuxName: session.backendID,
+                displayNameB64: TmuxSessionCodec.encodeDisplayName(validated),
+                fallbackSlug: fallbackSlug,
+                knownTmuxPath: knownTmuxPath(for: project))
+        )
+        let status = result.markers()[SSHTmuxScripts.Marker.status]
+        if status == "not_found" {
+            throw RuntimeProviderError.sessionNotFound(workspace: alias)
+        }
+        guard result.exitCode == 0, status == "ok" else {
+            throw mapFailure(alias: alias, result: result)
+        }
     }
 
     // MARK: Git state

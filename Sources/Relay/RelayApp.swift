@@ -65,6 +65,26 @@ struct RelayApp: App {
                 }
             }
             CommandMenu("Session") {
+                // Tab-style switching: sessions in sidebar order. The menu
+                // is what registers ⌘1–⌘9 app-wide (the terminal surface
+                // hands ⌘-equivalents to the main menu first).
+                Menu("Switch to Session") {
+                    let ordered = Array(model.shortcutOrderedSessions.prefix(9))
+                    if ordered.isEmpty {
+                        Text("No Sessions")
+                    }
+                    ForEach(Array(ordered.enumerated()), id: \.element.id) { index, session in
+                        Button(sessionMenuLabel(session)) {
+                            model.selectSession(number: index + 1)
+                        }
+                        .keyboardShortcut(
+                            KeyEquivalent(Character("\(index + 1)")),
+                            modifiers: .command)
+                    }
+                }
+
+                Divider()
+
                 Button("Archive Session…") {
                     if let session = model.selectedSession {
                         Task { await model.archiveSession(session) }
@@ -99,6 +119,45 @@ struct RelayApp: App {
                     }
                 }
             }
+            CommandMenu("GitHub") {
+                // Disabled status line: where PR badges get their API access.
+                Text(gitHubStatusLine)
+                Divider()
+                if case .connected(.device, _) = model.gitHub {
+                    Button("Sign Out of GitHub") {
+                        model.signOutGitHub()
+                    }
+                } else {
+                    Button("Log In to GitHub…") {
+                        model.gitHubLoginPresented = true
+                    }
+                }
+                Button("Recheck Connection") {
+                    Task { await model.recheckGitHubAuth() }
+                }
+            }
+        }
+    }
+
+    private func sessionMenuLabel(_ session: RemoteSession) -> String {
+        guard let project = model.projects.first(where: { $0.id == session.projectID }) else {
+            return session.displayName
+        }
+        return "\(project.name) / \(session.displayName)"
+    }
+
+    private var gitHubStatusLine: String {
+        switch model.gitHub {
+        case .checking:
+            return "Status: Checking…"
+        case .connected(.cli, let login):
+            return "Status: Connected via gh CLI (@\(login))"
+        case .connected(.device, let login):
+            return "Status: Connected (@\(login))"
+        case .notConnected:
+            return "Status: Not Connected"
+        case .failed:
+            return "Status: Connection Error"
         }
     }
 }

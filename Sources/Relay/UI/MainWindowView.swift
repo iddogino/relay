@@ -31,6 +31,9 @@ struct MainWindowView: View {
         .sheet(isPresented: $model.createSheetPresented) {
             CreateSheet(model: model)
         }
+        .sheet(isPresented: $model.gitHubLoginPresented) {
+            GitHubLoginSheet(model: model)
+        }
         .confirmationDialog(
             "Kill Session?",
             isPresented: killDialogPresented,

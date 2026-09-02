@@ -70,6 +70,10 @@ public protocol RuntimeProvider: Sendable {
     /// Force/destructive escape hatch. Never runs the shutdown hook.
     func destroySession(_ session: RemoteSession, project: Project) async throws
 
+    /// Rewrites the session's display name in provider metadata; the
+    /// backend identifier is untouched. Optional: the default refuses.
+    func renameSession(_ session: RemoteSession, to name: String, project: Project) async throws
+
     /// Copies local files/directories into a fresh scratch location on the
     /// session's machine and returns the resulting remote paths, in input
     /// order. Only meaningful when `capabilities` contains `.fileUpload`.
@@ -113,6 +117,10 @@ public struct SessionGitDiff: Sendable, Equatable {
 extension RuntimeProvider {
     public func uploadFiles(localPaths: [String], for session: RemoteSession, project: Project) async throws -> [String] {
         throw RuntimeProviderError.operationFailed("This provider does not support file uploads.")
+    }
+
+    public func renameSession(_ session: RemoteSession, to name: String, project: Project) async throws {
+        throw RuntimeProviderError.operationFailed("This provider can't rename sessions.")
     }
 
     public func gitState(for session: RemoteSession, project: Project) async throws -> SessionGitState? { nil }

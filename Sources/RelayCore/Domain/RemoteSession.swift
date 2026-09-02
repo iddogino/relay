@@ -9,6 +9,11 @@ public struct RemoteSession: Identifiable, Sendable, Hashable, Codable {
     public let createdAt: Date
     /// Provider-specific opaque identifier (the tmux session name for SSH+tmux).
     public let backendID: String
+    /// The `RTERM_SESSION_SLUG` the session was LAUNCHED with. Worktree
+    /// presets bake it into paths, so cleanup must reuse it verbatim even
+    /// after renames. nil for sessions created before slugs were recorded
+    /// (their name never changed, so recomputing is equivalent).
+    public let launchSlug: String?
     /// Live terminal title reported by whatever runs inside the session (OSC
     /// title sequences — e.g. Claude Code's "✳ task" status). Available even
     /// for detached sessions; nil when nothing has set a title.
@@ -20,6 +25,7 @@ public struct RemoteSession: Identifiable, Sendable, Hashable, Codable {
         displayName: String,
         createdAt: Date,
         backendID: String,
+        launchSlug: String? = nil,
         paneTitle: String? = nil
     ) {
         self.id = id
@@ -27,6 +33,7 @@ public struct RemoteSession: Identifiable, Sendable, Hashable, Codable {
         self.displayName = displayName
         self.createdAt = createdAt
         self.backendID = backendID
+        self.launchSlug = launchSlug
         self.paneTitle = paneTitle
     }
 }
