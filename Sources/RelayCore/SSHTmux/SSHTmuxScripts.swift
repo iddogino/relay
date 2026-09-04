@@ -68,6 +68,30 @@ enum SSHTmuxScripts {
         """
     }
 
+    // MARK: Directory autocomplete
+
+    /// Row cap for directory listings (a node_modules-sized folder must not
+    /// flood the wire).
+    static let directoryListCap = 500
+
+    /// Lists the child directories of `pathInput`, one `D<name>` line each
+    /// (the prefix keeps entries unmistakable amid markers). A missing
+    /// directory is a state, not an error — autocomplete just shows nothing.
+    /// The trailing-slash glob matches directories and symlinks to them;
+    /// dot entries ride along and the client decides when to show them.
+    static func listChildDirectories(pathInput: String) -> String {
+        let pathExpr = RemotePath.shellExpression(for: pathInput)
+        return """
+        set -u
+        cd \(pathExpr) 2>/dev/null || { printf 'RTERM_STATUS=no_dir\\n'; exit 0; }
+        printf 'RTERM_STATUS=ok\\n'
+        for d in */ .*/; do
+          case "$d" in './'|'../'|'*/'|'.*/') continue ;; esac
+          printf 'D%s\\n' "${d%/}"
+        done | head -n \(directoryListCap)
+        """
+    }
+
     // MARK: Session creation
 
     /// Shell fragment prepending well-known user bin dirs to PATH (see the

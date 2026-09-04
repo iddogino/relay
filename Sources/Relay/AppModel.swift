@@ -173,6 +173,7 @@ final class AppModel {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.commandKeyHeld = false
+                self?.isAppActive = false
             }
         }
 
@@ -183,8 +184,10 @@ final class AppModel {
         let timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                // PR-status polling is NOT on this timer: it self-schedules
+                // adaptively off the git-state chain (10s while checks run,
+                // 60s once settled, paused while the app is inactive).
                 self.refreshGitState()
-                self.refreshPRStatus()
                 await self.refreshSessionTitles()
             }
         }
@@ -320,11 +323,14 @@ final class AppModel {
     }
 
     private func applicationDidActivate() {
+        isAppActive = true
         Task { await refreshRemotes() }
         // Only refresh the project that's currently in use — no polling sweep.
         if let project = selectedProject {
             Task { await refreshSessions(for: project) }
         }
+        // PR polling pauses while inactive; catch up right away on return.
+        refreshPRStatus()
     }
 
     // MARK: Remotes
@@ -387,6 +393,10 @@ final class AppModel {
             }
             self.warmAttachment(for: session, project: project)
             self.refreshGitState()
+            // Switching to a session with a known PR refreshes its status
+            // immediately (first visits have no cached git state yet — the
+            // git-state chain above does their first fetch instead).
+            self.refreshPRStatusNow()
             if self.diffTrayVisible {
                 self.diff = nil
                 Task { await self.loadDiff() }
@@ -594,6 +604,36 @@ final class AppModel {
         }
     }
 
+    /// The harness picked last time a session was created in each project
+    /// (device-local; UserDefaults keyed by project UUID), so mixing and
+    /// matching doesn't mean re-picking every time.
+    struct StoredStartChoice: Codable {
+        var kind: String // "default" | "shell" | "preset" | "custom"
+        var presetID: String?
+        var customLaunch: String?
+        var customCleanup: String?
+    }
+    private static let startChoicesKey = "sessionStartChoices"
+
+    func lastStartChoice(for projectID: ProjectID) -> StoredStartChoice? {
+        guard let data = UserDefaults.standard.data(forKey: Self.startChoicesKey),
+              let choices = try? JSONDecoder().decode([String: StoredStartChoice].self, from: data)
+        else { return nil }
+        return choices[projectID.uuid.uuidString]
+    }
+
+    func rememberStartChoice(_ choice: StoredStartChoice, for projectID: ProjectID) {
+        var choices: [String: StoredStartChoice] = [:]
+        if let data = UserDefaults.standard.data(forKey: Self.startChoicesKey),
+           let existing = try? JSONDecoder().decode([String: StoredStartChoice].self, from: data) {
+            choices = existing
+        }
+        choices[projectID.uuid.uuidString] = choice
+        if let data = try? JSONEncoder().encode(choices) {
+            UserDefaults.standard.set(data, forKey: Self.startChoicesKey)
+        }
+    }
+
     /// Records a session the New Session sheet just created, selects it
     /// (attaching the terminal), and reconciles with the remote.
     func noteCreatedSession(_ session: RemoteSession, project: Project) {
@@ -646,8 +686,14 @@ final class AppModel {
             self.gitStates[session.id] = state
             if state.pullRequest == nil {
                 self.prStatuses[session.id] = nil
-            } else {
+            } else if self.prStatuses[session.id] == nil {
+                // Newly discovered PR (or first look at this session): fetch
+                // now. Once a status is cached, cadence belongs to the
+                // adaptive poll below — re-fetching here would pin polling
+                // to this chain's 30s tick and defeat the backoff.
                 self.refreshPRStatus()
+            } else {
+                self.armPRPoll()
             }
         }
     }
@@ -691,9 +737,62 @@ final class AppModel {
 
     private(set) var prStatuses: [SessionID: PullRequestStatus] = [:]
     private var prStatusTask: Task<Void, Never>?
+    /// The self-scheduling poll driving PR-status freshness. Adaptive: fast
+    /// while the selected PR is settling, slow once quiet, dead while the
+    /// app is inactive or no PR session is selected (each fetch schedules
+    /// the next; the git-state chain re-arms it after selection changes).
+    private var prPollTask: Task<Void, Never>?
+    private var prPollTaskInterval: Duration = .zero
+    /// Mirrors app activation; PR polling pauses while false.
+    private var isAppActive = NSApplication.shared.isActive
+
+    /// True while a PR-status fetch is in flight (the popover's refresh
+    /// button shows a spinner).
+    var prStatusRefreshing: Bool { prStatusTask != nil }
 
     func prStatus(for sessionID: SessionID) -> PullRequestStatus? {
         prStatuses[sessionID]
+    }
+
+    /// Poll cadence warranted by a status: checks running or mergeability
+    /// computing deserve near-live updates; a settled PR just needs a
+    /// slow heartbeat to notice new pushes/reviews.
+    private func prPollInterval(for status: PullRequestStatus?) -> Duration {
+        guard let status else { return .seconds(30) }
+        return status.isSettling ? .seconds(10) : .seconds(60)
+    }
+
+    /// Ensures a poll is scheduled at (at least) the cadence the selected
+    /// session's cached status warrants. Never lengthens an armed poll —
+    /// the 30s git-state chain calls this repeatedly, and rescheduling a
+    /// slow poll on every tick would reset its countdown forever.
+    private func armPRPoll() {
+        guard isAppActive, prStatusTask == nil else { return }
+        let desired = prPollInterval(for: selectedSession.flatMap { prStatuses[$0.id] })
+        if let task = prPollTask, !task.isCancelled, prPollTaskInterval <= desired { return }
+        schedulePRPoll(after: desired)
+    }
+
+    private func schedulePRPoll(after interval: Duration) {
+        prPollTask?.cancel()
+        prPollTaskInterval = interval
+        prPollTask = Task {
+            try? await Task.sleep(for: interval)
+            guard !Task.isCancelled else { return }
+            self.prPollTask = nil
+            guard self.isAppActive else { return }
+            self.refreshPRStatus()
+        }
+    }
+
+    /// User-intent refresh (session switch, popover opening, the popover's
+    /// refresh button): fetch immediately — even while the app is
+    /// technically inactive, since an interaction just happened — then let
+    /// the fetch re-derive the cadence.
+    func refreshPRStatusNow() {
+        prPollTask?.cancel()
+        prPollTask = nil
+        fetchPRStatus(requireActive: false)
     }
 
     func recheckGitHubAuth() async {
@@ -816,7 +915,11 @@ final class AppModel {
     /// PR. Transient failures keep the last status; a 401 flips the app
     /// into the auth-error state (a dead token reveals itself by failing).
     func refreshPRStatus() {
-        guard prStatusTask == nil,
+        fetchPRStatus(requireActive: true)
+    }
+
+    private func fetchPRStatus(requireActive: Bool) {
+        guard prStatusTask == nil, isAppActive || !requireActive,
               case .connected = gitHub, let token = gitHubToken,
               let session = selectedSession,
               let pr = gitStates[session.id]?.pullRequest,
@@ -827,11 +930,15 @@ final class AppModel {
                 let status = try await GitHubAPIClient(token: token).pullStatus(
                     owner: coords.owner, repo: coords.repo, number: coords.number)
                 self.prStatuses[session.id] = status
+                self.schedulePRPoll(after: self.prPollInterval(for: status))
             } catch GitHubAPIClient.APIError.unauthorized {
+                // No reschedule: polling resumes via recheck/login.
                 self.gitHubToken = nil
                 self.gitHub = .failed("GitHub rejected the stored credentials — recheck or log in again.")
             } catch {
-                // Offline / rate-limited: keep showing the last known status.
+                // Offline / rate-limited: keep showing the last known
+                // status and retry at a moderate pace.
+                self.schedulePRPoll(after: .seconds(30))
             }
         }
     }
@@ -916,6 +1023,7 @@ final class AppModel {
                     // the old computed value is still the right one.
                     launchSlug: old.launchSlug
                         ?? SessionSlug.make(displayName: old.displayName, sessionID: old.id),
+                    cleanup: old.cleanup,
                     paneTitle: old.paneTitle)
                 sessions[project.id] = list
             }

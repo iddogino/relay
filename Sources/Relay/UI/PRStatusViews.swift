@@ -33,7 +33,7 @@ struct PRBadge: View {
         }
         .popover(isPresented: $popoverShown, arrowEdge: .bottom) {
             if let status {
-                PRChecksPopover(status: status, prURL: pr.url)
+                PRChecksPopover(model: model, status: status, prURL: pr.url)
                     .onHover { hovering in
                         popoverHovered = hovering
                         syncPopover()
@@ -87,6 +87,7 @@ struct PRBadge: View {
 /// GitHub-checks dropdown, macOS-flavored: the popover's own translucent
 /// material, small type, plain rows.
 struct PRChecksPopover: View {
+    @Bindable var model: AppModel
     let status: PullRequestStatus
     let prURL: URL
 
@@ -94,19 +95,37 @@ struct PRChecksPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(status.headline)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(headlineColor)
-                if let summary = status.checkSummary {
-                    Text(summary)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(status.headline)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(headlineColor)
+                    if let summary = status.checkSummary {
+                        Text(summary)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    if let note = status.mergeabilityNote {
+                        Text(note)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                if let note = status.mergeabilityNote {
-                    Text(note)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                if model.prStatusRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 16, height: 16)
+                } else {
+                    Button {
+                        model.refreshPRStatusNow()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .medium))
+                            .frame(width: 16, height: 16)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Refresh status now")
                 }
             }
 
@@ -130,6 +149,10 @@ struct PRChecksPopover: View {
         }
         .padding(14)
         .frame(width: 380)
+        // Expanding the details always fetches a fresh view; the button's
+        // spinner reflects ANY in-flight fetch (prStatusRefreshing is
+        // global), including one this open didn't launch.
+        .onAppear { model.refreshPRStatusNow() }
     }
 
     private var headlineColor: Color {

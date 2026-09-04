@@ -40,10 +40,11 @@ struct TmuxCodecTests {
         nameB64: String = TmuxSessionCodec.encodeDisplayName("my session"),
         createdAt: String = "1724800000",
         slug: String = "my-session",
+        cleanup: String = "project",
         host: String = "remote-box.local",
         paneTitle: String = "✳ fixing auth flow"
     ) -> String {
-        [name, schema, projectID, sessionID, nameB64, createdAt, slug, host, paneTitle]
+        [name, schema, projectID, sessionID, nameB64, createdAt, slug, cleanup, host, paneTitle]
             .joined(separator: "\t")
     }
 
@@ -64,7 +65,30 @@ struct TmuxCodecTests {
         #expect(parsed.displayName == "my session")
         #expect(parsed.createdAt == Date(timeIntervalSince1970: 1_724_800_000))
         #expect(parsed.launchSlug == "my-session")
+        #expect(parsed.cleanup == .projectDefault)
         #expect(parsed.paneTitle == "✳ fixing auth flow")
+    }
+
+    @Test func cleanupFieldRoundTrips() throws {
+        // Sessions created before per-session harnesses render it empty.
+        let legacy = try #require(TmuxSessionCodec.parse(line: makeLine(cleanup: "")))
+        #expect(legacy.cleanup == nil)
+        let none = try #require(TmuxSessionCodec.parse(line: makeLine(cleanup: "none")))
+        #expect(none.cleanup == .disabled)
+        let command = #"git worktree remove ".worktrees/$RTERM_SESSION_SLUG""#
+        let encoded = TmuxSessionCodec.encodeCleanup(.command(command))
+        #expect(encoded.hasPrefix("b64:"))
+        let parsed = try #require(TmuxSessionCodec.parse(line: makeLine(cleanup: encoded)))
+        #expect(parsed.cleanup == .command(command))
+        // The command lands in a remote shell at archive time — a mangled
+        // value degrades to "not recorded", never adopted as a command.
+        let garbage = try #require(TmuxSessionCodec.parse(line: makeLine(cleanup: "b64:!!!")))
+        #expect(garbage.cleanup == nil)
+        let unknown = try #require(TmuxSessionCodec.parse(line: makeLine(cleanup: "wat")))
+        #expect(unknown.cleanup == nil)
+        // Explicitly-empty command never round-trips into an empty cleanup.
+        let empty = try #require(TmuxSessionCodec.parse(line: makeLine(cleanup: "b64:")))
+        #expect(empty.cleanup == nil)
     }
 
     @Test func slugDegradesToNilInsteadOfPoisoning() throws {
@@ -119,7 +143,7 @@ struct TmuxCodecTests {
         // A session not created by the app (name without our prefix) is never
         // adopted even if it happens to carry look-alike fields.
         let line = ["users-own-session", "1", UUID().uuidString, UUID().uuidString,
-                    TmuxSessionCodec.encodeDisplayName("x"), "123", "x-slug", "h", "t"]
+                    TmuxSessionCodec.encodeDisplayName("x"), "123", "x-slug", "none", "h", "t"]
             .joined(separator: "\t")
         #expect(TmuxSessionCodec.parse(line: line) == nil)
     }

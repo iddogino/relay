@@ -33,6 +33,9 @@ public struct TmuxDiscoveredSession: Sendable, Equatable {
     /// The `RTERM_SESSION_SLUG` the session was launched with (stored as
     /// `@rterm_slug`). nil for sessions created before slugs were recorded.
     public let launchSlug: String?
+    /// The archive cleanup recorded at launch (stored as `@rterm_cleanup`).
+    /// nil for sessions created before per-session harness choices existed.
+    public let cleanup: SessionCleanup?
     /// The active pane's title (set by OSC escape sequences — e.g. Claude
     /// Code's "✳ task" status). nil when unset (tmux defaults it to the
     /// remote hostname, which carries no information).
@@ -56,6 +59,7 @@ public enum TmuxSessionCodec {
             "#{@rterm_session_name_b64}",
             "#{@rterm_created_at}",
             "#{@rterm_slug}",
+            "#{@rterm_cleanup}",
             "#{host}",
             "#{pane_title}",
         ].joined(separator: String(fieldSeparator))
@@ -70,12 +74,38 @@ public enum TmuxSessionCodec {
         return String(data: data, encoding: .utf8)
     }
 
+    /// `@rterm_cleanup` wire form: `project`, `none`, or `b64:<command>`.
+    public static func encodeCleanup(_ cleanup: SessionCleanup) -> String {
+        switch cleanup {
+        case .projectDefault: return "project"
+        case .disabled: return "none"
+        case .command(let command): return "b64:" + Data(command.utf8).base64EncodedString()
+        }
+    }
+
+    /// Unset (empty) and mangled values both degrade to nil — "not
+    /// recorded", read as the project default — rather than poisoning the
+    /// row or inventing a cleanup command.
+    public static func decodeCleanup(_ raw: String) -> SessionCleanup? {
+        switch raw {
+        case "": return nil
+        case "project": return .projectDefault
+        case "none": return .disabled
+        default:
+            guard raw.hasPrefix("b64:"),
+                  let command = decodeDisplayName(String(raw.dropFirst(4))),
+                  !command.isEmpty
+            else { return nil }
+            return .command(command)
+        }
+    }
+
     /// Parses one output line. Returns nil for malformed lines, unknown
     /// schemas, and sessions the app does not own.
     public static func parse(line: String) -> TmuxDiscoveredSession? {
         let fields = line.split(separator: fieldSeparator, omittingEmptySubsequences: false)
             .map(String.init)
-        guard fields.count >= 9 else { return nil }
+        guard fields.count >= 10 else { return nil }
         let tmuxName = fields[0]
         guard TmuxNaming.isSafeSessionName(tmuxName) else { return nil }
         guard fields[1] == schemaVersion else { return nil }
@@ -91,11 +121,13 @@ public enum TmuxSessionCodec {
         let slug = fields[6]
         let launchSlug = isSafeSlug(slug) ? slug : nil
 
+        let cleanup = decodeCleanup(fields[7])
+
         // Everything past the host field is the pane title verbatim (it may
         // contain the separator). tmux defaults an untouched pane's title to
         // the server hostname — that is noise, not a status.
-        let host = fields[7]
-        let title = fields[8...].joined(separator: String(fieldSeparator))
+        let host = fields[8]
+        let title = fields[9...].joined(separator: String(fieldSeparator))
             .trimmingCharacters(in: .whitespaces)
 
         return TmuxDiscoveredSession(
@@ -105,6 +137,7 @@ public enum TmuxSessionCodec {
             displayName: displayName,
             createdAt: Date(timeIntervalSince1970: createdAtEpoch),
             launchSlug: launchSlug,
+            cleanup: cleanup,
             paneTitle: (title.isEmpty || title == host) ? nil : title
         )
     }

@@ -96,6 +96,34 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         )
     }
 
+    // MARK: Directory autocomplete
+
+    public func listChildDirectories(workspace: WorkspaceRef, pathInput: String) async throws -> [String] {
+        let alias = try self.alias(for: workspace)
+        guard case .success(let path) = RemotePath.validateInput(pathInput) else { return [] }
+        let result: SSHCommandRunner.CommandResult
+        do {
+            // Short timeout: a suggestion that arrives late is a suggestion
+            // nobody wanted.
+            result = try await runner.runScript(
+                alias: alias,
+                script: SSHTmuxScripts.listChildDirectories(pathInput: path),
+                timeout: .seconds(8)
+            )
+        } catch {
+            return []
+        }
+        guard result.exitCode == 0, result.markers()[SSHTmuxScripts.Marker.status] == "ok" else {
+            return []
+        }
+        return result.stdout.split(separator: "\n").compactMap { line -> String? in
+            guard line.first == "D" else { return nil }
+            let name = String(line.dropFirst())
+            guard !name.isEmpty, !POSIXShellQuote.containsControlCharacters(name) else { return nil }
+            return name
+        }
+    }
+
     // MARK: Sessions
 
     public func listSessions(for project: Project) async throws -> [RemoteSession] {
@@ -120,6 +148,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                     createdAt: discovered.createdAt,
                     backendID: discovered.tmuxName,
                     launchSlug: discovered.launchSlug,
+                    cleanup: discovered.cleanup,
                     paneTitle: discovered.paneTitle
                 )
             }
@@ -140,8 +169,11 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
 
         // The slug is remembered as metadata because the launch environment
         // bakes it into paths (worktree presets): cleanup must reuse the
-        // launch-time value even if the session is later renamed.
+        // launch-time value even if the session is later renamed. The cleanup
+        // choice is remembered for the same reason: archive must undo what
+        // this launch created, not what the project's defaults say later.
         let slug = SessionSlug.make(displayName: displayName, sessionID: sessionID)
+        let (launchCommand, cleanup) = Self.resolveStart(request.start, project: project)
         var metadata: [(String, String)] = [
             ("@rterm_schema", TmuxSessionCodec.schemaVersion),
             ("@rterm_project_id", project.id.uuid.uuidString),
@@ -149,6 +181,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             ("@rterm_session_name_b64", TmuxSessionCodec.encodeDisplayName(displayName)),
             ("@rterm_created_at", String(Int(createdAt.timeIntervalSince1970))),
             ("@rterm_slug", slug),
+            ("@rterm_cleanup", TmuxSessionCodec.encodeCleanup(cleanup)),
         ]
         for (key, value) in request.extraMetadata.sorted(by: { $0.key < $1.key }) {
             guard key.hasPrefix("@"),
@@ -165,8 +198,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             windowName: slug,
             pathInput: project.resolvedPath.isEmpty ? project.pathInput : project.resolvedPath,
             knownTmuxPath: knownTmuxPath(for: project),
-            launchCommand: (request.runLaunchCommand && project.launchCommand?.isEmpty == false)
-                ? project.launchCommand : nil,
+            launchCommand: launchCommand,
             environment: [
                 ("RTERM_PROJECT_ID", project.id.uuid.uuidString),
                 ("RTERM_PROJECT_NAME", project.name),
@@ -204,8 +236,42 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             displayName: displayName,
             createdAt: createdAt,
             backendID: tmuxName,
-            launchSlug: slug
+            launchSlug: slug,
+            cleanup: cleanup
         )
+    }
+
+    /// Resolves a creation request's start choice into the launch command to
+    /// run now and the cleanup to record for archive time. Pure — tested
+    /// without SSH.
+    static func resolveStart(_ start: SessionStart, project: Project) -> (launchCommand: String?, cleanup: SessionCleanup) {
+        switch start {
+        case .projectDefault:
+            return (project.launchCommand?.isEmpty == false ? project.launchCommand : nil, .projectDefault)
+        case .shell:
+            return (nil, .disabled)
+        case .command(let launch, let cleanup):
+            let trimmedCleanup = cleanup?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return (
+                launch.isEmpty ? nil : launch,
+                trimmedCleanup.isEmpty ? .disabled : .command(trimmedCleanup)
+            )
+        }
+    }
+
+    /// The shutdown command archive should run for this session, honoring
+    /// the cleanup recorded at launch; sessions from before that recording
+    /// fall back to the project's current shutdown command. Pure — tested
+    /// without SSH.
+    static func shutdownCommand(for session: RemoteSession, project: Project) -> String? {
+        switch session.cleanup ?? .projectDefault {
+        case .projectDefault:
+            return project.shutdownCommand?.isEmpty == false ? project.shutdownCommand : nil
+        case .disabled:
+            return nil
+        case .command(let command):
+            return command
+        }
     }
 
     public func makeTerminalLaunch(for session: RemoteSession, project: Project) async throws -> TerminalLaunchSpec {
@@ -276,8 +342,9 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         //    a cleanup retry re-enters here safely).
         try await killManagedSession(session, project: project, alias: alias)
 
-        // 3. Run the shutdown hook, if configured.
-        guard let shutdownCommand = project.shutdownCommand, !shutdownCommand.isEmpty else { return }
+        // 3. Run the cleanup recorded at launch (or the project's shutdown
+        //    hook for sessions that predate per-session cleanups).
+        guard let shutdownCommand = Self.shutdownCommand(for: session, project: project) else { return }
 
         let context = SSHTmuxScripts.ShutdownContext(
             pathInput: project.resolvedPath.isEmpty ? project.pathInput : project.resolvedPath,
@@ -646,10 +713,14 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
     }
 
     private func alias(for project: Project) throws -> String {
-        guard project.workspace.provider == id else {
+        try alias(for: project.workspace)
+    }
+
+    private func alias(for workspace: WorkspaceRef) throws -> String {
+        guard workspace.provider == id else {
             throw RuntimeProviderError.invalidInput("Project belongs to a different provider.")
         }
-        let alias = project.workspace.opaqueID
+        let alias = workspace.opaqueID
         guard !alias.isEmpty,
               !alias.hasPrefix("-"),
               !POSIXShellQuote.containsControlCharacters(alias),

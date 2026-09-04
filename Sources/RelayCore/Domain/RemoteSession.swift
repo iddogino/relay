@@ -1,5 +1,18 @@
 import Foundation
 
+/// The cleanup a session's archive should run, decided at launch and stored
+/// with the session — so archive undoes what actually launched (worktree
+/// removal, etc.) even if the project's defaults change later.
+public enum SessionCleanup: Sendable, Hashable, Codable {
+    /// Run the project's shutdown command as configured at archive time.
+    case projectDefault
+    /// Explicitly no cleanup — e.g. a plain-shell session in a project
+    /// whose default harness creates worktrees.
+    case disabled
+    /// The cleanup command paired with the session's chosen launch command.
+    case command(String)
+}
+
 /// A persistent remote execution session. For the SSH+tmux provider this is
 /// one ordinary tmux session, but nothing above the provider may assume that.
 public struct RemoteSession: Identifiable, Sendable, Hashable, Codable {
@@ -14,6 +27,9 @@ public struct RemoteSession: Identifiable, Sendable, Hashable, Codable {
     /// after renames. nil for sessions created before slugs were recorded
     /// (their name never changed, so recomputing is equivalent).
     public let launchSlug: String?
+    /// nil for sessions recorded before per-session harness choices existed;
+    /// readers treat that as `.projectDefault` (the only behavior back then).
+    public let cleanup: SessionCleanup?
     /// Live terminal title reported by whatever runs inside the session (OSC
     /// title sequences — e.g. Claude Code's "✳ task" status). Available even
     /// for detached sessions; nil when nothing has set a title.
@@ -26,6 +42,7 @@ public struct RemoteSession: Identifiable, Sendable, Hashable, Codable {
         createdAt: Date,
         backendID: String,
         launchSlug: String? = nil,
+        cleanup: SessionCleanup? = nil,
         paneTitle: String? = nil
     ) {
         self.id = id
@@ -34,16 +51,26 @@ public struct RemoteSession: Identifiable, Sendable, Hashable, Codable {
         self.createdAt = createdAt
         self.backendID = backendID
         self.launchSlug = launchSlug
+        self.cleanup = cleanup
         self.paneTitle = paneTitle
     }
+}
+
+/// What starts in a new session's pane — chosen per session at creation.
+public enum SessionStart: Sendable, Equatable {
+    /// The project's configured launch and shutdown commands.
+    case projectDefault
+    /// A plain shell; no launch command, no cleanup.
+    case shell
+    /// An explicit harness for this session. An empty launch opens a plain
+    /// shell; a nil/empty cleanup means archive runs none.
+    case command(launch: String, cleanup: String?)
 }
 
 /// Request payload for creating a session.
 public struct NewSessionRequest: Sendable {
     public let displayName: String
-    /// When false, the session opens a plain shell even if the project has a
-    /// launch command configured.
-    public let runLaunchCommand: Bool
+    public let start: SessionStart
     /// Extra provider metadata attached to the created session. Keys must
     /// begin with `@` (tmux user options for SSH+tmux). Used by the live E2E
     /// harness for run tagging; the production UI passes none.
@@ -51,11 +78,11 @@ public struct NewSessionRequest: Sendable {
 
     public init(
         displayName: String,
-        runLaunchCommand: Bool = true,
+        start: SessionStart = .projectDefault,
         extraMetadata: [String: String] = [:]
     ) {
         self.displayName = displayName
-        self.runLaunchCommand = runLaunchCommand
+        self.start = start
         self.extraMetadata = extraMetadata
     }
 }

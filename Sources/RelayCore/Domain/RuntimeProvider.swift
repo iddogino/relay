@@ -54,6 +54,12 @@ public protocol RuntimeProvider: Sendable {
     func discoverWorkspaces() async throws -> [WorkspaceDescriptor]
     func validate(project: Project) async throws -> ProjectValidation
 
+    /// Names of the child directories of `pathInput` on `workspace`, for
+    /// folder-field autocomplete while a project is being configured (no
+    /// Project exists yet). Optional: the default returns no suggestions —
+    /// autocomplete is an enhancement, never a requirement.
+    func listChildDirectories(workspace: WorkspaceRef, pathInput: String) async throws -> [String]
+
     func listSessions(for project: Project) async throws -> [RemoteSession]
     func createSession(for project: Project, request: NewSessionRequest) async throws -> RemoteSession
 
@@ -115,6 +121,8 @@ public struct SessionGitDiff: Sendable, Equatable {
 }
 
 extension RuntimeProvider {
+    public func listChildDirectories(workspace: WorkspaceRef, pathInput: String) async throws -> [String] { [] }
+
     public func uploadFiles(localPaths: [String], for session: RemoteSession, project: Project) async throws -> [String] {
         throw RuntimeProviderError.operationFailed("This provider does not support file uploads.")
     }

@@ -53,6 +53,14 @@ public struct PullRequestStatus: Sendable, Equatable {
         self.totalCheckCount = max(totalCheckCount ?? checks.count, checks.count)
     }
 
+    /// True while GitHub is still producing results for an open PR — checks
+    /// queued/running or mergeability computing. Callers may poll faster
+    /// while it holds.
+    public var isSettling: Bool {
+        prState == .open
+            && (checks.contains(where: { $0.outcome.isPendingLike }) || mergeState == .computing)
+    }
+
     /// The one dot the toolbar shows. Priority: a failed check is decisive
     /// (red) even while others still run; then anything pending (spinner);
     /// then can't-merge states (orange); else green.
@@ -63,9 +71,7 @@ public struct PullRequestStatus: Sendable, Equatable {
         case .open: break
         }
         if checks.contains(where: { $0.outcome.isFailureLike }) { return .ciFailed }
-        if checks.contains(where: { $0.outcome.isPendingLike }) || mergeState == .computing {
-            return .inProgress
-        }
+        if isSettling { return .inProgress }
         switch mergeState {
         case .conflicts, .behind, .draft: return .notMergeable
         case .clean, .blocked, .computing: return .good

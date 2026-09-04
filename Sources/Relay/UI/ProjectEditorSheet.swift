@@ -20,6 +20,13 @@ struct ProjectEditorSheet: View {
     @FocusState private var nameFocused: Bool
     @Environment(\.dismiss) private var dismiss
 
+    // Folder autocomplete: one remote listing per parent directory, cached
+    // for the sheet's lifetime; filtering as the user types is local.
+    @State private var dirCache: [String: [String]] = [:]
+    @State private var folderHighlight = 0
+    @State private var folderSuggestionsDismissed = false
+    @FocusState private var folderFocused: Bool
+
     private var isEditing: Bool {
         if case .edit = context.mode { return true }
         return false
@@ -50,41 +57,33 @@ struct ProjectEditorSheet: View {
                 }
                 TextField("Folder", text: $path, prompt: Text("~/code/my-app"))
                     .fontDesign(.monospaced)
+                    .focused($folderFocused)
+                    .anchorPreference(key: FolderFieldBounds.self, value: .bounds) { $0 }
+                    .onKeyPress(.downArrow) { moveFolderHighlight(1) }
+                    .onKeyPress(.upArrow) { moveFolderHighlight(-1) }
+                    .onKeyPress(.tab) { acceptHighlightedFolder() }
+                    .onKeyPress(.return) { acceptHighlightedFolder() }
+                    .onKeyPress(.escape) {
+                        guard folderDropdownVisible else { return .ignored }
+                        folderSuggestionsDismissed = true
+                        return .handled
+                    }
+                    .onChange(of: path) {
+                        folderSuggestionsDismissed = false
+                        folderHighlight = 0
+                    }
+                    .task(id: folderFetchKey) { await fetchFolderListing() }
 
                 Section {
                     LabeledContent("") {
                         Menu {
-                            Section("Claude Code") {
-                                Button("claude") {
-                                    applyPreset(launch: "claude", cleanup: nil)
-                                }
-                                Button("claude in a new worktree") {
-                                    // claude --worktree=NAME puts the tree at
-                                    // .claude/worktrees/NAME on a LOCKED
-                                    // branch named worktree-NAME (verified
-                                    // empirically), hence the unlock.
-                                    applyPreset(
-                                        launch: #"claude --worktree="$RTERM_SESSION_SLUG""#,
-                                        cleanup: #"git worktree unlock ".claude/worktrees/$RTERM_SESSION_SLUG" 2>/dev/null; git worktree remove ".claude/worktrees/$RTERM_SESSION_SLUG" && git branch -d "worktree-$RTERM_SESSION_SLUG""#)
-                                }
-                            }
-                            ForEach(Self.wrapperAgents, id: \.command) { agent in
-                                Section(agent.name) {
-                                    Button(agent.command) {
-                                        applyPreset(launch: agent.command, cleanup: nil)
+                            ForEach(HarnessCatalog.groups) { group in
+                                Section(group.name) {
+                                    ForEach(group.presets) { preset in
+                                        Button(preset.title) {
+                                            applyPreset(launch: preset.launch, cleanup: preset.cleanup)
+                                        }
                                     }
-                                    Button("\(agent.command) in a new worktree") {
-                                        applyPreset(
-                                            launch: Self.worktreeLaunch(running: agent.command),
-                                            cleanup: Self.worktreeCleanup)
-                                    }
-                                }
-                            }
-                            Section("Git worktree") {
-                                Button("worktree + shell (with cleanup)") {
-                                    applyPreset(
-                                        launch: Self.worktreeLaunch(running: #""$SHELL""#),
-                                        cleanup: Self.worktreeCleanup)
                                 }
                             }
                         } label: {
@@ -101,7 +100,7 @@ struct ProjectEditorSheet: View {
                         CommandEditor(text: $shutdownCommand, prompt: "optional")
                     }
                 } footer: {
-                    Text("The launch command starts each new session; the shutdown command runs when a session is archived. Both run in the project folder with RTERM_* variables set — including $RTERM_SESSION_SLUG, the session name slugified for branch/folder names.")
+                    Text("The default for new sessions — each session can pick a different harness at creation. The launch command starts the session; the shutdown command runs when it's archived. Both run in the project folder with RTERM_* variables set — including $RTERM_SESSION_SLUG, the session name slugified for branch/folder names.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -148,25 +147,83 @@ struct ProjectEditorSheet: View {
         .frame(width: embedded ? nil : 480)
         .onAppear(perform: populate)
         .task { nameFocused = true }
+        // The suggestion dropdown floats above everything in the sheet,
+        // anchored to the folder field via its reported bounds.
+        .overlayPreferenceValue(FolderFieldBounds.self) { anchor in
+            GeometryReader { geo in
+                if let anchor, folderDropdownVisible {
+                    let rect = geo[anchor]
+                    FolderSuggestionList(
+                        matches: folderMatches,
+                        highlight: folderHighlight,
+                        width: rect.width,
+                        onPick: { acceptFolderSuggestion($0) })
+                        .offset(x: rect.minX, y: rect.maxY + 2)
+                }
+            }
+        }
     }
 
-    /// Agents without a native worktree flag get the generic git-worktree
-    /// wrapper.
-    private static let wrapperAgents: [(name: String, command: String)] = [
-        ("Codex", "codex"),
-        ("Pi", "pi"),
-        ("OpenCode", "opencode"),
-    ]
+    // MARK: Folder autocomplete
 
-    /// Launch: fresh worktree named after the session, run `command` in it.
-    /// `git worktree add` with a plain path creates a branch named after its
-    /// basename — the slug — which is what the cleanup deletes.
-    private static func worktreeLaunch(running command: String) -> String {
-        #"git worktree add ".worktrees/$RTERM_SESSION_SLUG" && cd ".worktrees/$RTERM_SESSION_SLUG" && exec "# + command
+    private var folderSplit: DirectoryCompletion.Split {
+        DirectoryCompletion.split(path)
     }
 
-    private static let worktreeCleanup =
-        #"git worktree remove ".worktrees/$RTERM_SESSION_SLUG" && git branch -d "$RTERM_SESSION_SLUG""#
+    private func folderCacheKey(_ parent: String) -> String {
+        "\(workspace?.opaqueID ?? "")|\(parent)"
+    }
+
+    private var folderFetchKey: String {
+        folderCacheKey(folderSplit.parent)
+    }
+
+    private var folderMatches: [String] {
+        guard let entries = dirCache[folderFetchKey] else { return [] }
+        return DirectoryCompletion.matches(entries: entries, partial: folderSplit.partial)
+    }
+
+    private var folderDropdownVisible: Bool {
+        folderFocused && !folderSuggestionsDismissed && !path.isEmpty && !folderMatches.isEmpty
+    }
+
+    private func moveFolderHighlight(_ delta: Int) -> KeyPress.Result {
+        guard folderDropdownVisible else { return .ignored }
+        folderHighlight = max(0, min(folderHighlight + delta, folderMatches.count - 1))
+        return .handled
+    }
+
+    private func acceptHighlightedFolder() -> KeyPress.Result {
+        guard folderDropdownVisible, folderMatches.indices.contains(folderHighlight) else {
+            return .ignored
+        }
+        acceptFolderSuggestion(folderMatches[folderHighlight])
+        return .handled
+    }
+
+    private func acceptFolderSuggestion(_ entry: String) {
+        path = DirectoryCompletion.accept(input: path, entry: entry)
+        folderHighlight = 0
+        folderSuggestionsDismissed = false
+    }
+
+    /// Fetches (once) the child listing of the current parent directory.
+    /// Failures just leave autocomplete silent — the field works like a
+    /// plain text field. An empty path prefetches the login directory so
+    /// the first keystroke already has suggestions.
+    private func fetchFolderListing() async {
+        guard let workspace else { return }
+        let parent = folderSplit.parent
+        let key = folderCacheKey(parent)
+        guard dirCache[key] == nil else { return }
+        // Tiny debounce so walking a path slash-by-slash doesn't stack
+        // fetches for directories the user has already typed past.
+        try? await Task.sleep(for: .milliseconds(200))
+        guard !Task.isCancelled else { return }
+        guard let entries = try? await model.provider.listChildDirectories(
+            workspace: workspace, pathInput: parent) else { return }
+        dirCache[key] = entries
+    }
 
     /// Presets always set the launch command; the cleanup only fills an
     /// empty shutdown field (never clobbers something the user wrote).
@@ -235,6 +292,66 @@ struct ProjectEditorSheet: View {
     }
 }
 
+/// Reports the folder field's bounds so the suggestion dropdown can float
+/// above the whole sheet instead of being clipped by the Form row.
+private struct FolderFieldBounds: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
+/// The autocomplete dropdown: keyboard-driven (↑/↓ move, Tab/Return accept,
+/// Esc dismisses — focus never leaves the text field), clickable rows.
+private struct FolderSuggestionList: View {
+    let matches: [String]
+    let highlight: Int
+    let width: CGFloat
+    let onPick: (String) -> Void
+
+    private static let rowHeight: CGFloat = 22
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(matches.enumerated()), id: \.offset) { index, name in
+                        HStack(spacing: 6) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 10))
+                                .foregroundStyle(index == highlight ? .primary : .secondary)
+                            Text(name)
+                                .font(.system(size: 12, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(height: Self.rowHeight)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .background(
+                            index == highlight
+                                ? AnyShapeStyle(Color.accentColor.opacity(0.22))
+                                : AnyShapeStyle(.clear),
+                            in: RoundedRectangle(cornerRadius: 4))
+                        .onTapGesture { onPick(name) }
+                        .id(index)
+                    }
+                }
+                .padding(4)
+            }
+            .frame(width: width, height: min(CGFloat(matches.count) * Self.rowHeight + 8, 180))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary, lineWidth: 1))
+            .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
+            .onChange(of: highlight) { _, index in
+                proxy.scrollTo(index)
+            }
+        }
+    }
+}
+
 /// Multi-line command input: a bordered TextEditor that wraps long
 /// commands. (TextField's vertical axis doesn't reflow reliably on macOS —
 /// long presets were clipping to one line.)
@@ -275,8 +392,18 @@ struct NewSessionSheet: View {
     /// Shows a project picker instead of pinning the passed project.
     var allowsProjectChoice = false
 
+    /// The harness picked for this one session.
+    enum StartChoice: Equatable {
+        case projectDefault
+        case shell
+        case preset(String)
+        case custom
+    }
+
     @State private var name = ""
-    @State private var runLaunchCommand = true
+    @State private var start: StartChoice = .projectDefault
+    @State private var customLaunch = ""
+    @State private var customCleanup = ""
     @State private var creating = false
     @State private var errorMessage: String?
     @State private var chosenProjectID: ProjectID?
@@ -287,6 +414,39 @@ struct NewSessionSheet: View {
         guard allowsProjectChoice, let id = chosenProjectID,
               let chosen = model.projects.first(where: { $0.id == id }) else { return project }
         return chosen
+    }
+
+    private var projectHasDefault: Bool {
+        activeProject.launchCommand?.isEmpty == false
+    }
+
+    /// What the chosen harness will actually run, for the preview block.
+    private var effectiveCommands: (launch: String?, cleanup: String?) {
+        switch start {
+        case .projectDefault:
+            return (
+                projectHasDefault ? activeProject.launchCommand : nil,
+                activeProject.shutdownCommand?.isEmpty == false ? activeProject.shutdownCommand : nil
+            )
+        case .shell:
+            return (nil, nil)
+        case .preset(let id):
+            guard let preset = HarnessCatalog.preset(id: id) else { return (nil, nil) }
+            return (preset.launch, preset.cleanup)
+        case .custom:
+            let launch = customLaunch.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanup = customCleanup.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (launch.isEmpty ? nil : launch, cleanup.isEmpty ? nil : cleanup)
+        }
+    }
+
+    private var startLabel: String {
+        switch start {
+        case .projectDefault: return "Project default"
+        case .shell: return "Plain shell"
+        case .preset(let id): return HarnessCatalog.preset(id: id)?.title ?? "Preset"
+        case .custom: return "Custom command"
+        }
     }
 
     /// Project names can repeat across hosts; disambiguate only when they do.
@@ -321,29 +481,60 @@ struct NewSessionSheet: View {
                 .onSubmit { Task { await create() } }
                 .task { nameFocused = true }
 
-            VStack(alignment: .leading, spacing: 4) {
-                if let launch = activeProject.launchCommand, !launch.isEmpty {
-                    Toggle(isOn: $runLaunchCommand) {
-                        Text("Run the project launch command")
-                            .font(.caption)
+            LabeledContent("Start with") {
+                Menu {
+                    if projectHasDefault {
+                        Button("Project default") { start = .projectDefault }
                     }
-                    .toggleStyle(.checkbox)
-                    if runLaunchCommand {
-                        Text(launch)
-                            .font(.caption)
+                    Button("Plain shell") { start = .shell }
+                    Divider()
+                    ForEach(HarnessCatalog.groups) { group in
+                        Section(group.name) {
+                            ForEach(group.presets) { preset in
+                                Button(preset.title) { start = .preset(preset.id) }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Custom command…") { start = .custom }
+                } label: {
+                    Text(startLabel)
+                }
+                .fixedSize()
+            }
+            .font(.callout)
+            .onAppear { loadStartChoice(for: activeProject) }
+            .onChange(of: chosenProjectID) {
+                loadStartChoice(for: activeProject)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                if start == .custom {
+                    LabeledContent("Launch") {
+                        CommandEditor(text: $customLaunch, prompt: "claude")
+                    }
+                    LabeledContent("Cleanup") {
+                        CommandEditor(text: $customCleanup, prompt: "optional — runs on archive")
+                    }
+                } else if let launch = effectiveCommands.launch {
+                    Text(launch)
+                        .font(.caption)
+                        .fontDesign(.monospaced)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .padding(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                    if let cleanup = effectiveCommands.cleanup {
+                        Text("On archive: \(cleanup)")
+                            .font(.caption2)
                             .fontDesign(.monospaced)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(3)
-                            .padding(6)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
-                    } else {
-                        Text("Opens a plain shell in \(activeProject.pathInput) on \(activeProject.workspace.opaqueID).")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
                     }
                 } else {
-                    Text("Opens a shell in \(activeProject.pathInput) on \(activeProject.workspace.opaqueID).")
+                    Text("Opens a plain shell in \(activeProject.pathInput) on \(activeProject.workspace.opaqueID).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -383,6 +574,68 @@ struct NewSessionSheet: View {
         .frame(width: embedded ? nil : 400)
     }
 
+    /// The provider-facing request for the current choice.
+    private var sessionStart: SessionStart {
+        switch start {
+        case .projectDefault:
+            return .projectDefault
+        case .shell:
+            return .shell
+        case .preset(let id):
+            guard let preset = HarnessCatalog.preset(id: id) else { return .shell }
+            return .command(launch: preset.launch, cleanup: preset.cleanup)
+        case .custom:
+            let launch = customLaunch.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanup = customCleanup.trimmingCharacters(in: .whitespacesAndNewlines)
+            if launch.isEmpty && cleanup.isEmpty { return .shell }
+            return .command(launch: launch, cleanup: cleanup.isEmpty ? nil : cleanup)
+        }
+    }
+
+    /// Seeds the picker with the project's last-used harness (falling back
+    /// to the project default, or a plain shell when none is configured).
+    private func loadStartChoice(for project: Project) {
+        let hasDefault = project.launchCommand?.isEmpty == false
+        guard let stored = model.lastStartChoice(for: project.id) else {
+            start = hasDefault ? .projectDefault : .shell
+            return
+        }
+        switch stored.kind {
+        case "shell":
+            start = .shell
+        case "preset":
+            if let id = stored.presetID, HarnessCatalog.preset(id: id) != nil {
+                start = .preset(id)
+            } else {
+                start = hasDefault ? .projectDefault : .shell
+            }
+        case "custom":
+            customLaunch = stored.customLaunch ?? ""
+            customCleanup = stored.customCleanup ?? ""
+            start = .custom
+        default:
+            start = hasDefault ? .projectDefault : .shell
+        }
+    }
+
+    private func rememberStartChoice(for project: Project) {
+        let stored: AppModel.StoredStartChoice
+        switch start {
+        case .projectDefault:
+            stored = AppModel.StoredStartChoice(kind: "default")
+        case .shell:
+            stored = AppModel.StoredStartChoice(kind: "shell")
+        case .preset(let id):
+            stored = AppModel.StoredStartChoice(kind: "preset", presetID: id)
+        case .custom:
+            stored = AppModel.StoredStartChoice(
+                kind: "custom",
+                customLaunch: customLaunch.trimmingCharacters(in: .whitespacesAndNewlines),
+                customCleanup: customCleanup.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        model.rememberStartChoice(stored, for: project.id)
+    }
+
     private func create() async {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !creating else { return }
@@ -393,8 +646,9 @@ struct NewSessionSheet: View {
         do {
             let session = try await model.provider.createSession(
                 for: target,
-                request: NewSessionRequest(displayName: trimmed, runLaunchCommand: runLaunchCommand))
+                request: NewSessionRequest(displayName: trimmed, start: sessionStart))
             await MainActor.run {
+                rememberStartChoice(for: target)
                 model.noteCreatedSession(session, project: target)
                 dismiss()
             }

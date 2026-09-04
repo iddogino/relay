@@ -175,6 +175,33 @@ struct PullStatusMappingTests {
         #expect(GitHubAPIClient.durationText(131) == "2m 11s")
         #expect(GitHubAPIClient.durationText(3_900) == "1h 5m")
     }
+
+    @Test func settlingDrivesFasterPolling() {
+        func status(
+            _ mergeState: PullRequestStatus.MergeState,
+            _ outcomes: [PRCheck.Outcome],
+            prState: PullRequestStatus.PhaseState = .open
+        ) -> PullRequestStatus {
+            PullRequestStatus(
+                prState: prState,
+                mergeState: mergeState,
+                checks: outcomes.enumerated().map {
+                    PRCheck(name: "c\($0.offset)", outcome: $0.element, detail: "")
+                })
+        }
+        // Anything still producing results — even alongside a failure —
+        // keeps the fast cadence (the elapsed counters are live).
+        #expect(status(.clean, [.inProgress, .success]).isSettling)
+        #expect(status(.clean, [.queued, .failure]).isSettling)
+        #expect(status(.computing, [.success]).isSettling)
+        // Quiet states back off.
+        #expect(!status(.clean, [.success]).isSettling)
+        #expect(!status(.conflicts, [.failure]).isSettling)
+        #expect(!status(.blocked, []).isSettling)
+        // A merged/closed PR is settled even if stale runs linger.
+        #expect(!status(.clean, [.inProgress], prState: .merged).isSettling)
+        #expect(!status(.computing, [], prState: .closed).isSettling)
+    }
 }
 
 @Suite("github API client transport")
