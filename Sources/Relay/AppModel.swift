@@ -420,6 +420,12 @@ final class AppModel {
             }
         } else {
             controller = TerminalAttachmentController(provider: provider)
+            // Push live titles into the observed session list as they arrive,
+            // so a connected session's caption tracks its terminal in real
+            // time — even while it's a warm background tab, not just on focus.
+            controller.onLiveTitleChange = { [weak self] _ in
+                self?.carryOverLiveTitle(for: session.id)
+            }
             attachmentPool[session.id] = controller
             controller.attach(session: session, project: project)
         }
@@ -503,9 +509,11 @@ final class AppModel {
         return title.isEmpty ? nil : title
     }
 
-    /// The live surface title is fresher than the last title sweep; carry it
-    /// into the session's row so backgrounding or dropping an attachment
-    /// never downgrades the caption to a stale poll.
+    /// Copies a controller's live surface title into the observed session
+    /// list. Called on every title change (so a connected background row
+    /// updates in real time — `sessions` is tracked; the controller's title,
+    /// read cross-object, is not) and on backgrounding/dropping an attachment
+    /// (so the caption never downgrades to a stale poll).
     private func carryOverLiveTitle(for sessionID: SessionID) {
         guard let controller = attachmentPool[sessionID],
               case .attached = controller.phase,

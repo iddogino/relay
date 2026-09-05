@@ -146,6 +146,15 @@ struct PRChecksPopover: View {
                 }
                 .frame(maxHeight: 300)
             }
+
+            Divider()
+            Button {
+                NSWorkspace.shared.open(prURL)
+            } label: {
+                Label("Open in GitHub", systemImage: "arrow.up.forward.square")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.link)
         }
         .padding(14)
         .frame(width: 380)

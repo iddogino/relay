@@ -32,7 +32,15 @@ final class TerminalAttachmentController {
     private(set) var session: RemoteSession?
     private(set) var project: Project?
     private(set) var surfaceView: TerminalSurfaceView?
-    private(set) var terminalTitle: String = ""
+    private(set) var terminalTitle: String = "" {
+        didSet { onLiveTitleChange?(terminalTitle) }
+    }
+    /// Fired on every live title change so the app can push it into the
+    /// sidebar's observed session list. Without it a green *background*
+    /// session's caption only refreshes when the row re-renders for some
+    /// other reason (focus, or the 30s sweep) — the live value is there but
+    /// the row reads it cross-object and SwiftUI never invalidates on it.
+    @ObservationIgnored var onLiveTitleChange: ((String) -> Void)?
     private(set) var dropActivity: DropActivity = .idle
     /// Transient user-facing message about the last drop (error or note).
     private(set) var dropNotice: String?
