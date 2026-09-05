@@ -31,6 +31,8 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     private var lastPerformKeyEvent: TimeInterval?
     private var suppressNextLeftMouseUp = false
     private var focused = false
+    /// Warm-pool presentation state; a hidden surface is never focused.
+    private var presented = true
     private var processExitReported = false
     private var eventMonitor: Any?
     private var currentCursor: NSCursor = .iBeam
@@ -132,12 +134,12 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     }
 
     /// Presentation state for warm-but-hidden surfaces: occluded surfaces
-    /// stop rendering, and a hidden surface reports unfocused. Focus on
-    /// re-present flows through the normal first-responder path.
+    /// stop rendering, and a hidden surface reports unfocused.
     func setPresented(_ presented: Bool) {
+        self.presented = presented
         guard let surface else { return }
         ghostty_surface_set_occlusion(surface, presented)
-        if !presented { ghostty_surface_set_focus(surface, false) }
+        syncFocus()
     }
 
     /// Types `text` into the terminal as if entered locally (used to insert
@@ -179,26 +181,35 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        if result { focusDidChange(true) }
+        if result { syncFocus() }
         return result
     }
 
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder()
-        if result { focusDidChange(false) }
+        // AppKit sends resign before repointing window.firstResponder, so
+        // the derived check would still see this view as focused.
+        if result { syncFocus(assumeFirstResponder: false) }
         return result
     }
 
     @objc private func windowFocusDidChange(_ note: Notification) {
         guard let window, (note.object as? NSWindow) === window else { return }
-        let isKey = window.isKeyWindow
-        guard let surface else { return }
-        ghostty_surface_set_focus(surface, isKey && window.firstResponder === self)
+        syncFocus()
     }
 
-    private func focusDidChange(_ focused: Bool) {
+    /// The single writer of ghostty's focus flag, derived from AppKit truth
+    /// on every call — never from a cached bool. (Multiple paths used to
+    /// write the flag directly while `focused` tracked it separately with a
+    /// dedupe guard; once they drifted, becomeFirstResponder became a silent
+    /// no-op and a focused, typing terminal kept the hollow cursor.)
+    private func syncFocus(assumeFirstResponder: Bool? = nil) {
         guard let surface else { return }
-        guard self.focused != focused else { return }
+        let isFirstResponder = assumeFirstResponder
+            ?? (window?.firstResponder === self)
+        let focused = presented
+            && isFirstResponder
+            && (window?.isKeyWindow ?? false)
         self.focused = focused
         if !focused { suppressNextLeftMouseUp = false }
         ghostty_surface_set_focus(surface, focused)
@@ -251,6 +262,9 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
             ghostty_surface_set_display_id(surface, displayID)
         }
         viewDidChangeBackingProperties()
+        // Mount/unmount is a focus edge too: an unmounted surface is never
+        // focused, and a remount re-derives before the responder handoff.
+        syncFocus()
     }
 
     private func syncSurfaceSize() {
