@@ -719,6 +719,17 @@ final class AppModel {
         }
     }
 
+    /// Fetches one file's full working-tree content from the selected
+    /// session's repo, for the diff tray's full-file mode. Returns nil when
+    /// the file can't be fetched (missing, too large, unreachable) — the
+    /// caller falls back to the hunks-only view.
+    func fullFileContent(repoRelativePath: String) async -> String? {
+        guard let session = selectedSession,
+              let project = projects.first(where: { $0.id == session.projectID }) else { return nil }
+        return try? await provider.gitFileContent(
+            for: session, project: project, repoRelativePath: repoRelativePath)
+    }
+
     // MARK: GitHub connection & PR status
 
     /// Whether the app can talk to the GitHub API (powers the PR badge).

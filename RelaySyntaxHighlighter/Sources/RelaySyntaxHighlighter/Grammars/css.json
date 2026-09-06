@@ -1,0 +1,165 @@
+{
+ "language": "css",
+ "prismVersion": "1.29.0",
+ "rules": [
+  {
+   "name": "comment",
+   "patterns": [
+    {
+     "pattern": "\\/\\*[\\s\\S]*?\\*\\/",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "atrule",
+   "patterns": [
+    {
+     "pattern": "@[\\w-](?:[^;{\\s\"']|\\s+(?!\\s)|(?:\"(?:\\\\(?:\\r\\n|[\\s\\S])|[^\"\\\\\\r\\n])*\"|'(?:\\\\(?:\\r\\n|[\\s\\S])|[^'\\\\\\r\\n])*'))*?(?:;|(?=\\s*\\{))",
+     "flags": "",
+     "inside": {
+      "rules": [
+       {
+        "name": "rule",
+        "patterns": [
+         {
+          "pattern": "^@[\\w-]+",
+          "flags": ""
+         }
+        ]
+       },
+       {
+        "name": "selector-function-argument",
+        "patterns": [
+         {
+          "pattern": "(\\bselector\\s*\\(\\s*(?![\\s)]))(?:[^()\\s]|\\s+(?![\\s)])|\\((?:[^()]|\\([^()]*\\))*\\))+(?=\\s*\\))",
+          "flags": "",
+          "lookbehind": true,
+          "alias": [
+           "selector"
+          ]
+         }
+        ]
+       },
+       {
+        "name": "keyword",
+        "patterns": [
+         {
+          "pattern": "(^|[^\\w-])(?:and|not|only|or)(?![\\w-])",
+          "flags": "",
+          "lookbehind": true
+         }
+        ]
+       }
+      ],
+      "rest": {
+       "$language": "css"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "url",
+   "patterns": [
+    {
+     "pattern": "\\burl\\((?:(?:\"(?:\\\\(?:\\r\\n|[\\s\\S])|[^\"\\\\\\r\\n])*\"|'(?:\\\\(?:\\r\\n|[\\s\\S])|[^'\\\\\\r\\n])*')|(?:[^\\\\\\r\\n()\"']|\\\\[\\s\\S])*)\\)",
+     "flags": "i",
+     "greedy": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "function",
+        "patterns": [
+         {
+          "pattern": "^url",
+          "flags": "i"
+         }
+        ]
+       },
+       {
+        "name": "punctuation",
+        "patterns": [
+         {
+          "pattern": "^\\(|\\)$",
+          "flags": ""
+         }
+        ]
+       },
+       {
+        "name": "string",
+        "patterns": [
+         {
+          "pattern": "^(?:\"(?:\\\\(?:\\r\\n|[\\s\\S])|[^\"\\\\\\r\\n])*\"|'(?:\\\\(?:\\r\\n|[\\s\\S])|[^'\\\\\\r\\n])*')$",
+          "flags": "",
+          "alias": [
+           "url"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "selector",
+   "patterns": [
+    {
+     "pattern": "(^|[{}\\s])[^{}\\s](?:[^{};\"'\\s]|\\s+(?![\\s{])|(?:\"(?:\\\\(?:\\r\\n|[\\s\\S])|[^\"\\\\\\r\\n])*\"|'(?:\\\\(?:\\r\\n|[\\s\\S])|[^'\\\\\\r\\n])*'))*(?=\\s*\\{)",
+     "flags": "",
+     "lookbehind": true
+    }
+   ]
+  },
+  {
+   "name": "string",
+   "patterns": [
+    {
+     "pattern": "(?:\"(?:\\\\(?:\\r\\n|[\\s\\S])|[^\"\\\\\\r\\n])*\"|'(?:\\\\(?:\\r\\n|[\\s\\S])|[^'\\\\\\r\\n])*')",
+     "flags": "",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "property",
+   "patterns": [
+    {
+     "pattern": "(^|[^-\\w\\xA0-\\uFFFF])(?!\\s)[-_a-z\\xA0-\\uFFFF](?:(?!\\s)[-\\w\\xA0-\\uFFFF])*(?=\\s*:)",
+     "flags": "i",
+     "lookbehind": true
+    }
+   ]
+  },
+  {
+   "name": "important",
+   "patterns": [
+    {
+     "pattern": "!important\\b",
+     "flags": "i"
+    }
+   ]
+  },
+  {
+   "name": "function",
+   "patterns": [
+    {
+     "pattern": "(^|[^-a-z0-9])[-a-z0-9]+(?=\\()",
+     "flags": "i",
+     "lookbehind": true
+    }
+   ]
+  },
+  {
+   "name": "punctuation",
+   "patterns": [
+    {
+     "pattern": "[(){};:,]",
+     "flags": ""
+    }
+   ]
+  }
+ ]
+}

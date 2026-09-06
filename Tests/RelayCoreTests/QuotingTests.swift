@@ -119,4 +119,30 @@ struct RemotePathTests {
             Issue.record("control characters should fail")
         }
     }
+
+    @Test func repoRelativeSafety() {
+        // Ordinary diff-header paths are fine.
+        #expect(RemotePath.isSafeRepoRelative("Sources/App/Main.swift"))
+        #expect(RemotePath.isSafeRepoRelative("a file with spaces.txt"))
+        #expect(RemotePath.isSafeRepoRelative(".github/workflows/ci.yml"))
+        // Escapes and absolutes are rejected.
+        #expect(!RemotePath.isSafeRepoRelative("/etc/passwd"))
+        #expect(!RemotePath.isSafeRepoRelative("../secret"))
+        #expect(!RemotePath.isSafeRepoRelative("a/../../b"))
+        #expect(!RemotePath.isSafeRepoRelative(""))
+        #expect(!RemotePath.isSafeRepoRelative("with\nnewline"))
+        // A filename that merely contains "..", not as a component, is fine.
+        #expect(RemotePath.isSafeRepoRelative("file..bak"))
+    }
+
+    @Test func gitFileContentScriptQuotesPath() async throws {
+        // The path is interpolated as a single quoted shell word appended to
+        // "$root"/… — a hostile path stays inert.
+        let script = SSHTmuxScripts.gitFileContent(
+            tmuxName: "rterm-0123456789abcdef",
+            repoRelativePath: "a b/$(touch pwned).swift",
+            knownTmuxPath: "/usr/bin/tmux")
+        #expect(script.contains("'a b/$(touch pwned).swift'"))
+        #expect(script.contains("RTERM_FILE_BEGIN"))
+    }
 }

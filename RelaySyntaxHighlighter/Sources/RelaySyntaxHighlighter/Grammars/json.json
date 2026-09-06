@@ -1,0 +1,86 @@
+{
+ "language": "json",
+ "prismVersion": "1.29.0",
+ "rules": [
+  {
+   "name": "property",
+   "patterns": [
+    {
+     "pattern": "(^|[^\\\\])\"(?:\\\\.|[^\\\\\"\\r\\n])*\"(?=\\s*:)",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "string",
+   "patterns": [
+    {
+     "pattern": "(^|[^\\\\])\"(?:\\\\.|[^\\\\\"\\r\\n])*\"(?!\\s*:)",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "comment",
+   "patterns": [
+    {
+     "pattern": "\\/\\/.*|\\/\\*[\\s\\S]*?(?:\\*\\/|$)",
+     "flags": "",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "number",
+   "patterns": [
+    {
+     "pattern": "-?\\b\\d+(?:\\.\\d+)?(?:e[+-]?\\d+)?\\b",
+     "flags": "i"
+    }
+   ]
+  },
+  {
+   "name": "punctuation",
+   "patterns": [
+    {
+     "pattern": "[{}[\\],]",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "operator",
+   "patterns": [
+    {
+     "pattern": ":",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "boolean",
+   "patterns": [
+    {
+     "pattern": "\\b(?:false|true)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "null",
+   "patterns": [
+    {
+     "pattern": "\\bnull\\b",
+     "flags": "",
+     "alias": [
+      "keyword"
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -494,7 +494,40 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         )
     }
 
-    // MARK: File preview
+    public func gitFileContent(for session: RemoteSession, project: Project, repoRelativePath: String) async throws -> String? {
+        let alias = try self.alias(for: project)
+        guard TmuxNaming.isSafeSessionName(session.backendID) else {
+            throw RuntimeProviderError.invalidInput("Unsafe session identifier.")
+        }
+        // Reject anything that could escape the repo root; the script quotes
+        // the path, but a traversal or absolute input has no business here.
+        guard RemotePath.isSafeRepoRelative(repoRelativePath) else {
+            throw RuntimeProviderError.invalidInput("Unsafe file path.")
+        }
+        let result: SSHCommandRunner.CommandResult
+        do {
+            result = try await runner.runScript(
+                alias: alias,
+                script: SSHTmuxScripts.gitFileContent(
+                    tmuxName: session.backendID,
+                    repoRelativePath: repoRelativePath,
+                    knownTmuxPath: knownTmuxPath(for: project)),
+                timeout: .seconds(30)
+            )
+        } catch SSHCommandRunner.RunnerError.timedOut {
+            throw RuntimeProviderError.workspaceUnreachable(workspace: alias, detail: "Connection timed out.")
+        } catch let error as SSHCommandRunner.RunnerError {
+            throw RuntimeProviderError.operationFailed("Couldn't start ssh: \(error)")
+        }
+        guard result.exitCode == 0 else { throw mapFailure(alias: alias, result: result) }
+
+        // Markers precede the sentinel; the body after it is the raw file.
+        // No sentinel means a status marker (missing/too_big/none) — not an
+        // error, just nothing to show in full mode.
+        let sentinel = SSHTmuxScripts.Marker.fileBegin + "\n"
+        guard let sentinelRange = result.stdout.range(of: sentinel) else { return nil }
+        return String(result.stdout[sentinelRange.upperBound...])
+    }
 
     public func fetchPreviewFile(linkPath: String, for session: RemoteSession, project: Project) async throws -> URL {
         let alias = try self.alias(for: project)

@@ -1,0 +1,347 @@
+{
+ "language": "swift",
+ "prismVersion": "1.29.0",
+ "rules": [
+  {
+   "name": "comment",
+   "patterns": [
+    {
+     "pattern": "(^|[^\\\\:])(?:\\/\\/.*|\\/\\*(?:[^/*]|\\/(?!\\*)|\\*(?!\\/)|\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\/)*\\*\\/)",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "string-literal",
+   "patterns": [
+    {
+     "pattern": "(^|[^\"#])(?:\"(?:\\\\(?:\\((?:[^()]|\\([^()]*\\))*\\)|\\r\\n|[^(])|[^\\\\\\r\\n\"])*\"|\"\"\"(?:\\\\(?:\\((?:[^()]|\\([^()]*\\))*\\)|[^(])|[^\\\\\"]|\"(?!\"\"))*\"\"\")(?![\"#])",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "interpolation",
+        "patterns": [
+         {
+          "pattern": "(\\\\\\()(?:[^()]|\\([^()]*\\))*(?=\\))",
+          "flags": "",
+          "lookbehind": true,
+          "inside": {
+           "$language": "swift"
+          }
+         }
+        ]
+       },
+       {
+        "name": "interpolation-punctuation",
+        "patterns": [
+         {
+          "pattern": "^\\)|\\\\\\($",
+          "flags": "",
+          "alias": [
+           "punctuation"
+          ]
+         }
+        ]
+       },
+       {
+        "name": "punctuation",
+        "patterns": [
+         {
+          "pattern": "\\\\(?=[\\r\\n])",
+          "flags": ""
+         }
+        ]
+       },
+       {
+        "name": "string",
+        "patterns": [
+         {
+          "pattern": "[\\s\\S]+",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "pattern": "(^|[^\"#])(#+)(?:\"(?:\\\\(?:#+\\((?:[^()]|\\([^()]*\\))*\\)|\\r\\n|[^#])|[^\\\\\\r\\n])*?\"|\"\"\"(?:\\\\(?:#+\\((?:[^()]|\\([^()]*\\))*\\)|[^#])|[^\\\\])*?\"\"\")\\2",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "interpolation",
+        "patterns": [
+         {
+          "pattern": "(\\\\#+\\()(?:[^()]|\\([^()]*\\))*(?=\\))",
+          "flags": "",
+          "lookbehind": true,
+          "inside": {
+           "$language": "swift"
+          }
+         }
+        ]
+       },
+       {
+        "name": "interpolation-punctuation",
+        "patterns": [
+         {
+          "pattern": "^\\)|\\\\#+\\($",
+          "flags": "",
+          "alias": [
+           "punctuation"
+          ]
+         }
+        ]
+       },
+       {
+        "name": "string",
+        "patterns": [
+         {
+          "pattern": "[\\s\\S]+",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "directive",
+   "patterns": [
+    {
+     "pattern": "#(?:(?:elseif|if)\\b(?:[ \t]*(?:![ \\t]*)?(?:\\b\\w+\\b(?:[ \\t]*\\((?:[^()]|\\([^()]*\\))*\\))?|\\((?:[^()]|\\([^()]*\\))*\\))(?:[ \\t]*(?:&&|\\|\\|))?)+|(?:else|endif)\\b)",
+     "flags": "",
+     "alias": [
+      "property"
+     ],
+     "inside": {
+      "rules": [
+       {
+        "name": "directive-name",
+        "patterns": [
+         {
+          "pattern": "^#\\w+",
+          "flags": ""
+         }
+        ]
+       },
+       {
+        "name": "boolean",
+        "patterns": [
+         {
+          "pattern": "\\b(?:false|true)\\b",
+          "flags": ""
+         }
+        ]
+       },
+       {
+        "name": "number",
+        "patterns": [
+         {
+          "pattern": "\\b\\d+(?:\\.\\d+)*\\b",
+          "flags": ""
+         }
+        ]
+       },
+       {
+        "name": "operator",
+        "patterns": [
+         {
+          "pattern": "!|&&|\\|\\||[<>]=?",
+          "flags": ""
+         }
+        ]
+       },
+       {
+        "name": "punctuation",
+        "patterns": [
+         {
+          "pattern": "[(),]",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "literal",
+   "patterns": [
+    {
+     "pattern": "#(?:colorLiteral|column|dsohandle|file(?:ID|Literal|Path)?|function|imageLiteral|line)\\b",
+     "flags": "",
+     "alias": [
+      "constant"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "other-directive",
+   "patterns": [
+    {
+     "pattern": "#\\w+\\b",
+     "flags": "",
+     "alias": [
+      "property"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "attribute",
+   "patterns": [
+    {
+     "pattern": "@\\w+",
+     "flags": "",
+     "alias": [
+      "atrule"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "function-definition",
+   "patterns": [
+    {
+     "pattern": "(\\bfunc\\s+)\\w+",
+     "flags": "",
+     "lookbehind": true,
+     "alias": [
+      "function"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "label",
+   "patterns": [
+    {
+     "pattern": "\\b(break|continue)\\s+\\w+|\\b[a-zA-Z_]\\w*(?=\\s*:\\s*(?:for|repeat|while)\\b)",
+     "flags": "",
+     "lookbehind": true,
+     "alias": [
+      "important"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "keyword",
+   "patterns": [
+    {
+     "pattern": "\\b(?:Any|Protocol|Self|Type|actor|as|assignment|associatedtype|associativity|async|await|break|case|catch|class|continue|convenience|default|defer|deinit|didSet|do|dynamic|else|enum|extension|fallthrough|fileprivate|final|for|func|get|guard|higherThan|if|import|in|indirect|infix|init|inout|internal|is|isolated|lazy|left|let|lowerThan|mutating|none|nonisolated|nonmutating|open|operator|optional|override|postfix|precedencegroup|prefix|private|protocol|public|repeat|required|rethrows|return|right|safe|self|set|some|static|struct|subscript|super|switch|throw|throws|try|typealias|unowned|unsafe|var|weak|where|while|willSet)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "boolean",
+   "patterns": [
+    {
+     "pattern": "\\b(?:false|true)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "nil",
+   "patterns": [
+    {
+     "pattern": "\\bnil\\b",
+     "flags": "",
+     "alias": [
+      "constant"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "short-argument",
+   "patterns": [
+    {
+     "pattern": "\\$\\d+\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "omit",
+   "patterns": [
+    {
+     "pattern": "\\b_\\b",
+     "flags": "",
+     "alias": [
+      "keyword"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "number",
+   "patterns": [
+    {
+     "pattern": "\\b(?:[\\d_]+(?:\\.[\\de_]+)?|0x[a-f0-9_]+(?:\\.[a-f0-9p_]+)?|0b[01_]+|0o[0-7_]+)\\b",
+     "flags": "i"
+    }
+   ]
+  },
+  {
+   "name": "class-name",
+   "patterns": [
+    {
+     "pattern": "\\b[A-Z](?:[A-Z_\\d]*[a-z]\\w*)?\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "function",
+   "patterns": [
+    {
+     "pattern": "\\b[a-z_]\\w*(?=\\s*\\()",
+     "flags": "i"
+    }
+   ]
+  },
+  {
+   "name": "constant",
+   "patterns": [
+    {
+     "pattern": "\\b(?:[A-Z_]{2,}|k[A-Z][A-Za-z_]+)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "operator",
+   "patterns": [
+    {
+     "pattern": "[-+*/%=!<>&|^~?]+|\\.[.\\-+*/%=!<>&|^~?]+",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "punctuation",
+   "patterns": [
+    {
+     "pattern": "[{}[\\]();,.:\\\\]",
+     "flags": ""
+    }
+   ]
+  }
+ ]
+}

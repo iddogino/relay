@@ -96,6 +96,13 @@ public protocol RuntimeProvider: Sendable {
     /// nil when the session isn't in a git context.
     func gitDiff(for session: RemoteSession, project: Project) async throws -> SessionGitDiff?
 
+    /// Working-tree content of one repo-relative file from the session's
+    /// repository, for the diff tray's full-file mode. nil when the file is
+    /// missing, unreadable, over the provider's size cap, or the provider
+    /// doesn't support the fetch (the default) — callers fall back to the
+    /// hunks-only view.
+    func gitFileContent(for session: RemoteSession, project: Project, repoRelativePath: String) async throws -> String?
+
     /// Copies one file from the session's machine into a disposable local
     /// location (the OS temp area, reclaimed automatically) and returns its
     /// URL, for previewing a file link clicked in the terminal. `linkPath`
@@ -134,6 +141,8 @@ extension RuntimeProvider {
     public func gitState(for session: RemoteSession, project: Project) async throws -> SessionGitState? { nil }
 
     public func gitDiff(for session: RemoteSession, project: Project) async throws -> SessionGitDiff? { nil }
+
+    public func gitFileContent(for session: RemoteSession, project: Project, repoRelativePath: String) async throws -> String? { nil }
 
     public func fetchPreviewFile(linkPath: String, for session: RemoteSession, project: Project) async throws -> URL {
         throw RuntimeProviderError.operationFailed("This provider can't preview remote files.")

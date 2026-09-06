@@ -1,0 +1,8 @@
+{
+  "name": "relay-prism-grammar-converter",
+  "private": true,
+  "description": "Converts Prism language definitions (JS) into the JSON grammar files consumed by RelaySyntaxHighlighter. Run via sync-prism.sh.",
+  "dependencies": {
+    "prismjs": "1.29.0"
+  }
+}

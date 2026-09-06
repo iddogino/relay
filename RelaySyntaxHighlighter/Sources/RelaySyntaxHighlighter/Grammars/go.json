@@ -1,0 +1,115 @@
+{
+ "language": "go",
+ "prismVersion": "1.29.0",
+ "rules": [
+  {
+   "name": "comment",
+   "patterns": [
+    {
+     "pattern": "(^|[^\\\\])\\/\\*[\\s\\S]*?(?:\\*\\/|$)",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    },
+    {
+     "pattern": "(^|[^\\\\:])\\/\\/.*",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "char",
+   "patterns": [
+    {
+     "pattern": "'(?:\\\\.|[^'\\\\\\r\\n]){0,10}'",
+     "flags": "",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "string",
+   "patterns": [
+    {
+     "pattern": "(^|[^\\\\])\"(?:\\\\.|[^\"\\\\\\r\\n])*\"|`[^`]*`",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "keyword",
+   "patterns": [
+    {
+     "pattern": "\\b(?:break|case|chan|const|continue|default|defer|else|fallthrough|for|func|go(?:to)?|if|import|interface|map|package|range|return|select|struct|switch|type|var)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "boolean",
+   "patterns": [
+    {
+     "pattern": "\\b(?:_|false|iota|nil|true)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "function",
+   "patterns": [
+    {
+     "pattern": "\\b\\w+(?=\\()",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "number",
+   "patterns": [
+    {
+     "pattern": "\\b0(?:b[01_]+|o[0-7_]+)i?\\b",
+     "flags": "i"
+    },
+    {
+     "pattern": "\\b0x(?:[a-f\\d_]+(?:\\.[a-f\\d_]*)?|\\.[a-f\\d_]+)(?:p[+-]?\\d+(?:_\\d+)*)?i?(?!\\w)",
+     "flags": "i"
+    },
+    {
+     "pattern": "(?:\\b\\d[\\d_]*(?:\\.[\\d_]*)?|\\B\\.\\d[\\d_]*)(?:e[+-]?[\\d_]+)?i?(?!\\w)",
+     "flags": "i"
+    }
+   ]
+  },
+  {
+   "name": "operator",
+   "patterns": [
+    {
+     "pattern": "[*\\/%^!=]=?|\\+[=+]?|-[=-]?|\\|[=|]?|&(?:=|&|\\^=?)?|>(?:>=?|=)?|<(?:<=?|=|-)?|:=|\\.\\.\\.",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "punctuation",
+   "patterns": [
+    {
+     "pattern": "[{}[\\];(),.:]",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "builtin",
+   "patterns": [
+    {
+     "pattern": "\\b(?:append|bool|byte|cap|close|complex|complex(?:64|128)|copy|delete|error|float(?:32|64)|u?int(?:8|16|32|64)?|imag|len|make|new|panic|print(?:ln)?|real|recover|rune|string|uintptr)\\b",
+     "flags": ""
+    }
+   ]
+  }
+ ]
+}

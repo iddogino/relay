@@ -22,6 +22,8 @@ enum SSHTmuxScripts {
         static let pullRequest = "RTERM_PR"
         /// Sentinel line separating markers from a raw diff body.
         static let diffBegin = "RTERM_DIFF_BEGIN"
+        static let file = "RTERM_FILE"
+        static let fileBegin = "RTERM_FILE_BEGIN"
         static let preview = "RTERM_PREVIEW"
         static let previewPath = "RTERM_PREVIEW_PATH"
         static let previewSize = "RTERM_PREVIEW_SIZE"
@@ -376,6 +378,36 @@ enum SSHTmuxScripts {
         [ -n "$base" ] && printf 'RTERM_GIT_BASE=%s\\n' "$base"
         printf 'RTERM_DIFF_BEGIN\\n'
         git -C "$p" diff --no-color --no-ext-diff "$mb" -- 2>/dev/null | head -c \(diffByteCap)
+        exit 0
+        """
+    }
+
+    /// Byte cap for full-file content fetched for the diff tray's full
+    /// mode. Far smaller than the preview cap: this is rendered inline as
+    /// highlighted text, not handed to Quick Look.
+    static let fullFileByteCap = 1_048_576 // 1 MB
+
+    /// Emits the working-tree content of one repo-relative file from the
+    /// session pane's repository: markers, then `RTERM_FILE_BEGIN`, then the
+    /// raw bytes capped at `fullFileByteCap`. The path is a single quoted
+    /// value resolved against `git rev-parse --show-toplevel` — never
+    /// executed, never globbed.
+    static func gitFileContent(tmuxName: String, repoRelativePath: String, knownTmuxPath: String?) -> String {
+        precondition(TmuxNaming.isSafeSessionName(tmuxName))
+        return """
+        set -u
+        \(tmuxPreamble(knownTmuxPath: knownTmuxPath))
+        \(gitContextFragment(tmuxName: tmuxName))
+        root=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null) || root=""
+        [ -n "$root" ] || { printf 'RTERM_FILE=missing\\n'; exit 0; }
+        f="$root"/\(POSIXShellQuote.quote(repoRelativePath))
+        [ -f "$f" ] && [ -r "$f" ] || { printf 'RTERM_FILE=missing\\n'; exit 0; }
+        size=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+        case "$size" in ''|*[!0-9]*) printf 'RTERM_FILE=missing\\n'; exit 0 ;; esac
+        if [ "$size" -gt \(fullFileByteCap) ]; then printf 'RTERM_FILE=too_big\\n'; exit 0; fi
+        printf 'RTERM_FILE=ok\\n'
+        printf 'RTERM_FILE_BEGIN\\n'
+        cat -- "$f"
         exit 0
         """
     }

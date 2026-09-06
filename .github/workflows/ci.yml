@@ -25,3 +25,19 @@ jobs:
 
       - name: Build release binary
         run: swift build -c release --product Relay
+
+  # RelaySyntaxHighlighter is a standalone, pure-Swift package (no AppKit, no
+  # libghostty) — so its Prism fixture suite runs on a cheap Linux runner,
+  # which also guards against swift-corelibs-foundation's NSRegularExpression
+  # diverging from Apple's.
+  highlighter-linux:
+    name: Syntax highlighter (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run highlighter fixture suite
+        working-directory: RelaySyntaxHighlighter
+        run: swift test

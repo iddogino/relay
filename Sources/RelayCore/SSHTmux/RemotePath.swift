@@ -25,6 +25,17 @@ public enum RemotePath {
         return POSIXShellQuote.quote(input)
     }
 
+    /// True if `path` is safe to resolve against a repository root: a
+    /// relative path with no control characters, no leading `/`, and no `..`
+    /// component that could escape the root. Used for full-file fetches,
+    /// where the path comes from parsed diff headers.
+    public static func isSafeRepoRelative(_ path: String) -> Bool {
+        guard !path.isEmpty, !path.hasPrefix("/"), path.count <= 4096 else { return false }
+        guard !POSIXShellQuote.containsControlCharacters(path) else { return false }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        return !components.contains("..")
+    }
+
     /// Basic sanity validation for a user-entered path.
     public static func validateInput(_ input: String) -> Result<String, RuntimeProviderError> {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)

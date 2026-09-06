@@ -1,0 +1,249 @@
+{
+ "language": "diff",
+ "prismVersion": "1.29.0",
+ "rules": [
+  {
+   "name": "coord",
+   "patterns": [
+    {
+     "pattern": "^(?:\\*{3}|-{3}|\\+{3}).*$",
+     "flags": "m"
+    },
+    {
+     "pattern": "^@@.*@@$",
+     "flags": "m"
+    },
+    {
+     "pattern": "^\\d.*$",
+     "flags": "m"
+    }
+   ]
+  },
+  {
+   "name": "deleted-sign",
+   "patterns": [
+    {
+     "pattern": "^(?:[-].*(?:\\r\\n?|\\n|(?![\\s\\S])))+",
+     "flags": "m",
+     "alias": [
+      "deleted"
+     ],
+     "inside": {
+      "rules": [
+       {
+        "name": "line",
+        "patterns": [
+         {
+          "pattern": "(.)(?=[\\s\\S]).*(?:\\r\\n?|\\n)?",
+          "flags": "",
+          "lookbehind": true
+         }
+        ]
+       },
+       {
+        "name": "prefix",
+        "patterns": [
+         {
+          "pattern": "[\\s\\S]",
+          "flags": "",
+          "alias": [
+           "deleted"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "deleted-arrow",
+   "patterns": [
+    {
+     "pattern": "^(?:[<].*(?:\\r\\n?|\\n|(?![\\s\\S])))+",
+     "flags": "m",
+     "alias": [
+      "deleted"
+     ],
+     "inside": {
+      "rules": [
+       {
+        "name": "line",
+        "patterns": [
+         {
+          "pattern": "(.)(?=[\\s\\S]).*(?:\\r\\n?|\\n)?",
+          "flags": "",
+          "lookbehind": true
+         }
+        ]
+       },
+       {
+        "name": "prefix",
+        "patterns": [
+         {
+          "pattern": "[\\s\\S]",
+          "flags": "",
+          "alias": [
+           "deleted"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "inserted-sign",
+   "patterns": [
+    {
+     "pattern": "^(?:[+].*(?:\\r\\n?|\\n|(?![\\s\\S])))+",
+     "flags": "m",
+     "alias": [
+      "inserted"
+     ],
+     "inside": {
+      "rules": [
+       {
+        "name": "line",
+        "patterns": [
+         {
+          "pattern": "(.)(?=[\\s\\S]).*(?:\\r\\n?|\\n)?",
+          "flags": "",
+          "lookbehind": true
+         }
+        ]
+       },
+       {
+        "name": "prefix",
+        "patterns": [
+         {
+          "pattern": "[\\s\\S]",
+          "flags": "",
+          "alias": [
+           "inserted"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "inserted-arrow",
+   "patterns": [
+    {
+     "pattern": "^(?:[>].*(?:\\r\\n?|\\n|(?![\\s\\S])))+",
+     "flags": "m",
+     "alias": [
+      "inserted"
+     ],
+     "inside": {
+      "rules": [
+       {
+        "name": "line",
+        "patterns": [
+         {
+          "pattern": "(.)(?=[\\s\\S]).*(?:\\r\\n?|\\n)?",
+          "flags": "",
+          "lookbehind": true
+         }
+        ]
+       },
+       {
+        "name": "prefix",
+        "patterns": [
+         {
+          "pattern": "[\\s\\S]",
+          "flags": "",
+          "alias": [
+           "inserted"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "unchanged",
+   "patterns": [
+    {
+     "pattern": "^(?:[ ].*(?:\\r\\n?|\\n|(?![\\s\\S])))+",
+     "flags": "m",
+     "alias": [],
+     "inside": {
+      "rules": [
+       {
+        "name": "line",
+        "patterns": [
+         {
+          "pattern": "(.)(?=[\\s\\S]).*(?:\\r\\n?|\\n)?",
+          "flags": "",
+          "lookbehind": true
+         }
+        ]
+       },
+       {
+        "name": "prefix",
+        "patterns": [
+         {
+          "pattern": "[\\s\\S]",
+          "flags": "",
+          "alias": [
+           "unchanged"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "diff",
+   "patterns": [
+    {
+     "pattern": "^(?:[!].*(?:\\r\\n?|\\n|(?![\\s\\S])))+",
+     "flags": "m",
+     "alias": [
+      "bold"
+     ],
+     "inside": {
+      "rules": [
+       {
+        "name": "line",
+        "patterns": [
+         {
+          "pattern": "(.)(?=[\\s\\S]).*(?:\\r\\n?|\\n)?",
+          "flags": "",
+          "lookbehind": true
+         }
+        ]
+       },
+       {
+        "name": "prefix",
+        "patterns": [
+         {
+          "pattern": "[\\s\\S]",
+          "flags": "",
+          "alias": [
+           "diff"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

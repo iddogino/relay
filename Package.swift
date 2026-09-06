@@ -10,6 +10,10 @@ let package = Package(
         // Auto-updates. The framework is embedded into the bundle (and its
         // nested executables signed) by Scripts/build-app.sh.
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6"),
+        // Diff-viewer syntax highlighting. Standalone by design (own
+        // manifest, Linux-testable) so it can be swapped out — see
+        // RelaySyntaxHighlighter/PORTING.md.
+        .package(path: "RelaySyntaxHighlighter"),
     ],
     targets: [
         // Pinned libghostty build. See docs/GHOSTTY_PIN.md and Scripts/build-libghostty.sh.
@@ -31,6 +35,7 @@ let package = Package(
                 "RelayCore",
                 "GhosttyKit",
                 .product(name: "Sparkle", package: "Sparkle"),
+                .product(name: "RelaySyntaxHighlighter", package: "RelaySyntaxHighlighter"),
             ],
             path: "Sources/Relay",
             linkerSettings: [

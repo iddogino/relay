@@ -1,0 +1,203 @@
+{
+ "language": "python",
+ "prismVersion": "1.29.0",
+ "rules": [
+  {
+   "name": "comment",
+   "patterns": [
+    {
+     "pattern": "(^|[^\\\\])#.*",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "string-interpolation",
+   "patterns": [
+    {
+     "pattern": "(?:f|fr|rf)(?:(\"\"\"|''')[\\s\\S]*?\\1|(\"|')(?:\\\\.|(?!\\2)[^\\\\\\r\\n])*\\2)",
+     "flags": "i",
+     "greedy": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "interpolation",
+        "patterns": [
+         {
+          "pattern": "((?:^|[^{])(?:\\{\\{)*)\\{(?!\\{)(?:[^{}]|\\{(?!\\{)(?:[^{}]|\\{(?!\\{)(?:[^{}])+\\})+\\})+\\}",
+          "flags": "",
+          "lookbehind": true,
+          "inside": {
+           "rules": [
+            {
+             "name": "format-spec",
+             "patterns": [
+              {
+               "pattern": "(:)[^:(){}]+(?=\\}$)",
+               "flags": "",
+               "lookbehind": true
+              }
+             ]
+            },
+            {
+             "name": "conversion-option",
+             "patterns": [
+              {
+               "pattern": "![sra](?=[:}]$)",
+               "flags": "",
+               "alias": [
+                "punctuation"
+               ]
+              }
+             ]
+            }
+           ],
+           "rest": {
+            "$language": "python"
+           }
+          }
+         }
+        ]
+       },
+       {
+        "name": "string",
+        "patterns": [
+         {
+          "pattern": "[\\s\\S]+",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "triple-quoted-string",
+   "patterns": [
+    {
+     "pattern": "(?:[rub]|br|rb)?(\"\"\"|''')[\\s\\S]*?\\1",
+     "flags": "i",
+     "greedy": true,
+     "alias": [
+      "string"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "string",
+   "patterns": [
+    {
+     "pattern": "(?:[rub]|br|rb)?(\"|')(?:\\\\.|(?!\\1)[^\\\\\\r\\n])*\\1",
+     "flags": "i",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "function",
+   "patterns": [
+    {
+     "pattern": "((?:^|\\s)def[ \\t]+)[a-zA-Z_]\\w*(?=\\s*\\()",
+     "flags": "",
+     "lookbehind": true
+    }
+   ]
+  },
+  {
+   "name": "class-name",
+   "patterns": [
+    {
+     "pattern": "(\\bclass\\s+)\\w+",
+     "flags": "i",
+     "lookbehind": true
+    }
+   ]
+  },
+  {
+   "name": "decorator",
+   "patterns": [
+    {
+     "pattern": "(^[\\t ]*)@\\w+(?:\\.\\w+)*",
+     "flags": "m",
+     "lookbehind": true,
+     "alias": [
+      "annotation",
+      "punctuation"
+     ],
+     "inside": {
+      "rules": [
+       {
+        "name": "punctuation",
+        "patterns": [
+         {
+          "pattern": "\\.",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "keyword",
+   "patterns": [
+    {
+     "pattern": "\\b(?:_(?=\\s*:)|and|as|assert|async|await|break|case|class|continue|def|del|elif|else|except|exec|finally|for|from|global|if|import|in|is|lambda|match|nonlocal|not|or|pass|print|raise|return|try|while|with|yield)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "builtin",
+   "patterns": [
+    {
+     "pattern": "\\b(?:__import__|abs|all|any|apply|ascii|basestring|bin|bool|buffer|bytearray|bytes|callable|chr|classmethod|cmp|coerce|compile|complex|delattr|dict|dir|divmod|enumerate|eval|execfile|file|filter|float|format|frozenset|getattr|globals|hasattr|hash|help|hex|id|input|int|intern|isinstance|issubclass|iter|len|list|locals|long|map|max|memoryview|min|next|object|oct|open|ord|pow|property|range|raw_input|reduce|reload|repr|reversed|round|set|setattr|slice|sorted|staticmethod|str|sum|super|tuple|type|unichr|unicode|vars|xrange|zip)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "boolean",
+   "patterns": [
+    {
+     "pattern": "\\b(?:False|None|True)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "number",
+   "patterns": [
+    {
+     "pattern": "\\b0(?:b(?:_?[01])+|o(?:_?[0-7])+|x(?:_?[a-f0-9])+)\\b|(?:\\b\\d+(?:_\\d+)*(?:\\.(?:\\d+(?:_\\d+)*)?)?|\\B\\.\\d+(?:_\\d+)*)(?:e[+-]?\\d+(?:_\\d+)*)?j?(?!\\w)",
+     "flags": "i"
+    }
+   ]
+  },
+  {
+   "name": "operator",
+   "patterns": [
+    {
+     "pattern": "[-+%=]=?|!=|:=|\\*\\*?=?|\\/\\/?=?|<[<=>]?|>[=>]?|[&|^~]",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "punctuation",
+   "patterns": [
+    {
+     "pattern": "[{}[\\];(),.:]",
+     "flags": ""
+    }
+   ]
+  }
+ ]
+}

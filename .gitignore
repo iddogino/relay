@@ -5,3 +5,5 @@ Vendor/ghostty/
 Vendor/toolchain/
 .DS_Store
 .env
+# Local Claude Code session state — never ship.
+.claude/

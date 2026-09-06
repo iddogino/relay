@@ -1,0 +1,243 @@
+{
+ "language": "markup",
+ "prismVersion": "1.29.0",
+ "rules": [
+  {
+   "name": "comment",
+   "patterns": [
+    {
+     "pattern": "<!--(?:(?!<!--)[\\s\\S])*?-->",
+     "flags": "",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "prolog",
+   "patterns": [
+    {
+     "pattern": "<\\?[\\s\\S]+?\\?>",
+     "flags": "",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "doctype",
+   "patterns": [
+    {
+     "pattern": "<!DOCTYPE(?:[^>\"'[\\]]|\"[^\"]*\"|'[^']*')+(?:\\[(?:[^<\"'\\]]|\"[^\"]*\"|'[^']*'|<(?!!--)|<!--(?:[^-]|-(?!->))*-->)*\\]\\s*)?>",
+     "flags": "i",
+     "greedy": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "internal-subset",
+        "patterns": [
+         {
+          "pattern": "(^[^\\[]*\\[)[\\s\\S]+(?=\\]>$)",
+          "flags": "",
+          "lookbehind": true,
+          "greedy": true,
+          "inside": {
+           "$language": "markup"
+          }
+         }
+        ]
+       },
+       {
+        "name": "string",
+        "patterns": [
+         {
+          "pattern": "\"[^\"]*\"|'[^']*'",
+          "flags": "",
+          "greedy": true
+         }
+        ]
+       },
+       {
+        "name": "punctuation",
+        "patterns": [
+         {
+          "pattern": "^<!|>$|[[\\]]",
+          "flags": ""
+         }
+        ]
+       },
+       {
+        "name": "doctype-tag",
+        "patterns": [
+         {
+          "pattern": "^DOCTYPE",
+          "flags": "i"
+         }
+        ]
+       },
+       {
+        "name": "name",
+        "patterns": [
+         {
+          "pattern": "[^\\s<>'\"]+",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "cdata",
+   "patterns": [
+    {
+     "pattern": "<!\\[CDATA\\[[\\s\\S]*?\\]\\]>",
+     "flags": "i",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "tag",
+   "patterns": [
+    {
+     "pattern": "<\\/?(?!\\d)[^\\s>\\/=$<%]+(?:\\s(?:\\s*[^\\s>\\/=]+(?:\\s*=\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s'\">=]+(?=[\\s>]))|(?=[\\s/>])))+)?\\s*\\/?>",
+     "flags": "",
+     "greedy": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "tag",
+        "patterns": [
+         {
+          "pattern": "^<\\/?[^\\s>\\/]+",
+          "flags": "",
+          "inside": {
+           "rules": [
+            {
+             "name": "punctuation",
+             "patterns": [
+              {
+               "pattern": "^<\\/?",
+               "flags": ""
+              }
+             ]
+            },
+            {
+             "name": "namespace",
+             "patterns": [
+              {
+               "pattern": "^[^\\s>\\/:]+:",
+               "flags": ""
+              }
+             ]
+            }
+           ]
+          }
+         }
+        ]
+       },
+       {
+        "name": "special-attr",
+        "patterns": []
+       },
+       {
+        "name": "attr-value",
+        "patterns": [
+         {
+          "pattern": "=\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s'\">=]+)",
+          "flags": "",
+          "inside": {
+           "rules": [
+            {
+             "name": "punctuation",
+             "patterns": [
+              {
+               "pattern": "^=",
+               "flags": "",
+               "alias": [
+                "attr-equals"
+               ]
+              },
+              {
+               "pattern": "^(\\s*)[\"']|[\"']$",
+               "flags": "",
+               "lookbehind": true
+              }
+             ]
+            },
+            {
+             "name": "entity",
+             "patterns": [
+              {
+               "pattern": "&[\\da-z]{1,8};",
+               "flags": "i",
+               "alias": [
+                "named-entity"
+               ]
+              },
+              {
+               "pattern": "&#x?[\\da-f]{1,8};",
+               "flags": "i"
+              }
+             ]
+            }
+           ]
+          }
+         }
+        ]
+       },
+       {
+        "name": "punctuation",
+        "patterns": [
+         {
+          "pattern": "\\/?>",
+          "flags": ""
+         }
+        ]
+       },
+       {
+        "name": "attr-name",
+        "patterns": [
+         {
+          "pattern": "[^\\s>\\/]+",
+          "flags": "",
+          "inside": {
+           "rules": [
+            {
+             "name": "namespace",
+             "patterns": [
+              {
+               "pattern": "^[^\\s>\\/:]+:",
+               "flags": ""
+              }
+             ]
+            }
+           ]
+          }
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "entity",
+   "patterns": [
+    {
+     "pattern": "&[\\da-z]{1,8};",
+     "flags": "i",
+     "alias": [
+      "named-entity"
+     ]
+    },
+    {
+     "pattern": "&#x?[\\da-f]{1,8};",
+     "flags": "i"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,753 @@
+{
+ "language": "jsx",
+ "prismVersion": "1.29.0",
+ "rules": [
+  {
+   "name": "comment",
+   "patterns": [
+    {
+     "pattern": "(^|[^\\\\])\\/\\*[\\s\\S]*?(?:\\*\\/|$)",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    },
+    {
+     "pattern": "(^|[^\\\\:])\\/\\/.*",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "prolog",
+   "patterns": [
+    {
+     "pattern": "<\\?[\\s\\S]+?\\?>",
+     "flags": "",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "doctype",
+   "patterns": [
+    {
+     "pattern": "<!DOCTYPE(?:[^>\"'[\\]]|\"[^\"]*\"|'[^']*')+(?:\\[(?:[^<\"'\\]]|\"[^\"]*\"|'[^']*'|<(?!!--)|<!--(?:[^-]|-(?!->))*-->)*\\]\\s*)?>",
+     "flags": "i",
+     "greedy": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "internal-subset",
+        "patterns": [
+         {
+          "pattern": "(^[^\\[]*\\[)[\\s\\S]+(?=\\]>$)",
+          "flags": "",
+          "lookbehind": true,
+          "greedy": true,
+          "inside": {
+           "$language": "jsx"
+          }
+         }
+        ]
+       },
+       {
+        "name": "string",
+        "patterns": [
+         {
+          "pattern": "\"[^\"]*\"|'[^']*'",
+          "flags": "",
+          "greedy": true
+         }
+        ]
+       },
+       {
+        "name": "punctuation",
+        "patterns": [
+         {
+          "pattern": "^<!|>$|[[\\]]",
+          "flags": ""
+         }
+        ]
+       },
+       {
+        "name": "doctype-tag",
+        "patterns": [
+         {
+          "pattern": "^DOCTYPE",
+          "flags": "i"
+         }
+        ]
+       },
+       {
+        "name": "name",
+        "patterns": [
+         {
+          "pattern": "[^\\s<>'\"]+",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "script",
+   "patterns": [
+    {
+     "pattern": "(<script[^>]*>)(?:<!\\[CDATA\\[(?:[^\\]]|\\](?!\\]>))*\\]\\]>|(?!<!\\[CDATA\\[)[\\s\\S])*?(?=<\\/script>)",
+     "flags": "i",
+     "lookbehind": true,
+     "greedy": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "included-cdata",
+        "patterns": [
+         {
+          "pattern": "<!\\[CDATA\\[[\\s\\S]*?\\]\\]>",
+          "flags": "i",
+          "inside": {
+           "rules": [
+            {
+             "name": "language-javascript",
+             "patterns": [
+              {
+               "pattern": "(^<!\\[CDATA\\[)[\\s\\S]+?(?=\\]\\]>$)",
+               "flags": "i",
+               "lookbehind": true,
+               "inside": {
+                "$language": "javascript"
+               }
+              }
+             ]
+            },
+            {
+             "name": "cdata",
+             "patterns": [
+              {
+               "pattern": "^<!\\[CDATA\\[|\\]\\]>$",
+               "flags": "i"
+              }
+             ]
+            }
+           ]
+          }
+         }
+        ]
+       },
+       {
+        "name": "language-javascript",
+        "patterns": [
+         {
+          "pattern": "[\\s\\S]+",
+          "flags": "",
+          "inside": {
+           "$language": "javascript"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "cdata",
+   "patterns": [
+    {
+     "pattern": "<!\\[CDATA\\[[\\s\\S]*?\\]\\]>",
+     "flags": "i",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "tag",
+   "patterns": [
+    {
+     "pattern": "<\\/?(?:[\\w.:-]+(?:(?:\\s|\\/\\/.*(?!.)|\\/\\*(?:[^*]|\\*(?!\\/))\\*\\/)+(?:[\\w.:$-]+(?:=(?:\"(?:\\\\[\\s\\S]|[^\\\\\"])*\"|'(?:\\\\[\\s\\S]|[^\\\\'])*'|[^\\s{'\"/>=]+|(?:\\{(?:\\{(?:\\{[^{}]*\\}|[^{}])*\\}|[^{}])*\\})))?|(?:\\{(?:\\s|\\/\\/.*(?!.)|\\/\\*(?:[^*]|\\*(?!\\/))\\*\\/)*\\.{3}(?:[^{}]|(?:\\{(?:\\{(?:\\{[^{}]*\\}|[^{}])*\\}|[^{}])*\\}))*\\})))*(?:\\s|\\/\\/.*(?!.)|\\/\\*(?:[^*]|\\*(?!\\/))\\*\\/)*\\/?)?>",
+     "flags": "",
+     "greedy": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "tag",
+        "patterns": [
+         {
+          "pattern": "^<\\/?[^\\s>\\/]*",
+          "flags": "",
+          "inside": {
+           "rules": [
+            {
+             "name": "punctuation",
+             "patterns": [
+              {
+               "pattern": "^<\\/?",
+               "flags": ""
+              }
+             ]
+            },
+            {
+             "name": "namespace",
+             "patterns": [
+              {
+               "pattern": "^[^\\s>\\/:]+:",
+               "flags": ""
+              }
+             ]
+            },
+            {
+             "name": "class-name",
+             "patterns": [
+              {
+               "pattern": "^[A-Z]\\w*(?:\\.[A-Z]\\w*)*$",
+               "flags": ""
+              }
+             ]
+            }
+           ]
+          }
+         }
+        ]
+       },
+       {
+        "name": "script",
+        "patterns": [
+         {
+          "pattern": "=(?:\\{(?:\\{(?:\\{[^{}]*\\}|[^{}])*\\}|[^{}])*\\})",
+          "flags": "",
+          "alias": [
+           "language-javascript"
+          ],
+          "inside": {
+           "rules": [
+            {
+             "name": "script-punctuation",
+             "patterns": [
+              {
+               "pattern": "^=(?=\\{)",
+               "flags": "",
+               "alias": [
+                "punctuation"
+               ]
+              }
+             ]
+            }
+           ],
+           "rest": {
+            "$language": "jsx"
+           }
+          }
+         }
+        ]
+       },
+       {
+        "name": "special-attr",
+        "patterns": [
+         {
+          "pattern": "(^|[\"'\\s])(?:on(?:abort|blur|change|click|composition(?:end|start|update)|dblclick|error|focus(?:in|out)?|key(?:down|up)|load|mouse(?:down|enter|leave|move|out|over|up)|reset|resize|scroll|select|slotchange|submit|unload|wheel))\\s*=\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s'\">=]+(?=[\\s>]))",
+          "flags": "i",
+          "lookbehind": true,
+          "inside": {
+           "rules": [
+            {
+             "name": "attr-name",
+             "patterns": [
+              {
+               "pattern": "^[^\\s=]+",
+               "flags": ""
+              }
+             ]
+            },
+            {
+             "name": "attr-value",
+             "patterns": [
+              {
+               "pattern": "=[\\s\\S]+",
+               "flags": "",
+               "inside": {
+                "rules": [
+                 {
+                  "name": "value",
+                  "patterns": [
+                   {
+                    "pattern": "(^=\\s*([\"']|(?![\"'])))\\S[\\s\\S]*(?=\\2$)",
+                    "flags": "",
+                    "lookbehind": true,
+                    "alias": [
+                     "javascript",
+                     "language-javascript"
+                    ],
+                    "inside": {
+                     "$language": "javascript"
+                    }
+                   }
+                  ]
+                 },
+                 {
+                  "name": "punctuation",
+                  "patterns": [
+                   {
+                    "pattern": "^=",
+                    "flags": "",
+                    "alias": [
+                     "attr-equals"
+                    ]
+                   },
+                   {
+                    "pattern": "\"|'",
+                    "flags": ""
+                   }
+                  ]
+                 }
+                ]
+               }
+              }
+             ]
+            }
+           ]
+          }
+         }
+        ]
+       },
+       {
+        "name": "attr-value",
+        "patterns": [
+         {
+          "pattern": "=(?!\\{)(?:\"(?:\\\\[\\s\\S]|[^\\\\\"])*\"|'(?:\\\\[\\s\\S]|[^\\\\'])*'|[^\\s'\">]+)",
+          "flags": "",
+          "inside": {
+           "rules": [
+            {
+             "name": "punctuation",
+             "patterns": [
+              {
+               "pattern": "^=",
+               "flags": "",
+               "alias": [
+                "attr-equals"
+               ]
+              },
+              {
+               "pattern": "^(\\s*)[\"']|[\"']$",
+               "flags": "",
+               "lookbehind": true
+              }
+             ]
+            },
+            {
+             "name": "entity",
+             "patterns": [
+              {
+               "pattern": "&[\\da-z]{1,8};",
+               "flags": "i",
+               "alias": [
+                "named-entity"
+               ]
+              },
+              {
+               "pattern": "&#x?[\\da-f]{1,8};",
+               "flags": "i"
+              }
+             ]
+            }
+           ]
+          }
+         }
+        ]
+       },
+       {
+        "name": "punctuation",
+        "patterns": [
+         {
+          "pattern": "\\/?>",
+          "flags": ""
+         }
+        ]
+       },
+       {
+        "name": "spread",
+        "patterns": [
+         {
+          "pattern": "(?:\\{(?:\\s|\\/\\/.*(?!.)|\\/\\*(?:[^*]|\\*(?!\\/))\\*\\/)*\\.{3}(?:[^{}]|(?:\\{(?:\\{(?:\\{[^{}]*\\}|[^{}])*\\}|[^{}])*\\}))*\\})",
+          "flags": "",
+          "inside": {
+           "$language": "jsx"
+          }
+         }
+        ]
+       },
+       {
+        "name": "attr-name",
+        "patterns": [
+         {
+          "pattern": "[^\\s>\\/]+",
+          "flags": "",
+          "inside": {
+           "rules": [
+            {
+             "name": "namespace",
+             "patterns": [
+              {
+               "pattern": "^[^\\s>\\/:]+:",
+               "flags": ""
+              }
+             ]
+            }
+           ]
+          }
+         }
+        ]
+       },
+       {
+        "name": "comment",
+        "patterns": [
+         {
+          "pattern": "(^|[^\\\\])\\/\\*[\\s\\S]*?(?:\\*\\/|$)",
+          "flags": "",
+          "lookbehind": true,
+          "greedy": true
+         },
+         {
+          "pattern": "(^|[^\\\\:])\\/\\/.*",
+          "flags": "",
+          "lookbehind": true,
+          "greedy": true
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "entity",
+   "patterns": [
+    {
+     "pattern": "&[\\da-z]{1,8};",
+     "flags": "i",
+     "alias": [
+      "named-entity"
+     ]
+    },
+    {
+     "pattern": "&#x?[\\da-f]{1,8};",
+     "flags": "i"
+    }
+   ]
+  },
+  {
+   "name": "hashbang",
+   "patterns": [
+    {
+     "pattern": "^#!.*",
+     "flags": "",
+     "greedy": true,
+     "alias": [
+      "comment"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "template-string",
+   "patterns": [
+    {
+     "pattern": "`(?:\\\\[\\s\\S]|\\$\\{(?:[^{}]|\\{(?:[^{}]|\\{[^}]*\\})*\\})+\\}|(?!\\$\\{)[^\\\\`])*`",
+     "flags": "",
+     "greedy": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "template-punctuation",
+        "patterns": [
+         {
+          "pattern": "^`|`$",
+          "flags": "",
+          "alias": [
+           "string"
+          ]
+         }
+        ]
+       },
+       {
+        "name": "interpolation",
+        "patterns": [
+         {
+          "pattern": "((?:^|[^\\\\])(?:\\\\{2})*)\\$\\{(?:[^{}]|\\{(?:[^{}]|\\{[^}]*\\})*\\})+\\}",
+          "flags": "",
+          "lookbehind": true,
+          "inside": {
+           "rules": [
+            {
+             "name": "interpolation-punctuation",
+             "patterns": [
+              {
+               "pattern": "^\\$\\{|\\}$",
+               "flags": "",
+               "alias": [
+                "punctuation"
+               ]
+              }
+             ]
+            }
+           ],
+           "rest": {
+            "$language": "javascript"
+           }
+          }
+         }
+        ]
+       },
+       {
+        "name": "string",
+        "patterns": [
+         {
+          "pattern": "[\\s\\S]+",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "string-property",
+   "patterns": [
+    {
+     "pattern": "((?:^|[,{])[ \\t]*)([\"'])(?:\\\\(?:\\r\\n|[\\s\\S])|(?!\\2)[^\\\\\\r\\n])*\\2(?=\\s*:)",
+     "flags": "m",
+     "lookbehind": true,
+     "greedy": true,
+     "alias": [
+      "property"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "string",
+   "patterns": [
+    {
+     "pattern": "([\"'])(?:\\\\(?:\\r\\n|[\\s\\S])|(?!\\1)[^\\\\\\r\\n])*\\1",
+     "flags": "",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "class-name",
+   "patterns": [
+    {
+     "pattern": "(\\b(?:class|extends|implements|instanceof|interface|new)\\s+)[\\w.\\\\]+",
+     "flags": "",
+     "lookbehind": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "punctuation",
+        "patterns": [
+         {
+          "pattern": "[.\\\\]",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "pattern": "(^|[^$\\w\\xA0-\\uFFFF])(?!\\s)[_$A-Z\\xA0-\\uFFFF](?:(?!\\s)[$\\w\\xA0-\\uFFFF])*(?=\\.(?:constructor|prototype))",
+     "flags": "",
+     "lookbehind": true
+    }
+   ]
+  },
+  {
+   "name": "regex",
+   "patterns": [
+    {
+     "pattern": "((?:^|[^$\\w\\xA0-\\uFFFF.\"'\\])\\s]|\\b(?:return|yield))\\s*)\\/(?:(?:\\[(?:[^\\]\\\\\\r\\n]|\\\\.)*\\]|\\\\.|[^/\\\\\\[\\r\\n])+\\/[dgimyus]{0,7}|(?:\\[(?:[^[\\]\\\\\\r\\n]|\\\\.|\\[(?:[^[\\]\\\\\\r\\n]|\\\\.|\\[(?:[^[\\]\\\\\\r\\n]|\\\\.)*\\])*\\])*\\]|\\\\.|[^/\\\\\\[\\r\\n])+\\/[dgimyus]{0,7}v[dgimyus]{0,7})(?=(?:\\s|\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\/)*(?:$|[\\r\\n,.;:})\\]]|\\/\\/))",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "regex-source",
+        "patterns": [
+         {
+          "pattern": "^(\\/)[\\s\\S]+(?=\\/[a-z]*$)",
+          "flags": "",
+          "lookbehind": true,
+          "alias": [
+           "language-regex"
+          ]
+         }
+        ]
+       },
+       {
+        "name": "regex-delimiter",
+        "patterns": [
+         {
+          "pattern": "^\\/|\\/$",
+          "flags": ""
+         }
+        ]
+       },
+       {
+        "name": "regex-flags",
+        "patterns": [
+         {
+          "pattern": "^[a-z]+$",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "function-variable",
+   "patterns": [
+    {
+     "pattern": "#?(?!\\s)[_$a-zA-Z\\xA0-\\uFFFF](?:(?!\\s)[$\\w\\xA0-\\uFFFF])*(?=\\s*[=:]\\s*(?:async\\s*)?(?:\\bfunction\\b|(?:\\((?:[^()]|\\([^()]*\\))*\\)|(?!\\s)[_$a-zA-Z\\xA0-\\uFFFF](?:(?!\\s)[$\\w\\xA0-\\uFFFF])*)\\s*=>))",
+     "flags": "",
+     "alias": [
+      "function"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "parameter",
+   "patterns": [
+    {
+     "pattern": "(function(?:\\s+(?!\\s)[_$a-zA-Z\\xA0-\\uFFFF](?:(?!\\s)[$\\w\\xA0-\\uFFFF])*)?\\s*\\(\\s*)(?!\\s)(?:[^()\\s]|\\s+(?![\\s)])|\\([^()]*\\))+(?=\\s*\\))",
+     "flags": "",
+     "lookbehind": true,
+     "inside": {
+      "$language": "javascript"
+     }
+    },
+    {
+     "pattern": "(^|[^$\\w\\xA0-\\uFFFF])(?!\\s)[_$a-z\\xA0-\\uFFFF](?:(?!\\s)[$\\w\\xA0-\\uFFFF])*(?=\\s*=>)",
+     "flags": "i",
+     "lookbehind": true,
+     "inside": {
+      "$language": "javascript"
+     }
+    },
+    {
+     "pattern": "(\\(\\s*)(?!\\s)(?:[^()\\s]|\\s+(?![\\s)])|\\([^()]*\\))+(?=\\s*\\)\\s*=>)",
+     "flags": "",
+     "lookbehind": true,
+     "inside": {
+      "$language": "javascript"
+     }
+    },
+    {
+     "pattern": "((?:\\b|\\s|^)(?!(?:as|async|await|break|case|catch|class|const|continue|debugger|default|delete|do|else|enum|export|extends|finally|for|from|function|get|if|implements|import|in|instanceof|interface|let|new|null|of|package|private|protected|public|return|set|static|super|switch|this|throw|try|typeof|undefined|var|void|while|with|yield)(?![$\\w\\xA0-\\uFFFF]))(?:(?!\\s)[_$a-zA-Z\\xA0-\\uFFFF](?:(?!\\s)[$\\w\\xA0-\\uFFFF])*\\s*)\\(\\s*|\\]\\s*\\(\\s*)(?!\\s)(?:[^()\\s]|\\s+(?![\\s)])|\\([^()]*\\))+(?=\\s*\\)\\s*\\{)",
+     "flags": "",
+     "lookbehind": true,
+     "inside": {
+      "$language": "javascript"
+     }
+    }
+   ]
+  },
+  {
+   "name": "constant",
+   "patterns": [
+    {
+     "pattern": "\\b[A-Z](?:[A-Z_]|\\dx?)*\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "keyword",
+   "patterns": [
+    {
+     "pattern": "((?:^|\\})\\s*)catch\\b",
+     "flags": "",
+     "lookbehind": true
+    },
+    {
+     "pattern": "(^|[^.]|\\.\\.\\.\\s*)\\b(?:as|assert(?=\\s*\\{)|async(?=\\s*(?:function\\b|\\(|[$\\w\\xA0-\\uFFFF]|$))|await|break|case|class|const|continue|debugger|default|delete|do|else|enum|export|extends|finally(?=\\s*(?:\\{|$))|for|from(?=\\s*(?:['\"]|$))|function|(?:get|set)(?=\\s*(?:[#\\[$\\w\\xA0-\\uFFFF]|$))|if|implements|import|in|instanceof|interface|let|new|null|of|package|private|protected|public|return|static|super|switch|this|throw|try|typeof|undefined|var|void|while|with|yield)\\b",
+     "flags": "",
+     "lookbehind": true
+    }
+   ]
+  },
+  {
+   "name": "boolean",
+   "patterns": [
+    {
+     "pattern": "\\b(?:false|true)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "function",
+   "patterns": [
+    {
+     "pattern": "#?(?!\\s)[_$a-zA-Z\\xA0-\\uFFFF](?:(?!\\s)[$\\w\\xA0-\\uFFFF])*(?=\\s*(?:\\.\\s*(?:apply|bind|call)\\s*)?\\()",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "number",
+   "patterns": [
+    {
+     "pattern": "(^|[^\\w$])(?:NaN|Infinity|0[bB][01]+(?:_[01]+)*n?|0[oO][0-7]+(?:_[0-7]+)*n?|0[xX][\\dA-Fa-f]+(?:_[\\dA-Fa-f]+)*n?|\\d+(?:_\\d+)*n|(?:\\d+(?:_\\d+)*(?:\\.(?:\\d+(?:_\\d+)*)?)?|\\.\\d+(?:_\\d+)*)(?:[Ee][+-]?\\d+(?:_\\d+)*)?)(?![\\w$])",
+     "flags": "",
+     "lookbehind": true
+    }
+   ]
+  },
+  {
+   "name": "literal-property",
+   "patterns": [
+    {
+     "pattern": "((?:^|[,{])[ \\t]*)(?!\\s)[_$a-zA-Z\\xA0-\\uFFFF](?:(?!\\s)[$\\w\\xA0-\\uFFFF])*(?=\\s*:)",
+     "flags": "m",
+     "lookbehind": true,
+     "alias": [
+      "property"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "operator",
+   "patterns": [
+    {
+     "pattern": "--|\\+\\+|\\*\\*=?|=>|&&=?|\\|\\|=?|[!=]==|<<=?|>>>?=?|[-+*/%&|^!=<>]=?|\\.{3}|\\?\\?=?|\\?\\.?|[~:]",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "punctuation",
+   "patterns": [
+    {
+     "pattern": "[{}[\\];(),.:]",
+     "flags": ""
+    }
+   ]
+  }
+ ]
+}

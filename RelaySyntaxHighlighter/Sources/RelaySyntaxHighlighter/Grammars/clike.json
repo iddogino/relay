@@ -1,0 +1,110 @@
+{
+ "language": "clike",
+ "prismVersion": "1.29.0",
+ "rules": [
+  {
+   "name": "comment",
+   "patterns": [
+    {
+     "pattern": "(^|[^\\\\])\\/\\*[\\s\\S]*?(?:\\*\\/|$)",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    },
+    {
+     "pattern": "(^|[^\\\\:])\\/\\/.*",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "string",
+   "patterns": [
+    {
+     "pattern": "([\"'])(?:\\\\(?:\\r\\n|[\\s\\S])|(?!\\1)[^\\\\\\r\\n])*\\1",
+     "flags": "",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "class-name",
+   "patterns": [
+    {
+     "pattern": "(\\b(?:class|extends|implements|instanceof|interface|new|trait)\\s+|\\bcatch\\s+\\()[\\w.\\\\]+",
+     "flags": "i",
+     "lookbehind": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "punctuation",
+        "patterns": [
+         {
+          "pattern": "[.\\\\]",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "keyword",
+   "patterns": [
+    {
+     "pattern": "\\b(?:break|catch|continue|do|else|finally|for|function|if|in|instanceof|new|null|return|throw|try|while)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "boolean",
+   "patterns": [
+    {
+     "pattern": "\\b(?:false|true)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "function",
+   "patterns": [
+    {
+     "pattern": "\\b\\w+(?=\\()",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "number",
+   "patterns": [
+    {
+     "pattern": "\\b0x[\\da-f]+\\b|(?:\\b\\d+(?:\\.\\d*)?|\\B\\.\\d+)(?:e[+-]?\\d+)?",
+     "flags": "i"
+    }
+   ]
+  },
+  {
+   "name": "operator",
+   "patterns": [
+    {
+     "pattern": "[<>]=?|[!=]=?=?|--?|\\+\\+?|&&?|\\|\\|?|[?*/~^%]",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "punctuation",
+   "patterns": [
+    {
+     "pattern": "[{}[\\];(),.:]",
+     "flags": ""
+    }
+   ]
+  }
+ ]
+}

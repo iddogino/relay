@@ -1,0 +1,304 @@
+{
+ "language": "rust",
+ "prismVersion": "1.29.0",
+ "rules": [
+  {
+   "name": "comment",
+   "patterns": [
+    {
+     "pattern": "(^|[^\\\\])\\/\\*(?:[^*/]|\\*(?!\\/)|\\/(?!\\*)|\\/\\*(?:[^*/]|\\*(?!\\/)|\\/(?!\\*)|\\/\\*(?:[^*/]|\\*(?!\\/)|\\/(?!\\*)|\\/\\*(?:[^*/]|\\*(?!\\/)|\\/(?!\\*)|[^\\s\\S])*\\*\\/)*\\*\\/)*\\*\\/)*\\*\\/",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    },
+    {
+     "pattern": "(^|[^\\\\:])\\/\\/.*",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "string",
+   "patterns": [
+    {
+     "pattern": "b?\"(?:\\\\[\\s\\S]|[^\\\\\"])*\"|b?r(#*)\"(?:[^\"]|\"(?!\\1))*\"\\1",
+     "flags": "",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "char",
+   "patterns": [
+    {
+     "pattern": "b?'(?:\\\\(?:x[0-7][\\da-fA-F]|u\\{(?:[\\da-fA-F]_*){1,6}\\}|.)|[^\\\\\\r\\n\\t'])'",
+     "flags": "",
+     "greedy": true
+    }
+   ]
+  },
+  {
+   "name": "attribute",
+   "patterns": [
+    {
+     "pattern": "#!?\\[(?:[^\\[\\]\"]|\"(?:\\\\[\\s\\S]|[^\\\\\"])*\")*\\]",
+     "flags": "",
+     "greedy": true,
+     "alias": [
+      "attr-name"
+     ],
+     "inside": {
+      "rules": [
+       {
+        "name": "string",
+        "patterns": [
+         {
+          "pattern": "b?\"(?:\\\\[\\s\\S]|[^\\\\\"])*\"|b?r(#*)\"(?:[^\"]|\"(?!\\1))*\"\\1",
+          "flags": "",
+          "greedy": true
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "closure-params",
+   "patterns": [
+    {
+     "pattern": "([=(,:]\\s*|\\bmove\\s*)\\|[^|]*\\||\\|[^|]*\\|(?=\\s*(?:\\{|->))",
+     "flags": "",
+     "lookbehind": true,
+     "greedy": true,
+     "inside": {
+      "rules": [
+       {
+        "name": "closure-punctuation",
+        "patterns": [
+         {
+          "pattern": "^\\||\\|$",
+          "flags": "",
+          "alias": [
+           "punctuation"
+          ]
+         }
+        ]
+       }
+      ],
+      "rest": {
+       "$language": "rust"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "lifetime-annotation",
+   "patterns": [
+    {
+     "pattern": "'\\w+",
+     "flags": "",
+     "alias": [
+      "symbol"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fragment-specifier",
+   "patterns": [
+    {
+     "pattern": "(\\$\\w+:)[a-z]+",
+     "flags": "",
+     "lookbehind": true,
+     "alias": [
+      "punctuation"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "variable",
+   "patterns": [
+    {
+     "pattern": "\\$\\w+",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "function-definition",
+   "patterns": [
+    {
+     "pattern": "(\\bfn\\s+)\\w+",
+     "flags": "",
+     "lookbehind": true,
+     "alias": [
+      "function"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "type-definition",
+   "patterns": [
+    {
+     "pattern": "(\\b(?:enum|struct|trait|type|union)\\s+)\\w+",
+     "flags": "",
+     "lookbehind": true,
+     "alias": [
+      "class-name"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "module-declaration",
+   "patterns": [
+    {
+     "pattern": "(\\b(?:crate|mod)\\s+)[a-z][a-z_\\d]*",
+     "flags": "",
+     "lookbehind": true,
+     "alias": [
+      "namespace"
+     ]
+    },
+    {
+     "pattern": "(\\b(?:crate|self|super)\\s*)::\\s*[a-z][a-z_\\d]*\\b(?:\\s*::(?:\\s*[a-z][a-z_\\d]*\\s*::)*)?",
+     "flags": "",
+     "lookbehind": true,
+     "alias": [
+      "namespace"
+     ],
+     "inside": {
+      "rules": [
+       {
+        "name": "punctuation",
+        "patterns": [
+         {
+          "pattern": "::",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "keyword",
+   "patterns": [
+    {
+     "pattern": "\\b(?:Self|abstract|as|async|await|become|box|break|const|continue|crate|do|dyn|else|enum|extern|final|fn|for|if|impl|in|let|loop|macro|match|mod|move|mut|override|priv|pub|ref|return|self|static|struct|super|trait|try|type|typeof|union|unsafe|unsized|use|virtual|where|while|yield)\\b",
+     "flags": ""
+    },
+    {
+     "pattern": "\\b(?:bool|char|f(?:32|64)|[ui](?:8|16|32|64|128|size)|str)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "function",
+   "patterns": [
+    {
+     "pattern": "\\b[a-z_]\\w*(?=\\s*(?:::\\s*<|\\())",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "macro",
+   "patterns": [
+    {
+     "pattern": "\\b\\w+!",
+     "flags": "",
+     "alias": [
+      "property"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "constant",
+   "patterns": [
+    {
+     "pattern": "\\b[A-Z_][A-Z_\\d]+\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "class-name",
+   "patterns": [
+    {
+     "pattern": "\\b[A-Z]\\w*\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "namespace",
+   "patterns": [
+    {
+     "pattern": "(?:\\b[a-z][a-z_\\d]*\\s*::\\s*)*\\b[a-z][a-z_\\d]*\\s*::(?!\\s*<)",
+     "flags": "",
+     "inside": {
+      "rules": [
+       {
+        "name": "punctuation",
+        "patterns": [
+         {
+          "pattern": "::",
+          "flags": ""
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "number",
+   "patterns": [
+    {
+     "pattern": "\\b(?:0x[\\dA-Fa-f](?:_?[\\dA-Fa-f])*|0o[0-7](?:_?[0-7])*|0b[01](?:_?[01])*|(?:(?:\\d(?:_?\\d)*)?\\.)?\\d(?:_?\\d)*(?:[Ee][+-]?\\d+)?)(?:_?(?:f32|f64|[iu](?:8|16|32|64|size)?))?\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "boolean",
+   "patterns": [
+    {
+     "pattern": "\\b(?:false|true)\\b",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "punctuation",
+   "patterns": [
+    {
+     "pattern": "->|\\.\\.=|\\.{1,3}|::|[{}[\\];(),:]",
+     "flags": ""
+    }
+   ]
+  },
+  {
+   "name": "operator",
+   "patterns": [
+    {
+     "pattern": "[-+*\\/%!^]=?|=[=>]?|&[&=]?|\\|[|=]?|<<?=?|>>?=?|[@?]",
+     "flags": ""
+    }
+   ]
+  }
+ ]
+}
