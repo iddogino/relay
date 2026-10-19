@@ -662,7 +662,8 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
     public func uploadFiles(
         localPaths: [String],
         for session: RemoteSession,
-        project: Project
+        project: Project,
+        progress: (@Sendable (UploadProgress) -> Void)?
     ) async throws -> [String] {
         let alias = try self.alias(for: project)
         // scp's target syntax splits on the first colon; an alias containing
@@ -700,19 +701,41 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
 
         // 2. Transfer. -r covers directories; -- protects dash-leading
         // names; modern OpenSSH scp speaks SFTP, so remote names are taken
-        // literally (no remote shell expansion).
+        // literally (no remote shell expansion). With a progress callback,
+        // scp runs under a terminal (no -q) and its meter is parsed live.
         do {
-            let scpResult = try await SSHCommandRunner.runProcess(
-                executable: "/usr/bin/scp",
-                arguments: ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-r", "--"]
-                    + localPaths + ["\(alias):\(dropDir)/"],
-                stdin: nil,
-                timeout: .seconds(1800)
-            )
+            let scpArguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-r", "--"]
+                + localPaths + ["\(alias):\(dropDir)/"]
+            let scpResult: SSHCommandRunner.CommandResult
+            var errorText: String
+            if let progress {
+                let parser = LockedSCPParser()
+                let (executable, arguments) = Self.foregroundTTYCommand("/usr/bin/scp", scpArguments)
+                scpResult = try await SSHCommandRunner.runProcess(
+                    executable: executable,
+                    arguments: arguments,
+                    stdin: nil,
+                    timeout: .seconds(1800),
+                    onStdout: { chunk in
+                        if let update = parser.feed(chunk) { progress(update) }
+                    }
+                )
+                // Under the terminal, scp's stderr is merged into stdout.
+                errorText = SCPProgressParser.nonMeterText(scpResult.stdout)
+                if errorText.isEmpty { errorText = scpResult.stderr }
+            } else {
+                scpResult = try await SSHCommandRunner.runProcess(
+                    executable: "/usr/bin/scp",
+                    arguments: ["-q"] + scpArguments,
+                    stdin: nil,
+                    timeout: .seconds(1800)
+                )
+                errorText = scpResult.stderr
+            }
             guard scpResult.exitCode == 0 else {
                 bestEffortRemoveDropDirectory(dropDir, alias: alias)
                 throw RuntimeProviderError.uploadFailed(
-                    "scp exited with status \(scpResult.exitCode).\n\(Self.sanitizedStderr(scpResult.stderr))"
+                    "scp exited with status \(scpResult.exitCode).\n\(Self.sanitizedStderr(errorText))"
                 )
             }
         } catch is CancellationError {
@@ -729,6 +752,27 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         }
 
         return basenames.map { dropDir + "/" + $0 }
+    }
+
+    /// Wraps a command in script(1) so it runs on a pseudo-terminal that is
+    /// its controlling tty with it in the foreground process group — scp
+    /// only draws its progress meter then (progressmeter.c can_output()),
+    /// and posix_spawn can't hand a child a controlling tty itself. script
+    /// execs the command directly (no shell), relays the terminal output to
+    /// our stdout pipe, and exits with the command's status; killing script
+    /// hangs up the terminal, which takes scp and its ssh down with it.
+    static func foregroundTTYCommand(_ executable: String, _ arguments: [String]) -> (String, [String]) {
+        ("/usr/bin/script", ["-q", "/dev/null", executable] + arguments)
+    }
+
+    /// Serializes parser state across output reads.
+    private final class LockedSCPParser: @unchecked Sendable {
+        private let lock = NSLock()
+        private var parser = SCPProgressParser()
+        func feed(_ data: Data) -> UploadProgress? {
+            lock.lock(); defer { lock.unlock() }
+            return parser.feed(data)
+        }
     }
 
     /// Removes a failed/cancelled drop directory. Fire-and-forget on a

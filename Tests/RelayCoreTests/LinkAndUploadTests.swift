@@ -114,3 +114,79 @@ struct UpdateChannelsTests {
         #expect(UpdateChannels.allowed(currentVersion: "0.1.0", earlyBuildsOptIn: true) == ["rc"])
     }
 }
+
+@Suite("scp progress meter")
+struct SCPProgressParserTests {
+    @Test func parsesMeterLines() {
+        #expect(SCPProgressParser.parse(line: "big.iso                       45%  461MB  12.3MB/s   00:45 ETA")
+                == .init(name: "big.iso", percent: 45, bytes: 461 << 20))
+        // Bare byte counts have a blank unit column, then the rate.
+        #expect(SCPProgressParser.parse(line: "notes.txt   100%  812   402.1KB/s   00:00")
+                == .init(name: "notes.txt", percent: 100, bytes: 812))
+        // Names with spaces, digits and percent signs.
+        #expect(SCPProgressParser.parse(line: "my 50% file 2.zip   7% 9216KB   4.5MB/s   01:02 ETA")
+                == .init(name: "my 50% file 2.zip", percent: 7, bytes: 9216 << 10))
+        #expect(SCPProgressParser.parse(line: "") == nil)
+        // script(1)'s stdin-EOF echo is erased by its own backspaces.
+        #expect(SCPProgressParser.visibleText("^D\u{8}\u{8}a.bin   3%   30KB") == "a.bin   3%   30KB")
+        #expect(SCPProgressParser.parse(line: "Warning: Permanently added 'host'") == nil)
+    }
+
+    @Test func accumulatesAcrossFilesAndRedraws() {
+        var parser = SCPProgressParser()
+        let stream = "a.bin   50%  512KB  1.0MB/s   00:01 ETA\ra.bin  100% 1024KB  1.0MB/s   00:01    \r\n"
+            + "b.bin   25%  256KB  1.0MB/s   00:03 ETA\r"
+        // Split mid-line to exercise buffering across reads.
+        let bytes = Array(stream.utf8)
+        #expect(parser.feed(Data(bytes[0..<20])) == nil)
+        let update = parser.feed(Data(bytes[20...]))
+        #expect(update == UploadProgress(bytesTransferred: (1024 + 256) << 10, currentFileFraction: 0.25, filesStarted: 2))
+    }
+
+    @Test func sameNamedFilesCountSeparately() {
+        var parser = SCPProgressParser()
+        _ = parser.feed(Data("x  100%  100KB  1.0MB/s   00:00\r\n".utf8))
+        let update = parser.feed(Data("x   10%   10KB  1.0MB/s   00:00 ETA\r".utf8))
+        #expect(update?.bytesTransferred == 110 << 10)
+        #expect(update?.filesStarted == 2)
+    }
+}
+
+@Suite("scp terminal wrapper")
+struct ForegroundTTYCommandTests {
+    /// scp only draws its meter when stdout is a tty AND its process group
+    /// is that tty's foreground group (progressmeter.c can_output()).
+    @Test func wrappedCommandOwnsForegroundTerminal() async throws {
+        let chunks = ChunkCollector()
+        let (executable, arguments) = SSHTmuxRuntimeProvider.foregroundTTYCommand(
+            "/bin/sh", ["-c", "[ -t 1 ] && ps -o pgid=,tpgid= -p $$"])
+        let result = try await SSHCommandRunner.runProcess(
+            executable: executable,
+            arguments: arguments,
+            stdin: nil,
+            timeout: .seconds(10),
+            onStdout: { chunks.append($0) }
+        )
+        #expect(result.exitCode == 0)
+        let ids = SCPProgressParser.nonMeterText(result.stdout).split(whereSeparator: \.isWhitespace)
+        #expect(ids.count == 2)
+        #expect(ids.first == ids.last)
+        #expect(!chunks.isEmpty)
+    }
+
+    @Test func propagatesExitStatusAndDiagnostics() async throws {
+        let (executable, arguments) = SSHTmuxRuntimeProvider.foregroundTTYCommand(
+            "/bin/sh", ["-c", "echo 'scp: /nope: No such file' >&2; exit 3"])
+        let result = try await SSHCommandRunner.runProcess(
+            executable: executable, arguments: arguments, stdin: nil, timeout: .seconds(10))
+        #expect(result.exitCode == 3)
+        #expect(SCPProgressParser.nonMeterText(result.stdout) == "scp: /nope: No such file")
+    }
+
+    final class ChunkCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        func append(_ data: Data) { lock.lock(); count += data.count; lock.unlock() }
+        var isEmpty: Bool { lock.lock(); defer { lock.unlock() }; return count == 0 }
+    }
+}
