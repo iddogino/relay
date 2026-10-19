@@ -207,13 +207,24 @@ private struct TerminalStage: View {
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
             .allowsHitTesting(false)
-        case .uploading(let label):
+        case .uploading(let label, let fraction, let detail):
             OverlayCard {
-                ProgressView()
+                if let fraction {
+                    ProgressView(value: fraction)
+                        .frame(width: 280)
+                        .animation(.linear(duration: 0.3), value: fraction)
+                } else {
+                    ProgressView()
+                }
                 Text(label)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: 420)
                     .multilineTextAlignment(.center)
+                if let detail {
+                    Text(detail)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
                 Button("Cancel") { model.attachment.cancelUpload() }
             }
         case .idle:

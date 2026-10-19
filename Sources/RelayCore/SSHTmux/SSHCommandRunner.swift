@@ -71,11 +71,14 @@ public struct SSHCommandRunner: Sendable {
     }
 
     /// Low-level local process execution with stdin delivery and a hard timeout.
+    /// `onStdout`, when given, also receives each stdout chunk as it is read
+    /// (from an arbitrary thread), for live progress output.
     public static func runProcess(
         executable: String,
         arguments: [String],
         stdin stdinText: String?,
-        timeout: Duration
+        timeout: Duration,
+        onStdout: (@Sendable (Data) -> Void)? = nil
     ) async throws -> CommandResult {
         let spawned = try spawn(executable: executable, arguments: arguments)
 
@@ -88,7 +91,7 @@ public struct SSHCommandRunner: Sendable {
             writeAllAndClose(fd: spawned.stdinFD, data: stdinData)
         }
         let stopDraining = StopFlag()
-        async let stdoutData = readUntilEOFOrStopped(fd: spawned.stdoutFD, stop: stopDraining)
+        async let stdoutData = readUntilEOFOrStopped(fd: spawned.stdoutFD, stop: stopDraining, onChunk: onStdout)
         async let stderrData = readUntilEOFOrStopped(fd: spawned.stderrFD, stop: stopDraining)
 
         let status = await reap(pid: spawned.pid, timeout: timeout)
@@ -257,7 +260,11 @@ public struct SSHCommandRunner: Sendable {
         var isRaised: Bool { lock.lock(); defer { lock.unlock() }; return value }
     }
 
-    private static func readUntilEOFOrStopped(fd: Int32, stop: StopFlag) async -> Data {
+    private static func readUntilEOFOrStopped(
+        fd: Int32,
+        stop: StopFlag,
+        onChunk: (@Sendable (Data) -> Void)? = nil
+    ) async -> Data {
         // Non-blocking reads let the drain loop observe the stop flag.
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
         return await withCheckedContinuation { continuation in
@@ -269,6 +276,7 @@ public struct SSHCommandRunner: Sendable {
                     switch n {
                     case 1...:
                         result.append(contentsOf: buffer[0..<n])
+                        onChunk?(Data(buffer[0..<n]))
                     case 0:
                         break loop // EOF
                     default:

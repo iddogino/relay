@@ -85,7 +85,14 @@ public protocol RuntimeProvider: Sendable {
     /// order. Only meaningful when `capabilities` contains `.fileUpload`.
     /// Implementations must be cancellation-aware (a cancelled upload throws
     /// `CancellationError` and leaves no half-referenced paths behind).
-    func uploadFiles(localPaths: [String], for session: RemoteSession, project: Project) async throws -> [String]
+    /// `progress`, when the provider can measure it, is called from an
+    /// arbitrary thread as the transfer advances.
+    func uploadFiles(
+        localPaths: [String],
+        for session: RemoteSession,
+        project: Project,
+        progress: (@Sendable (UploadProgress) -> Void)?
+    ) async throws -> [String]
 
     /// Git state of the session's working directory (diff counts, branch,
     /// linked PR), or nil when the session isn't in a git context. Optional:
@@ -130,8 +137,17 @@ public struct SessionGitDiff: Sendable, Equatable {
 extension RuntimeProvider {
     public func listChildDirectories(workspace: WorkspaceRef, pathInput: String) async throws -> [String] { [] }
 
-    public func uploadFiles(localPaths: [String], for session: RemoteSession, project: Project) async throws -> [String] {
+    public func uploadFiles(
+        localPaths: [String],
+        for session: RemoteSession,
+        project: Project,
+        progress: (@Sendable (UploadProgress) -> Void)?
+    ) async throws -> [String] {
         throw RuntimeProviderError.operationFailed("This provider does not support file uploads.")
+    }
+
+    public func uploadFiles(localPaths: [String], for session: RemoteSession, project: Project) async throws -> [String] {
+        try await uploadFiles(localPaths: localPaths, for: session, project: project, progress: nil)
     }
 
     public func renameSession(_ session: RemoteSession, to name: String, project: Project) async throws {

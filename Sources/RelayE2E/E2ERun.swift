@@ -474,14 +474,21 @@ final class E2ERun {
         guard let session = await createSession(project, name: "upload probe") else { return }
 
         var dropDir: String?
+        let progressLog = UploadProgressLog()
         do {
             let remote = try await provider.uploadFiles(
                 localPaths: [
                     localRoot.appendingPathComponent(fileName).path,
                     localRoot.appendingPathComponent("data set").path,
                 ],
-                for: session, project: project)
+                for: session, project: project,
+                progress: { progressLog.append($0) })
             check(remote.count == 2, "AC-25 one remote path per dropped item")
+            // Tiny files report exact byte counts in scp's meter.
+            let expectedBytes = Int64("drop-sentinel-\(runID)\n".utf8.count + "nested-sentinel-\(runID)\n".utf8.count)
+            let last = progressLog.last
+            check(last?.filesStarted == 2 && last?.currentFileFraction == 1 && last?.bytesTransferred == expectedBytes,
+                  "AC-25 upload progress reported through the scp meter (\(String(describing: last)))")
             if remote.count == 2 {
                 check(remote[0].hasSuffix("/" + fileName), "AC-25 hostile basename preserved verbatim")
                 dropDir = (remote[0] as NSString).deletingLastPathComponent
@@ -549,4 +556,12 @@ final class E2ERun {
         let missing = (preexisting[host.alias] ?? []).subtracting(now)
         check(missing.isEmpty, "AC-13 pre-existing tmux sessions untouched on \(host.alias)\(missing.isEmpty ? "" : " (missing: \(missing))")")
     }
+}
+
+/// Collects upload progress callbacks (delivered off the main actor).
+final class UploadProgressLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var updates: [UploadProgress] = []
+    func append(_ update: UploadProgress) { lock.lock(); updates.append(update); lock.unlock() }
+    var last: UploadProgress? { lock.lock(); defer { lock.unlock() }; return updates.last }
 }

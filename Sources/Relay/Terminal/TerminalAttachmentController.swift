@@ -25,7 +25,9 @@ final class TerminalAttachmentController {
         case idle
         /// A file drag is hovering over the terminal.
         case targeted
-        case uploading(label: String)
+        /// `fraction` is nil until progress is measurable (indeterminate);
+        /// `detail` is the size/rate line under the label.
+        case uploading(label: String, fraction: Double?, detail: String?)
     }
 
     private(set) var phase: Phase = .idle
@@ -209,26 +211,35 @@ final class TerminalAttachmentController {
 
         let gen = generation
         let alias = project.workspace.opaqueID
-        let baseLabel = urls.count == 1
+        let label = urls.count == 1
             ? "Uploading \u{201C}\(urls[0].lastPathComponent)\u{201D} to \(alias)…"
             : "Uploading \(urls.count) items to \(alias)…"
-        dropActivity = .uploading(label: baseLabel)
+        dropActivity = .uploading(label: label, fraction: nil, detail: nil)
+        let tracker = UploadProgressTracker(
+            singleFile: urls.count == 1 && !((try? urls[0].resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false))
 
-        // Upgrade the label with a size once it's known; never delay the
+        // Measure the total once, off the main actor; never delay the
         // transfer for it (large trees can take a moment to measure).
         Task { @MainActor [weak self] in
             let size = await Task.detached { Self.measureDropSize(paths: localPaths) }.value
             guard let size, let self, gen == self.generation,
                   case .uploading = self.dropActivity else { return }
-            let sizeLabel = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
-            self.dropActivity = .uploading(label: baseLabel.replacingOccurrences(
-                of: "…", with: " (\(sizeLabel))…"))
+            tracker.totalBytes = size
+            self.dropActivity = .uploading(label: label, fraction: tracker.fraction, detail: tracker.detail)
         }
 
         uploadTask = Task { [provider] in
             do {
                 let remotePaths = try await provider.uploadFiles(
-                    localPaths: localPaths, for: session, project: project)
+                    localPaths: localPaths, for: session, project: project,
+                    progress: { update in
+                        Task { @MainActor [weak self] in
+                            guard let self, gen == self.generation,
+                                  case .uploading = self.dropActivity else { return }
+                            tracker.record(update)
+                            self.dropActivity = .uploading(label: label, fraction: tracker.fraction, detail: tracker.detail)
+                        }
+                    })
                 let pasteText = POSIXShellQuote.quoteJoin(remotePaths) + " "
                 guard gen == self.generation else {
                     // The user switched sessions mid-upload: don't type into
@@ -267,6 +278,57 @@ final class TerminalAttachmentController {
             try? await Task.sleep(for: .seconds(8))
             guard !Task.isCancelled else { return }
             self.dropNotice = nil
+        }
+    }
+
+    /// Turns raw scp progress into the overlay's bar fraction and detail
+    /// line. Main-actor only.
+    @MainActor private final class UploadProgressTracker {
+        let singleFile: Bool
+        var totalBytes: Int64?
+        private var latest: UploadProgress?
+        private var firstSample: (time: ContinuousClock.Instant, bytes: Int64)?
+
+        init(singleFile: Bool) { self.singleFile = singleFile }
+
+        func record(_ update: UploadProgress) {
+            latest = update
+            if firstSample == nil { firstSample = (.now, update.bytesTransferred) }
+        }
+
+        /// One file: scp's exact percentage. Several: approximate bytes over
+        /// the measured total, held short of full until scp actually exits.
+        var fraction: Double? {
+            guard let latest else { return nil }
+            if singleFile { return latest.currentFileFraction }
+            guard let totalBytes, totalBytes > 0 else { return nil }
+            return min(Double(latest.bytesTransferred) / Double(totalBytes), 0.99)
+        }
+
+        /// "120 MB of 300 MB · 19.7 MB/s · 9s left", degrading gracefully.
+        var detail: String? {
+            let fmt = { (n: Int64) in ByteCountFormatter.string(fromByteCount: n, countStyle: .file) }
+            guard let latest else { return totalBytes.map(fmt) }
+            let sent = totalBytes.map { total in
+                singleFile ? Int64(latest.currentFileFraction * Double(total)) : min(latest.bytesTransferred, total)
+            } ?? latest.bytesTransferred
+            var parts = [totalBytes.map { "\(fmt(sent)) of \(fmt($0))" } ?? fmt(sent)]
+            if let firstSample {
+                let elapsed = (ContinuousClock.now - firstSample.time) / .seconds(1)
+                let rate = Double(latest.bytesTransferred - firstSample.bytes) / elapsed
+                if elapsed >= 1, rate > 0 {
+                    parts.append("\(fmt(Int64(rate)))/s")
+                    if let totalBytes, totalBytes > sent {
+                        let remaining = Double(totalBytes - sent) / rate
+                        let formatter = DateComponentsFormatter()
+                        formatter.unitsStyle = .abbreviated
+                        formatter.allowedUnits = remaining >= 3600 ? [.hour, .minute] : [.minute, .second]
+                        formatter.maximumUnitCount = 2
+                        if let text = formatter.string(from: max(remaining, 1)) { parts.append("\(text) left") }
+                    }
+                }
+            }
+            return parts.joined(separator: " · ")
         }
     }
 
