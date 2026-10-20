@@ -174,6 +174,8 @@ final class AppModel {
             MainActor.assumeIsolated {
                 self?.commandKeyHeld = false
                 self?.isAppActive = false
+                self?.syncLoadMonitor()
+                self?.syncAgentMonitors()
             }
         }
 
@@ -188,6 +190,8 @@ final class AppModel {
                 // adaptively off the git-state chain (10s while checks run,
                 // 60s once settled, paused while the app is inactive).
                 self.refreshGitState()
+                self.syncLoadMonitor()
+                self.syncAgentMonitors()
                 await self.refreshSessionTitles()
             }
         }
@@ -331,6 +335,9 @@ final class AppModel {
         }
         // PR polling pauses while inactive; catch up right away on return.
         refreshPRStatus()
+        syncLoadMonitor()
+        syncAgentMonitors()
+        markSelectedAgentSeen()
     }
 
     // MARK: Remotes
@@ -342,6 +349,8 @@ final class AppModel {
             alert = AppAlert(title: "Couldn't Read SSH Config", message: error.localizedDescription)
         }
         remotesLoaded = true
+        syncLoadMonitor()
+        syncAgentMonitors()
     }
 
     /// True when the project's host no longer appears in SSH config. Only
@@ -386,6 +395,8 @@ final class AppModel {
                 self.carryOverLiveTitle(for: old)
                 previous.setPresented(false)
             }
+            self.syncLoadMonitor()
+            self.markSelectedAgentSeen()
             guard let session = self.selectedSession,
                   let project = self.projects.first(where: { $0.id == session.projectID }) else {
                 if !skipPersist { self.persist() }
@@ -652,6 +663,7 @@ final class AppModel {
         sessionOrder.removeAll { $0 == session.id }
         sessionOrder.append(session.id)
         selectedSessionID = session.id
+        syncAgentMonitors()
         Task { await refreshSessions(for: project) }
     }
 
@@ -728,6 +740,306 @@ final class AppModel {
               let project = projects.first(where: { $0.id == session.projectID }) else { return nil }
         return try? await provider.gitFileContent(
             for: session, project: project, repoRelativePath: repoRelativePath)
+    }
+
+    // MARK: Machine load
+
+    /// Recent load samples per machine, oldest first, trimmed to
+    /// `loadHistoryWindow`. In memory only: history is a nicety, not state.
+    private(set) var machineLoadHistory: [WorkspaceRef: [MachineLoadSample]] = [:]
+    /// Machines whose latest sampling run failed; their pill hides until a
+    /// sample arrives again (best-effort feature — never an error UI).
+    private var machineLoadUnavailable: Set<WorkspaceRef> = []
+    /// True while the load details popover is open: sampling switches to
+    /// the provider's fast, detailed mode.
+    var loadDetailsVisible = false {
+        didSet {
+            guard loadDetailsVisible != oldValue else { return }
+            syncLoadMonitor()
+        }
+    }
+    private var loadMonitorTask: Task<Void, Never>?
+    private var loadMonitorKey: LoadMonitorKey?
+    private struct LoadMonitorKey: Equatable {
+        var workspace: WorkspaceRef
+        var detailed: Bool
+    }
+    static let loadHistoryWindow: TimeInterval = 30 * 60
+    /// A run that produces no sample for this long is considered hung
+    /// (e.g. the network dropped mid-stream) and is replaced.
+    private static let loadStallTimeout: TimeInterval = 45
+    /// Samples older than this aren't shown (the machine may have changed
+    /// a lot since; better no pill than a misleading one).
+    private static let loadDisplayMaxAge: TimeInterval = 120
+
+    /// The selected session's machine's recent samples, or nil when there's
+    /// nothing current to show.
+    var selectedMachineLoad: [MachineLoadSample]? {
+        guard let workspace = selectedProject?.workspace,
+              !machineLoadUnavailable.contains(workspace),
+              let history = machineLoadHistory[workspace],
+              let latest = history.last,
+              Date().timeIntervalSince(latest.date) < Self.loadDisplayMaxAge
+        else { return nil }
+        return history
+    }
+
+    /// Samples only the currently viewed machine, only while the app is
+    /// active — and in detailed mode only while the popover is open.
+    /// Idempotent: a no-op when the right monitor is already running.
+    private func syncLoadMonitor() {
+        var desired: LoadMonitorKey?
+        if isAppActive, let project = selectedProject, !isRemoteMissing(project) {
+            desired = LoadMonitorKey(workspace: project.workspace, detailed: loadDetailsVisible)
+        }
+        guard desired != loadMonitorKey else { return }
+        loadMonitorTask?.cancel()
+        loadMonitorTask = nil
+        loadMonitorKey = desired
+        guard let desired else { return }
+        loadMonitorTask = Task { await self.runLoadMonitor(desired) }
+    }
+
+    /// Back-to-back bounded provider runs: a run that ends cleanly restarts
+    /// right away; failures hide the pill and back off (30s … 5 min).
+    private func runLoadMonitor(_ key: LoadMonitorKey) async {
+        var failures = 0
+        while !Task.isCancelled {
+            let ok = await runLoadSampling(key)
+            guard !Task.isCancelled else { return }
+            if ok {
+                failures = 0
+            } else {
+                failures += 1
+                machineLoadUnavailable.insert(key.workspace)
+            }
+            let delay = ok ? 1 : min(30 * (1 << min(failures - 1, 4)), 300)
+            try? await Task.sleep(for: .seconds(delay))
+        }
+    }
+
+    /// One provider run under a stall watchdog. True when it ended cleanly
+    /// having delivered at least one sample.
+    private func runLoadSampling(_ key: LoadMonitorKey) async -> Bool {
+        let started = Date()
+        let provider = self.provider
+        let run = Task {
+            do {
+                try await provider.monitorMachineLoad(workspace: key.workspace, detailed: key.detailed) { sample in
+                    Task { @MainActor in self.recordLoadSample(sample, for: key.workspace) }
+                }
+                return true
+            } catch {
+                return false
+            }
+        }
+        let watchdog = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                let last = max(self.machineLoadHistory[key.workspace]?.last?.date ?? started, started)
+                if Date().timeIntervalSince(last) > Self.loadStallTimeout {
+                    run.cancel()
+                    return
+                }
+            }
+        }
+        let finishedCleanly = await withTaskCancellationHandler {
+            await run.value
+        } onCancel: {
+            run.cancel()
+        }
+        watchdog.cancel()
+        let lastSample = machineLoadHistory[key.workspace]?.last?.date ?? .distantPast
+        return finishedCleanly && lastSample >= started
+    }
+
+    private func recordLoadSample(_ sample: MachineLoadSample, for workspace: WorkspaceRef) {
+        var history = machineLoadHistory[workspace] ?? []
+        history.append(sample)
+        let cutoff = sample.date.addingTimeInterval(-Self.loadHistoryWindow)
+        if let firstKept = history.firstIndex(where: { $0.date >= cutoff }), firstKept > 0 {
+            history.removeFirst(firstKept)
+        }
+        machineLoadHistory[workspace] = history
+        machineLoadUnavailable.remove(workspace)
+    }
+
+    // MARK: Agent status
+
+    /// Latest agent report per session, by backend ID, per machine — from
+    /// one watch stream per machine with projects (all sessions, attached
+    /// or not). In memory only.
+    private var agentReports: [WorkspaceRef: [String: AgentStatusReport]] = [:]
+    /// When each machine's stream last delivered (snapshot or heartbeat);
+    /// reports from a stream silent for `agentReportMaxAge` aren't shown.
+    private var agentReportsReceived: [WorkspaceRef: Date] = [:]
+    private var agentMonitorTasks: [WorkspaceRef: Task<Void, Never>] = [:]
+    /// The `since` of the finished turn the user has looked at, per session:
+    /// a done/failed report with any other `since` is unseen.
+    private var agentSeen: [SessionID: Date] = [:]
+    private static let agentReportMaxAge: TimeInterval = 60
+    private static let agentStallTimeout: TimeInterval = 60
+    /// Bumped on every applied snapshot, so views can cheaply re-derive.
+    private(set) var agentStatusRevision = 0
+
+    /// What the agent in this session is doing, or nil (no agent, no
+    /// reporter, or no current data).
+    func agentActivity(for session: RemoteSession) -> AgentActivity? {
+        guard let project = projects.first(where: { $0.id == session.projectID }),
+              let received = agentReportsReceived[project.workspace],
+              Date().timeIntervalSince(received) < Self.agentReportMaxAge,
+              let report = agentReports[project.workspace]?[session.backendID]
+        else { return nil }
+        return report.effectiveActivity()
+    }
+
+    /// A finished (or failed) turn the user hasn't looked at yet.
+    func agentUnseen(for session: RemoteSession) -> Bool {
+        guard let activity = agentActivity(for: session),
+              activity.state == .done || activity.state == .failed
+        else { return false }
+        return agentSeen[session.id] != activity.since
+    }
+
+    /// Sessions in the project whose agent is waiting on the user.
+    func agentsNeedingYou(in project: Project) -> Int {
+        (sessions[project.id] ?? []).filter { agentActivity(for: $0)?.state == .blocked }.count
+    }
+
+    /// Looking at a session (app active, session selected) marks its
+    /// finished turn as seen.
+    private func markSelectedAgentSeen() {
+        guard isAppActive, let session = selectedSession,
+              let activity = agentActivity(for: session),
+              activity.state == .done || activity.state == .failed,
+              agentSeen[session.id] != activity.since
+        else { return }
+        agentSeen[session.id] = activity.since
+    }
+
+    /// One watch stream per machine that has projects, for as long as the
+    /// app runs — "needs you" matters most while the user is elsewhere.
+    /// Idempotent.
+    func syncAgentMonitors() {
+        var desired = Set<WorkspaceRef>()
+        for project in projects where !isRemoteMissing(project) {
+            desired.insert(project.workspace)
+        }
+        for (workspace, task) in agentMonitorTasks where !desired.contains(workspace) {
+            task.cancel()
+            agentMonitorTasks[workspace] = nil
+            agentReports[workspace] = nil
+            agentReportsReceived[workspace] = nil
+        }
+        for workspace in desired where agentMonitorTasks[workspace] == nil {
+            agentMonitorTasks[workspace] = Task { await self.runAgentMonitor(workspace) }
+        }
+    }
+
+    /// Back-to-back bounded runs; failures back off (30s … 5 min).
+    private func runAgentMonitor(_ workspace: WorkspaceRef) async {
+        var failures = 0
+        while !Task.isCancelled {
+            let ok = await runAgentWatch(workspace)
+            guard !Task.isCancelled else { return }
+            failures = ok ? 0 : failures + 1
+            let delay = ok ? 1 : min(30 * (1 << min(failures - 1, 4)), 300)
+            try? await Task.sleep(for: .seconds(delay))
+        }
+    }
+
+    /// One provider run under a stall watchdog (the remote loop heartbeats
+    /// every ~20s). True when it ended cleanly having delivered data.
+    private func runAgentWatch(_ workspace: WorkspaceRef) async -> Bool {
+        let started = Date()
+        let provider = self.provider
+        let run = Task {
+            do {
+                try await provider.monitorAgentStatus(workspace: workspace) { snapshot in
+                    Task { @MainActor in self.applyAgentSnapshot(snapshot, for: workspace) }
+                }
+                return true
+            } catch {
+                return false
+            }
+        }
+        let watchdog = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                let last = max(self.agentReportsReceived[workspace] ?? started, started)
+                if Date().timeIntervalSince(last) > Self.agentStallTimeout {
+                    run.cancel()
+                    return
+                }
+            }
+        }
+        let finishedCleanly = await withTaskCancellationHandler {
+            await run.value
+        } onCancel: {
+            run.cancel()
+        }
+        watchdog.cancel()
+        return finishedCleanly && (agentReportsReceived[workspace] ?? .distantPast) >= started
+    }
+
+    private func applyAgentSnapshot(_ snapshot: [AgentStatusReport], for workspace: WorkspaceRef) {
+        guard agentMonitorTasks[workspace] != nil else { return }
+        agentReportsReceived[workspace] = Date()
+        let byID = Dictionary(snapshot.map { ($0.backendID, $0.settled) }, uniquingKeysWith: { first, _ in first })
+        guard byID != agentReports[workspace] else { return }
+        agentReports[workspace] = byID
+        agentStatusRevision &+= 1
+        // The stream carries pane titles too: fresher than the 30s sweep.
+        for project in projects where project.workspace == workspace {
+            guard var list = sessions[project.id] else { continue }
+            var changed = false
+            for index in list.indices {
+                // Empty clears, as in the 30s sweep — the two writers must
+                // agree or the caption flips between them.
+                guard let report = byID[list[index].backendID] else { continue }
+                let title: String? = report.paneTitle.isEmpty ? nil : report.paneTitle
+                if list[index].paneTitle != title {
+                    list[index].paneTitle = title
+                    changed = true
+                }
+            }
+            if changed { sessions[project.id] = list }
+        }
+        markSelectedAgentSeen()
+    }
+
+    // Reporter installation
+
+    /// Per machine: each agent's CLI presence and global-reporter state.
+    private(set) var agentReporterStatus: [WorkspaceRef: [CodingAgent: AgentReporterStatus]] = [:]
+    private(set) var agentReporterProbing: Set<WorkspaceRef> = []
+    private(set) var agentReporterInstalling: Set<WorkspaceRef> = []
+
+    /// Whether new agent sessions load the reporter for themselves when no
+    /// global one is installed (the New Session checkbox; remembered).
+    var agentReporterPerSession: Bool = UserDefaults.standard.object(forKey: AppModel.agentReporterPerSessionKey) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(agentReporterPerSession, forKey: Self.agentReporterPerSessionKey) }
+    }
+    static let agentReporterPerSessionKey = "agentReporterPerSession"
+
+    /// Re-reads the machine's reporter install state. Best-effort: on
+    /// failure the previous answer stays (or none, which hides the line).
+    func refreshAgentReporterStatus(_ workspace: WorkspaceRef) async {
+        guard !agentReporterProbing.contains(workspace) else { return }
+        agentReporterProbing.insert(workspace)
+        defer { agentReporterProbing.remove(workspace) }
+        if let status = try? await provider.probeAgentReporters(workspace: workspace), !status.isEmpty {
+            agentReporterStatus[workspace] = status
+        }
+    }
+
+    /// Installs the global reporter for one agent, then re-probes. Throws
+    /// the provider's error for the caller to show inline.
+    func installGlobalAgentReporter(_ workspace: WorkspaceRef, agent: CodingAgent) async throws {
+        agentReporterInstalling.insert(workspace)
+        defer { agentReporterInstalling.remove(workspace) }
+        try await provider.installGlobalAgentReporter(workspace: workspace, agent: agent)
+        await refreshAgentReporterStatus(workspace)
     }
 
     // MARK: GitHub connection & PR status

@@ -173,7 +173,13 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         // choice is remembered for the same reason: archive must undo what
         // this launch created, not what the project's defaults say later.
         let slug = SessionSlug.make(displayName: displayName, sessionID: sessionID)
-        let (launchCommand, cleanup) = Self.resolveStart(request.start, project: project)
+        var (launchCommand, cleanup) = Self.resolveStart(request.start, project: project)
+        var installAgentReporter = false
+        if let agent = request.agentReporter, let launch = launchCommand,
+           let injected = AgentLaunchInjection.inject(into: launch, agent: agent) {
+            launchCommand = injected
+            installAgentReporter = true
+        }
         var metadata: [(String, String)] = [
             ("@rterm_schema", TmuxSessionCodec.schemaVersion),
             ("@rterm_project_id", project.id.uuid.uuidString),
@@ -207,7 +213,8 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                 ("RTERM_SESSION_SLUG", slug),
                 ("RTERM_REMOTE", alias),
             ],
-            metadata: metadata
+            metadata: metadata,
+            installAgentReporter: installAgentReporter
         )
 
         let result = try await run(alias: alias, script: SSHTmuxScripts.createSession(context))
@@ -779,6 +786,154 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
     /// detached task so a cancelled upload settles immediately and cleanup
     /// itself can't be cancelled away. Only ever touches paths that passed
     /// `isSafeDropDirectory`.
+    // MARK: Machine load
+
+    /// Cadence of the remote sampling loop: a slow heartbeat for the toolbar
+    /// pill, near-live while the details popover is open.
+    public static func machineLoadInterval(detailed: Bool) -> Int { detailed ? 2 : 10 }
+
+    public func monitorMachineLoad(
+        workspace: WorkspaceRef,
+        detailed: Bool,
+        onSample: @escaping @Sendable (MachineLoadSample) -> Void
+    ) async throws {
+        let alias = try self.alias(for: workspace)
+        let interval = Self.machineLoadInterval(detailed: detailed)
+        // Bounded runs (~10 min detailed, ~30 min otherwise): the caller
+        // restarts a run that ended while it still wants samples, so a
+        // remote loop can never outlive its usefulness by much.
+        let iterations = detailed ? 300 : 180
+        let script = SSHTmuxScripts.machineLoad(interval: interval, detailed: detailed, iterations: iterations)
+        let parser = LockedMachineLoadParser()
+        let result: SSHCommandRunner.CommandResult
+        do {
+            result = try await SSHCommandRunner.runProcess(
+                executable: SSHCommandRunner.sshPath,
+                arguments: [
+                    "-o", "BatchMode=yes",
+                    "-o", "ConnectTimeout=\(runner.connectTimeoutSeconds)",
+                    "-o", "ServerAliveInterval=15",
+                    "-o", "ServerAliveCountMax=2",
+                    "-T", "--", alias, "/bin/sh -s",
+                ],
+                stdin: script,
+                timeout: .seconds(interval * iterations + 120),
+                onStdout: { data in
+                    for sample in parser.feed(data) { onSample(sample) }
+                }
+            )
+        } catch SSHCommandRunner.RunnerError.timedOut {
+            throw RuntimeProviderError.workspaceUnreachable(workspace: alias, detail: "Load sampling timed out.")
+        } catch let error as SSHCommandRunner.RunnerError {
+            throw RuntimeProviderError.operationFailed("Couldn't start ssh: \(error)")
+        }
+        try Task.checkCancellation()
+        guard result.exitCode == 0 else { throw mapFailure(alias: alias, result: result) }
+    }
+
+    // MARK: Agent status
+
+    public func probeAgentReporters(workspace: WorkspaceRef) async throws -> [CodingAgent: AgentReporterStatus] {
+        let alias = try self.alias(for: workspace)
+        let result = try await run(alias: alias, script: SSHTmuxScripts.probeAgentReporters())
+        let markers = result.markers()
+        guard result.exitCode == 0, markers["RTERM_AGENT_STATUS"] == "ok" else {
+            throw mapFailure(alias: alias, result: result)
+        }
+        return [
+            .claude: AgentReporterStatus(
+                cliFound: markers["RTERM_AGENT_CLAUDE_CLI"]?.isEmpty == false,
+                globalInstalled: markers["RTERM_AGENT_CLAUDE_GLOBAL"] == "1"),
+            .codex: AgentReporterStatus(
+                cliFound: markers["RTERM_AGENT_CODEX_CLI"]?.isEmpty == false,
+                globalInstalled: markers["RTERM_AGENT_CODEX_GLOBAL"] == "1"),
+        ]
+    }
+
+    public func installGlobalAgentReporter(workspace: WorkspaceRef, agent: CodingAgent) async throws {
+        let alias = try self.alias(for: workspace)
+        let result: SSHCommandRunner.CommandResult
+        do {
+            // The agent CLIs can take a while (first run, plugin cache).
+            result = try await runner.runScript(
+                alias: alias, script: SSHTmuxScripts.installGlobalAgentReporter(agent: agent), timeout: .seconds(120))
+        } catch SSHCommandRunner.RunnerError.timedOut {
+            throw RuntimeProviderError.workspaceUnreachable(workspace: alias, detail: "Installing the status reporter timed out.")
+        } catch let error as SSHCommandRunner.RunnerError {
+            throw RuntimeProviderError.operationFailed("Couldn't start ssh: \(error)")
+        }
+        guard result.exitCode != 0 || result.markers()["RTERM_AGENT_STATUS"] != "ok" else { return }
+        let detail = Self.sanitizedStderr(result.stderr)
+        switch result.exitCode {
+        case 33:
+            throw RuntimeProviderError.prerequisiteMissing(
+                workspace: alias, what: "The \(agent.rawValue) command",
+                remedy: "Install \(agent.displayName) there (or use per-session reporting).")
+        case 34, 35, 36:
+            throw RuntimeProviderError.operationFailed(
+                "\(agent.displayName) didn't accept Relay's plugin on \(alias).\(detail.isEmpty ? "" : "\n\(detail)")")
+        default:
+            throw mapFailure(alias: alias, result: result)
+        }
+    }
+
+    /// Poll cadence of the remote watch loop, in seconds.
+    public static let agentStatusInterval = 2
+
+    public func monitorAgentStatus(
+        workspace: WorkspaceRef,
+        onSnapshot: @escaping @Sendable ([AgentStatusReport]) -> Void
+    ) async throws {
+        let alias = try self.alias(for: workspace)
+        // ~30 min runs; the caller restarts.
+        let iterations = 900
+        let script = SSHTmuxScripts.agentStatusWatch(
+            knownTmuxPath: nil, interval: Self.agentStatusInterval, iterations: iterations)
+        let parser = LockedAgentStatusParser()
+        let result: SSHCommandRunner.CommandResult
+        do {
+            result = try await SSHCommandRunner.runProcess(
+                executable: SSHCommandRunner.sshPath,
+                arguments: [
+                    "-o", "BatchMode=yes",
+                    "-o", "ConnectTimeout=\(runner.connectTimeoutSeconds)",
+                    "-o", "ServerAliveInterval=15",
+                    "-o", "ServerAliveCountMax=2",
+                    "-T", "--", alias, "/bin/sh -s",
+                ],
+                stdin: script,
+                timeout: .seconds(Self.agentStatusInterval * iterations + 120),
+                onStdout: { data in
+                    for snapshot in parser.feed(data) { onSnapshot(snapshot) }
+                }
+            )
+        } catch SSHCommandRunner.RunnerError.timedOut {
+            throw RuntimeProviderError.workspaceUnreachable(workspace: alias, detail: "Agent status watch timed out.")
+        } catch let error as SSHCommandRunner.RunnerError {
+            throw RuntimeProviderError.operationFailed("Couldn't start ssh: \(error)")
+        }
+        try Task.checkCancellation()
+        guard result.exitCode == 0 else { throw mapFailure(alias: alias, result: result) }
+    }
+
+    private final class LockedAgentStatusParser: @unchecked Sendable {
+        private let lock = NSLock()
+        private var parser = AgentStatusParser()
+
+        func feed(_ data: Data) -> [[AgentStatusReport]] {
+            lock.withLock { parser.feed(data) }
+        }
+    }
+
+    private final class LockedMachineLoadParser: @unchecked Sendable {
+        private let lock = NSLock()
+        private var parser = MachineLoadParser()
+
+        func feed(_ data: Data) -> [MachineLoadSample] {
+            lock.withLock { parser.feed(data) }
+        }
+    }
+
     private func bestEffortRemoveDropDirectory(_ dropDir: String, alias: String) {
         guard Self.isSafeDropDirectory(dropDir) else { return }
         let script = "rm -rf \(POSIXShellQuote.quote(dropDir))"

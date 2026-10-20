@@ -32,7 +32,7 @@ enum SSHTmuxScripts {
     /// Shell fragment that resolves a usable tmux binary into `$tmux_path`,
     /// covering login-manager PATHs that non-interactive SSH doesn't get
     /// (Homebrew, MacPorts, local installs).
-    private static let resolveTmuxFragment = """
+    static let resolveTmuxFragment = """
     find_tmux() {
       if command -v tmux >/dev/null 2>&1; then command -v tmux; return 0; fi
       for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux /opt/local/bin/tmux /usr/pkg/bin/tmux "$HOME/.local/bin/tmux" "$HOME/bin/tmux"; do
@@ -44,7 +44,7 @@ enum SSHTmuxScripts {
     """
 
     /// Prefers a previously validated tmux path, falling back to discovery.
-    private static func tmuxPreamble(knownTmuxPath: String?) -> String {
+    static func tmuxPreamble(knownTmuxPath: String?) -> String {
         guard let known = knownTmuxPath, !known.isEmpty else { return resolveTmuxFragment }
         return """
         tmux_path=\(POSIXShellQuote.quote(known))
@@ -112,6 +112,9 @@ enum SSHTmuxScripts {
         let environment: [(String, String)]
         /// `@option` → value tmux user options to set.
         let metadata: [(String, String)]
+        /// Write the agent status reporter files first (best-effort) — the
+        /// launch command loads them for this session.
+        var installAgentReporter = false
     }
 
     static func createSession(_ ctx: CreateContext) -> String {
@@ -172,6 +175,7 @@ enum SSHTmuxScripts {
         \(tmuxPreamble(knownTmuxPath: ctx.knownTmuxPath))
         cd \(pathExpr) 2>/dev/null || { printf 'RTERM_STATUS=no_dir\\n'; exit 22; }
         rp=$(pwd -P)
+        \(ctx.installAgentReporter ? "( \(writeAgentReporterFilesFragment()) ) >/dev/null 2>&1 || true" : "")
         # Native-terminal polish, server-scoped half. Only applied when every
         # session on the server is app-owned (or the server is fresh), so a
         # server shared with the user's own tmux sessions keeps their setup.
@@ -478,5 +482,108 @@ enum SSHTmuxScripts {
         cd \(pathExpr) 2>/dev/null || { printf 'RTERM_STATUS=no_dir\\n'; exit 22; }
         \(exports)\(pathBolster)exec "${SHELL:-/bin/sh}" -l -c \(POSIXShellQuote.quote(ctx.shutdownCommand))
         """
+    }
+
+    // MARK: Machine load
+
+    /// A self-terminating sampling loop: emits one `RLOAD_BEGIN`…`RLOAD_END`
+    /// block (see `MachineLoadParser`) immediately, then every `interval`
+    /// seconds, for at most `iterations` samples. Read-only, built-in tools
+    /// only (sysctl/iostat/ps on macOS, /proc + top/ps on Linux); anything
+    /// missing just drops that field. `detailed` adds the busiest processes
+    /// and NVIDIA GPUs. The loop dies with the connection (SIGPIPE/HUP on
+    /// its next write), so a vanished client never leaves it running long.
+    static func machineLoad(interval: Int, detailed: Bool, iterations: Int) -> String {
+        let interval = min(max(interval, 2), 3600)
+        let iterations = min(max(iterations, 1), 100_000)
+        return #"""
+        set -u
+        trap 'exit 0' HUP PIPE TERM
+        interval=\#(interval)
+        detail=\#(detailed ? 1 : 0)
+        n=\#(iterations)
+        os=$(uname -s 2>/dev/null) || os=unknown
+        ncpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null) || ncpu=""
+        [ -n "$ncpu" ] || ncpu=$(nproc 2>/dev/null) || ncpu=""
+        memtotal=""
+        boot=""
+        if [ "$os" = Darwin ]; then
+          memtotal=$(sysctl -n hw.memsize 2>/dev/null) || memtotal=""
+          boot=$(sysctl -n kern.boottime 2>/dev/null | awk -F'[ ,]+' '{ print $4 }') || boot=""
+        fi
+        gpu=0
+        [ "$detail" = 1 ] && command -v nvidia-smi >/dev/null 2>&1 && gpu=1
+        ptotal=""
+        pidle=""
+        i=0
+        while [ "$i" -lt "$n" ]; do
+          i=$((i + 1))
+          spent=0
+          echo RLOAD_BEGIN
+          echo "os=$os"
+          echo "ncpu=$ncpu"
+          if [ "$os" = Darwin ]; then
+            l=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}') && echo "load=$l"
+            lvl=$(sysctl -n kern.memorystatus_level 2>/dev/null) || lvl=""
+            [ -n "$memtotal" ] && [ -n "$lvl" ] && echo "mem=$memtotal $((memtotal / 100 * (100 - lvl)))"
+            sysctl -n vm.swapusage 2>/dev/null | awk '
+              function b(s,  u, v) { u = substr(s, length(s)); v = s + 0
+                if (u == "K") v *= 1024; else if (u == "M") v *= 1048576; else if (u == "G") v *= 1073741824
+                return v }
+              $1 == "total" { printf "swap=%.0f %.0f\n", b($3), b($6) }'
+            [ -n "$boot" ] && echo "uptime=$(( $(date +%s) - boot ))"
+            iostat -n 0 -c 2 -w 1 2>/dev/null </dev/null | tail -1 | awk 'NF >= 3 { print "cpu=" (100 - $3) * 10 }'
+            spent=1
+          else
+            [ -r /proc/loadavg ] && read -r l1 l5 l15 _ < /proc/loadavg && echo "load=$l1 $l5 $l15"
+            [ -r /proc/meminfo ] && awk '
+              /^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 }
+              /^SwapTotal:/ { st = $2 } /^SwapFree:/ { sf = $2 }
+              END { if (t > 0) printf "mem=%.0f %.0f\n", t * 1024, (t - a) * 1024
+                    if (st != "") printf "swap=%.0f %.0f\n", st * 1024, (st - sf) * 1024 }' /proc/meminfo
+            if [ -r /proc/stat ] && read -r _ u ni s id io irq sirq st _ < /proc/stat; then
+              total=$((u + ni + s + id + ${io:-0} + ${irq:-0} + ${sirq:-0} + ${st:-0}))
+              idle=$((id + ${io:-0}))
+              if [ -n "$ptotal" ] && [ $((total - ptotal)) -gt 0 ]; then
+                echo "cpu=$(( (total - ptotal - (idle - pidle)) * 1000 / (total - ptotal) ))"
+              fi
+              ptotal=$total
+              pidle=$idle
+            fi
+            [ -r /proc/uptime ] && read -r up _ < /proc/uptime && echo "uptime=${up%.*}"
+          fi
+          df -Pk "$HOME" 2>/dev/null | awk 'NR == 2 { print "disk=" $2 " " $3 }'
+          if [ "$detail" = 1 ]; then
+            if [ "$gpu" = 1 ]; then
+              nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,name \
+                --format=csv,noheader,nounits 2>/dev/null </dev/null |
+                awk -F', *' 'NF >= 5 { print "gpu=" $1 " " $2 " " $3 " " $4 " " $5 }'
+            fi
+            procs=""
+            if [ "$os" != Darwin ] && command -v top >/dev/null 2>&1; then
+              procs=$(top -b -n 2 -d 1 -w 512 2>/dev/null </dev/null | awk '
+                /^ *PID +USER/ { f++; c = 0; next }
+                f == 2 && c < 12 && NF >= 12 && $12 != "top" {
+                  c++; cmd = $12; for (k = 13; k <= NF; k++) cmd = cmd " " $k
+                  print "proc=" $9 " " $10 " " cmd }')
+              spent=$((spent + 1))
+            fi
+            if [ -z "$procs" ]; then
+              if [ "$os" = Darwin ]; then
+                procs=$(ps -Ao pcpu=,pmem=,comm= -r 2>/dev/null | awk '$3 !~ /(^|\/)ps$/ && c < 12 { c++; print "proc=" $0 }')
+              else
+                procs=$(ps -eo pcpu=,pmem=,comm= --sort=-pcpu 2>/dev/null | awk '$3 != "ps" && c < 12 { c++; print "proc=" $0 }')
+              fi
+            fi
+            [ -n "$procs" ] && printf '%s\n' "$procs"
+          fi
+          echo RLOAD_END
+          [ "$i" -lt "$n" ] || break
+          rest=$((interval - spent))
+          [ "$rest" -ge 1 ] || rest=1
+          sleep "$rest" </dev/null
+        done
+        exit 0
+        """#
     }
 }

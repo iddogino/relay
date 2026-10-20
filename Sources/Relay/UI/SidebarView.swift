@@ -161,6 +161,7 @@ private struct ProjectRow: View {
     let remoteMissing: Bool
 
     private var hostAlias: String { project.workspace.opaqueID }
+    private var needingYou: Int { model.agentsNeedingYou(in: project) }
 
     /// Host reachability: green = online (live attachment, or the last
     /// contact succeeded), red = the last contact failed, grey = no
@@ -196,11 +197,20 @@ private struct ProjectRow: View {
                 .lineLimit(1)
                 .layoutPriority(1)
             Spacer(minLength: 8)
-            Text(hostAlias)
-                .font(.caption)
-                .foregroundStyle(remoteMissing ? AnyShapeStyle(.orange) : AnyShapeStyle(.tertiary))
-                .lineLimit(1)
-                .truncationMode(.tail)
+            if needingYou > 0 {
+                // Agents waiting on the user outrank the host label.
+                Text("\(needingYou) needs you")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .help("\(needingYou) agent\(needingYou == 1 ? " is" : "s are") waiting for input on \(hostAlias)")
+            } else {
+                Text(hostAlias)
+                    .font(.caption)
+                    .foregroundStyle(remoteMissing ? AnyShapeStyle(.orange) : AnyShapeStyle(.tertiary))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
             if model.sessionsLoading.contains(project.id) {
                 ProgressView().controlSize(.mini)
             } else if remoteMissing {
@@ -314,6 +324,9 @@ private struct SessionRow: View {
         model.liveTitle(for: session.id) ?? session.paneTitle
     }
 
+    private var agentActivity: AgentActivity? { model.agentActivity(for: session) }
+    private var agentUnseen: Bool { model.agentUnseen(for: session) }
+
     private func beginRename() {
         draftName = session.displayName
         isEditingName = true
@@ -356,6 +369,8 @@ private struct SessionRow: View {
                         .onTapGesture { beginRename() }
                 } else {
                     Text(session.displayName)
+                        // A finished turn not looked at yet reads as unread.
+                        .fontWeight(agentUnseen ? .semibold : nil)
                         .lineLimit(1)
                 }
                 if let statusTitle, statusTitle != session.displayName {
@@ -371,6 +386,8 @@ private struct SessionRow: View {
                 ProgressView().controlSize(.mini)
             } else if model.commandKeyHeld, let number = model.shortcutNumber(for: session.id) {
                 ShortcutKeyBadge(number: number)
+            } else if let agentActivity {
+                AgentStatusGlyph(activity: agentActivity, unseen: agentUnseen)
             }
         }
         .opacity(isArchiving ? 0.5 : 1)

@@ -22,6 +22,14 @@ struct TerminalDetailView: View {
         }
         .toolbar {
             ToolbarItemGroup {
+                if let project = model.selectedProject,
+                   let load = model.selectedMachineLoad {
+                    MachineLoadBadge(
+                        model: model,
+                        machineName: model.remotes.first { $0.id == project.workspace }?.displayName
+                            ?? project.workspace.opaqueID,
+                        history: load)
+                }
                 if let session = model.selectedSession,
                    let git = model.gitState(for: session.id) {
                     if let pr = git.pullRequest {
@@ -42,6 +50,12 @@ struct TerminalDetailView: View {
                 }
             }
         }
+        // AppKit lays the detail column's title-bar background out from
+        // the split divider's 4pt hit area, so it starts ~2pt inside the
+        // sidebar — visible as an overhang whenever the window is key (the
+        // two sections differ in shade). Without that background the title
+        // bar shows the window's own material, flush with the sidebar.
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .inspector(isPresented: $model.diffTrayVisible) {
             DiffTrayView(model: model)
                 .inspectorColumnWidth(min: 340, ideal: 480, max: 900)
@@ -110,7 +124,10 @@ private struct TerminalHeaderBar: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(.bar)
+        // Shape-style backgrounds ignore every safe-area edge by default,
+        // which stretched this bar up under the toolbar and left under the
+        // sidebar divider — a band overhanging the column edge.
+        .background(.bar, ignoresSafeAreaEdges: [])
     }
 }
 
@@ -122,9 +139,13 @@ private struct TerminalStage: View {
     var body: some View {
         ZStack {
             // Terminal background: match the surface's reported background
-            // when available so resize gaps don't flash.
+            // when available so resize gaps don't flash. Bottom edge only:
+            // the column's top/leading safe areas reach under the toolbar
+            // and the sidebar divider, and the dark terminal color bleeding
+            // there shows through the (translucent) title-bar separator and
+            // divider as a black line overhanging the column edge.
             Color(nsColor: model.attachment.surfaceView?.terminalBackgroundColor ?? .textBackgroundColor)
-                .ignoresSafeArea()
+                .ignoresSafeArea(edges: .bottom)
 
             if let surfaceView = model.attachment.surfaceView {
                 TerminalHostView(surfaceView: surfaceView)

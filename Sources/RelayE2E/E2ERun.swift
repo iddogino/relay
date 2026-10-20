@@ -84,6 +84,11 @@ final class E2ERun {
                 print("\n=== \(host.alias): file upload ===")
                 await runUploadSuite(host)
             }
+
+            for host in state.hosts {
+                print("\n=== \(host.alias): machine load ===")
+                await runMachineLoadSuite(host)
+            }
         } catch {
             fail("setup: \(error)")
         }
@@ -524,6 +529,36 @@ final class E2ERun {
         try? await provider.destroySession(session, project: project)
     }
 
+    // MARK: Machine load (AC-26)
+
+    func runMachineLoadSuite(_ host: E2EHostState) async {
+        let workspace = WorkspaceRef(provider: .sshTmux, opaqueID: host.alias)
+        let log = MachineLoadLog()
+        // Detailed mode samples every 2s; three samples prove the loop keeps
+        // streaming (not just one shot), then cancellation ends the run.
+        let run = Task { [provider] in
+            try await provider.monitorMachineLoad(workspace: workspace, detailed: true) { log.append($0) }
+        }
+        let deadline = Date().addingTimeInterval(30)
+        while log.count < 3, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        run.cancel()
+        let ended = await Task {
+            do { try await run.value; return "returned" } catch is CancellationError { return "cancelled" } catch { return "\(error)" }
+        }.value
+        let samples = log.all
+        check(samples.count >= 3, "AC-26 load samples stream from \(host.alias) (\(samples.count) received)")
+        guard let last = samples.last else { return }
+        check(last.cores > 0 && last.memoryTotalBytes > 0 && last.memoryUsedBytes > 0,
+              "AC-26 core metrics present (\(last.cores) cores, \(last.memoryUsedBytes)/\(last.memoryTotalBytes) B)")
+        check(last.cpuBusy != nil, "AC-26 CPU busy measured over the interval")
+        check(!last.processes.isEmpty, "AC-26 detailed sampling lists top processes")
+        check((last.diskTotalBytes ?? 0) > 0, "AC-26 home filesystem usage reported")
+        check(ended != "returned", "AC-26 cancellation stops the sampling run (\(ended))")
+        print("  \(host.alias): load \(last.load1) on \(last.cores) cores, mem \(Int(last.memoryFraction * 100))%, cpu \(Int((last.cpuBusy ?? 0) * 100))%, gpus \(last.gpus.count), top: \(last.processes.first?.name ?? "-")")
+    }
+
     // MARK: Cleanup (§21.4, AC-14)
 
     func cleanupHost(_ host: E2EHostState) async {
@@ -564,4 +599,12 @@ final class UploadProgressLog: @unchecked Sendable {
     private var updates: [UploadProgress] = []
     func append(_ update: UploadProgress) { lock.lock(); updates.append(update); lock.unlock() }
     var last: UploadProgress? { lock.lock(); defer { lock.unlock() }; return updates.last }
+}
+
+final class MachineLoadLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [MachineLoadSample] = []
+    func append(_ sample: MachineLoadSample) { lock.lock(); samples.append(sample); lock.unlock() }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return samples.count }
+    var all: [MachineLoadSample] { lock.lock(); defer { lock.unlock() }; return samples }
 }

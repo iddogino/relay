@@ -440,6 +440,20 @@ struct NewSessionSheet: View {
         }
     }
 
+    /// The coding agent the chosen harness launches, if Relay can follow it.
+    private var detectedAgent: CodingAgent? {
+        CodingAgent.detect(launchCommand: effectiveCommands.launch)
+    }
+
+    /// The agent to load the per-session reporter into: only when there's
+    /// no known global one and the user wants it.
+    private var perSessionReporter: CodingAgent? {
+        guard let agent = detectedAgent, model.agentReporterPerSession,
+              model.agentReporterStatus[activeProject.workspace]?[agent]?.globalInstalled != true
+        else { return nil }
+        return agent
+    }
+
     private var startLabel: String {
         switch start {
         case .projectDefault: return "Project default"
@@ -506,7 +520,9 @@ struct NewSessionSheet: View {
             .onAppear { loadStartChoice(for: activeProject) }
             .onChange(of: chosenProjectID) {
                 loadStartChoice(for: activeProject)
+                Task { await model.refreshAgentReporterStatus(activeProject.workspace) }
             }
+            .task { await model.refreshAgentReporterStatus(activeProject.workspace) }
 
             VStack(alignment: .leading, spacing: 6) {
                 if start == .custom {
@@ -538,6 +554,10 @@ struct NewSessionSheet: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            if let agent = detectedAgent {
+                AgentReporterSection(model: model, workspace: activeProject.workspace, agent: agent)
             }
 
             if let errorMessage {
@@ -646,7 +666,8 @@ struct NewSessionSheet: View {
         do {
             let session = try await model.provider.createSession(
                 for: target,
-                request: NewSessionRequest(displayName: trimmed, start: sessionStart))
+                request: NewSessionRequest(
+                    displayName: trimmed, start: sessionStart, agentReporter: perSessionReporter))
             await MainActor.run {
                 rememberStartChoice(for: target)
                 model.noteCreatedSession(session, project: target)
@@ -709,5 +730,80 @@ struct CreateSheet: View {
         }
         .padding(20)
         .frame(width: 480)
+    }
+}
+
+/// The New Session sheet's agent-status line: a quiet confirmation when
+/// Relay's global reporter is installed for the agent on this machine;
+/// otherwise the two ways to get status — install it globally, or load it
+/// into just this session.
+private struct AgentReporterSection: View {
+    @Bindable var model: AppModel
+    let workspace: WorkspaceRef
+    let agent: CodingAgent
+
+    @State private var installError: String?
+
+    private var status: AgentReporterStatus? { model.agentReporterStatus[workspace]?[agent] }
+    private var host: String { workspace.opaqueID }
+    private var installing: Bool { model.agentReporterInstalling.contains(workspace) }
+
+    var body: some View {
+        Group {
+            if let status, status.globalInstalled {
+                Label {
+                    Text("Status reporting is on: Relay's \(agent.displayName) plugin is installed on \(host).")
+                } icon: {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            } else if let status {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle(isOn: $model.agentReporterPerSession) {
+                        Text("Report \(agent.displayName) status for this session")
+                    }
+                    .toggleStyle(.checkbox)
+                    HStack(spacing: 6) {
+                        Button("Install for all sessions on \(host)") {
+                            Task { await install() }
+                        }
+                        .buttonStyle(.link)
+                        .disabled(installing || !status.cliFound)
+                        .help(status.cliFound
+                              ? "Adds Relay's status plugin to \(agent.displayName) on \(host), so every session reports — including ones you start by hand."
+                              : "\(agent.rawValue) wasn't found on \(host).")
+                        if installing { ProgressView().controlSize(.mini) }
+                    }
+                    if agent == .codex {
+                        Text("Codex asks you to trust Relay's hooks the first time.")
+                            .foregroundStyle(.tertiary)
+                    }
+                    if let installError {
+                        Text(installError)
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                    }
+                }
+                .font(.caption)
+            } else if model.agentReporterProbing.contains(workspace) {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Checking agent status reporting on \(host)…")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .onChange(of: workspace) { installError = nil }
+    }
+
+    private func install() async {
+        installError = nil
+        do {
+            try await model.installGlobalAgentReporter(workspace, agent: agent)
+        } catch {
+            installError = error.localizedDescription
+        }
     }
 }

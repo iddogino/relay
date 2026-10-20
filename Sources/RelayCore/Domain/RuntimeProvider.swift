@@ -116,6 +116,38 @@ public protocol RuntimeProvider: Sendable {
     /// is the path as the terminal printed it — absolute, `~/`, or relative
     /// to the session's current directory.
     func fetchPreviewFile(linkPath: String, for session: RemoteSession, project: Project) async throws -> URL
+
+    /// Samples the workspace machine's general load (load average, memory,
+    /// CPU, …) repeatedly, calling `onSample` from an arbitrary thread for
+    /// each sample, until the provider's sampling run ends (returns), it
+    /// fails (throws), or the task is cancelled (throws CancellationError).
+    /// `detailed` asks for a faster cadence plus the extra metrics (busiest
+    /// processes, GPUs). Optional and best-effort: the default throws.
+    func monitorMachineLoad(
+        workspace: WorkspaceRef,
+        detailed: Bool,
+        onSample: @escaping @Sendable (MachineLoadSample) -> Void
+    ) async throws
+
+    /// Whether each coding agent's CLI exists on the workspace machine and
+    /// has Relay's global status reporter installed. Also refreshes stale
+    /// reporter files. Optional: the default reports nothing.
+    func probeAgentReporters(workspace: WorkspaceRef) async throws -> [CodingAgent: AgentReporterStatus]
+
+    /// Installs Relay's status reporter into `agent`'s global configuration
+    /// on the workspace machine, so every session of it reports. Optional:
+    /// the default throws.
+    func installGlobalAgentReporter(workspace: WorkspaceRef, agent: CodingAgent) async throws
+
+    /// Streams every session's agent status on the workspace machine,
+    /// calling `onSnapshot` (arbitrary thread) with the full set whenever
+    /// it changes and periodically as a heartbeat, until the run ends
+    /// (returns), fails (throws), or the task is cancelled. Optional: the
+    /// default throws.
+    func monitorAgentStatus(
+        workspace: WorkspaceRef,
+        onSnapshot: @escaping @Sendable ([AgentStatusReport]) -> Void
+    ) async throws
 }
 
 /// A parsed session diff, ready to render.
@@ -162,6 +194,27 @@ extension RuntimeProvider {
 
     public func fetchPreviewFile(linkPath: String, for session: RemoteSession, project: Project) async throws -> URL {
         throw RuntimeProviderError.operationFailed("This provider can't preview remote files.")
+    }
+
+    public func monitorMachineLoad(
+        workspace: WorkspaceRef,
+        detailed: Bool,
+        onSample: @escaping @Sendable (MachineLoadSample) -> Void
+    ) async throws {
+        throw RuntimeProviderError.operationFailed("This provider can't report machine load.")
+    }
+
+    public func probeAgentReporters(workspace: WorkspaceRef) async throws -> [CodingAgent: AgentReporterStatus] { [:] }
+
+    public func installGlobalAgentReporter(workspace: WorkspaceRef, agent: CodingAgent) async throws {
+        throw RuntimeProviderError.operationFailed("This provider can't install agent status reporting.")
+    }
+
+    public func monitorAgentStatus(
+        workspace: WorkspaceRef,
+        onSnapshot: @escaping @Sendable ([AgentStatusReport]) -> Void
+    ) async throws {
+        throw RuntimeProviderError.operationFailed("This provider can't report agent status.")
     }
 }
 

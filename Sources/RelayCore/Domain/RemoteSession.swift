@@ -75,15 +75,21 @@ public struct NewSessionRequest: Sendable {
     /// begin with `@` (tmux user options for SSH+tmux). Used by the live E2E
     /// harness for run tagging; the production UI passes none.
     public let extraMetadata: [String: String]
+    /// Load Relay's status reporter into this one session's agent (when the
+    /// launch command starts it) — the per-session alternative to the
+    /// global plugin. nil leaves the launch untouched.
+    public let agentReporter: CodingAgent?
 
     public init(
         displayName: String,
         start: SessionStart = .projectDefault,
-        extraMetadata: [String: String] = [:]
+        extraMetadata: [String: String] = [:],
+        agentReporter: CodingAgent? = nil
     ) {
         self.displayName = displayName
         self.start = start
         self.extraMetadata = extraMetadata
+        self.agentReporter = agentReporter
     }
 }
 
