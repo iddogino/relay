@@ -13,7 +13,7 @@ import Foundation
 extension SSHTmuxScripts {
     /// Bumped whenever any reporter file changes; the probe compares it so
     /// stale files get rewritten.
-    static let agentReporterVersion = "1"
+    static let agentReporterVersion = "2"
 
     static let agentStatusBegin = "RAGENT_BEGIN"
     static let agentStatusEnd = "RAGENT_END"
@@ -47,10 +47,32 @@ extension SSHTmuxScripts {
       s=$("$t" list-sessions -F '#{session_name} #{@rterm_session_id}' 2>/dev/null \
         | awk -v id="$RTERM_SESSION_ID" '$2 == id { print $1; exit }')
       [ -n "$s" ] || exit 0
+      now=$(date +%s)
       if [ "$state" = end ]; then
         "$t" set-option -u -t "$s" @relay_agent
+        "$t" set-option -u -t "$s" @relay_agent_prev
+      elif [ "$state" = compacting ]; then
+        cur=$("$t" show-options -qv -t "$s" @relay_agent)
+        case "$cur" in *" compacting "*) ;; *) "$t" set-option -t "$s" @relay_agent_prev "$cur" ;; esac
+        "$t" set-option -t "$s" @relay_agent "$agent compacting $now"
+      elif [ "$state" = restore ]; then
+        # Two hooks restore (PostCompact, SessionStart "compact"): only
+        # the first finds "compacting" to undo.
+        cur=$("$t" show-options -qv -t "$s" @relay_agent)
+        prev=$("$t" show-options -qv -t "$s" @relay_agent_prev)
+        "$t" set-option -u -t "$s" @relay_agent_prev
+        case "$cur" in *" compacting "*) ;; *) exit 0 ;; esac
+        case "$prev" in
+          # A turn still running continues from now (keeps the Esc
+          # heuristic in the app from reading it as stale).
+          *" working "*) "$t" set-option -t "$s" @relay_agent "$agent working $now" ;;
+          # Anything else comes back as it was — timestamp included, so
+          # a finished turn the user already saw stays seen.
+          ?*) "$t" set-option -t "$s" @relay_agent "$prev" ;;
+          *) "$t" set-option -t "$s" @relay_agent "$agent idle $now" ;;
+        esac
       else
-        "$t" set-option -t "$s" @relay_agent "$agent $state $(date +%s)"
+        "$t" set-option -t "$s" @relay_agent "$agent $state $now"
       fi
     } >/dev/null 2>&1 </dev/null
     exit 0

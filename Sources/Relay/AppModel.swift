@@ -396,6 +396,7 @@ final class AppModel {
                 previous.setPresented(false)
             }
             self.syncLoadMonitor()
+            if let selected = self.selectedSessionID { self.markedUnread.remove(selected) }
             self.markSelectedAgentSeen()
             guard let session = self.selectedSession,
                   let project = self.projects.first(where: { $0.id == session.projectID }) else {
@@ -893,8 +894,32 @@ final class AppModel {
         return report.effectiveActivity()
     }
 
-    /// A finished (or failed) turn the user hasn't looked at yet.
+    /// Sessions the user marked unread (sidebar context menu), Mail-style:
+    /// cleared when the session is next selected. Persisted.
+    private(set) var markedUnread: Set<SessionID> = AppModel.loadMarkedUnread() {
+        didSet {
+            UserDefaults.standard.set(markedUnread.map(\.uuid.uuidString), forKey: Self.markedUnreadKey)
+        }
+    }
+    private static let markedUnreadKey = "markedUnreadSessions"
+
+    private static func loadMarkedUnread() -> Set<SessionID> {
+        let strings = UserDefaults.standard.stringArray(forKey: markedUnreadKey) ?? []
+        return Set(strings.compactMap(UUID.init(uuidString:)).map { SessionID(uuid: $0) })
+    }
+
+    func setMarkedUnread(_ unread: Bool, for session: RemoteSession) {
+        if unread { markedUnread.insert(session.id) } else { markedUnread.remove(session.id) }
+        if !unread, let activity = agentActivity(for: session),
+           activity.state == .done || activity.state == .failed {
+            agentSeen[session.id] = activity.since
+        }
+    }
+
+    /// A finished (or failed) turn the user hasn't looked at yet, or a
+    /// session marked unread.
     func agentUnseen(for session: RemoteSession) -> Bool {
+        if markedUnread.contains(session.id) { return true }
         guard let activity = agentActivity(for: session),
               activity.state == .done || activity.state == .failed
         else { return false }
@@ -938,6 +963,10 @@ final class AppModel {
 
     /// Back-to-back bounded runs; failures back off (30s … 5 min).
     private func runAgentMonitor(_ workspace: WorkspaceRef) async {
+        // The probe upgrades already-installed reporter files to this
+        // build's version, so new hooks reach the machine's agents without
+        // waiting for the New Session sheet.
+        await refreshAgentReporterStatus(workspace)
         var failures = 0
         while !Task.isCancelled {
             let ok = await runAgentWatch(workspace)

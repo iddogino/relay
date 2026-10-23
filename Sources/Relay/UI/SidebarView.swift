@@ -386,8 +386,10 @@ private struct SessionRow: View {
                 ProgressView().controlSize(.mini)
             } else if model.commandKeyHeld, let number = model.shortcutNumber(for: session.id) {
                 ShortcutKeyBadge(number: number)
-            } else if let agentActivity {
+            } else if let agentActivity, agentActivity.state != .idle {
                 AgentStatusGlyph(activity: agentActivity, unseen: agentUnseen)
+            } else if agentUnseen {
+                UnreadDot()
             }
         }
         .opacity(isArchiving ? 0.5 : 1)
@@ -396,6 +398,15 @@ private struct SessionRow: View {
                 beginRename()
             }
             .disabled(isArchiving)
+            if agentUnseen {
+                Button("Mark as Read") {
+                    model.setMarkedUnread(false, for: session)
+                }
+            } else {
+                Button("Mark as Unread") {
+                    model.setMarkedUnread(true, for: session)
+                }
+            }
             Button("Disconnect") {
                 model.disconnectSession(session)
             }

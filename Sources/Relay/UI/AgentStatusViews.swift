@@ -18,7 +18,10 @@ struct AgentStatusGlyph: View {
     @ViewBuilder private var glyph: some View {
         switch activity.state {
         case .working:
-            WorkingRing()
+            WorkingRing(style: AnyShapeStyle(.secondary))
+        case .compacting:
+            // Claude Code's own "Compacting conversation…" line is blue.
+            WorkingRing(style: AnyShapeStyle(.blue))
         case .blocked:
             ZStack {
                 Circle().strokeBorder(Color.orange, lineWidth: 1.5)
@@ -49,6 +52,7 @@ struct AgentStatusGlyph: View {
         switch activity.state {
         case .working: return "\(agent) is working"
         case .blocked: return "\(agent) needs your input"
+        case .compacting: return "\(agent) is compacting the conversation"
         case .done: return "\(agent) finished its turn"
         case .failed: return "\(agent)'s turn failed"
         case .idle: return "\(agent) is idle"
@@ -56,16 +60,30 @@ struct AgentStatusGlyph: View {
     }
 }
 
+/// A session marked unread with no finished turn to show: a plain dot.
+struct UnreadDot: View {
+    var body: some View {
+        Circle()
+            .fill(.primary)
+            .frame(width: 8, height: 8)
+            .frame(width: 14, height: 14)
+            .help("Unread")
+            .accessibilityLabel("Unread")
+    }
+}
+
 /// An open ring turning at a calm pace. Time-driven rather than an
 /// implicit repeatForever animation, which List row reuse tends to drop or
 /// restart.
 private struct WorkingRing: View {
+    let style: AnyShapeStyle
+
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / 30)) { context in
             let turn = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.2) / 1.2
             Circle()
                 .trim(from: 0, to: 0.72)
-                .stroke(.secondary, style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+                .stroke(style, style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
                 .rotationEffect(.degrees(turn * 360))
                 .frame(width: 11, height: 11)
         }

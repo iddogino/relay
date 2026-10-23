@@ -33,6 +33,8 @@ public enum AgentActivityState: String, Sendable, Hashable {
     case working
     /// The agent is waiting on the user: a permission prompt or a question.
     case blocked
+    /// The agent is compacting its conversation (manual or automatic).
+    case compacting
     /// The turn finished.
     case done
     /// The turn ended on an error (API failure, etc.).
@@ -180,7 +182,9 @@ public enum AgentLaunchInjection {
 }
 
 /// The hook events each agent reports, mapped to the state they set.
-/// `end` clears the report (the agent exited cleanly).
+/// `end` clears the report (the agent exited cleanly); `restore` puts back
+/// the state from before `compacting` (done after a manual /compact,
+/// working after an automatic one mid-turn).
 enum ClaudeHooks {
     struct Hook {
         let event: String
@@ -189,7 +193,12 @@ enum ClaudeHooks {
     }
 
     static let hooks: [Hook] = [
-        Hook(event: "SessionStart", matcher: nil, state: "idle"),
+        // Not "compact": that SessionStart follows a compaction, which
+        // restores the state from before it instead.
+        Hook(event: "SessionStart", matcher: "startup|resume|clear", state: "idle"),
+        Hook(event: "PreCompact", matcher: nil, state: "compacting"),
+        Hook(event: "PostCompact", matcher: nil, state: "restore"),
+        Hook(event: "SessionStart", matcher: "compact", state: "restore"),
         Hook(event: "UserPromptSubmit", matcher: nil, state: "working"),
         // A question to the user is a tool call that waits on them.
         Hook(event: "PreToolUse", matcher: "AskUserQuestion", state: "blocked"),

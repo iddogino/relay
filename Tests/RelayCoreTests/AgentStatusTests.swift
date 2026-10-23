@@ -183,9 +183,10 @@ struct AgentStatusTests {
             stdin: "", timeout: .seconds(10))
 
         let calls = try String(contentsOfFile: log, encoding: .utf8).split(separator: "\n").map(String.init)
-        #expect(calls.count == 2)
+        #expect(calls.count == 3)
         #expect(calls.first?.hasPrefix("set-option -t rterm-mine @relay_agent claude blocked ") == true)
-        #expect(calls.last == "set-option -u -t rterm-mine @relay_agent")
+        #expect(calls.dropFirst().first == "set-option -u -t rterm-mine @relay_agent")
+        #expect(calls.last == "set-option -u -t rterm-mine @relay_agent_prev")
 
         // The probe sees the files' version and no global installs.
         let probe = try await SSHCommandRunner.runProcess(
@@ -196,5 +197,66 @@ struct AgentStatusTests {
         #expect(markers["RTERM_AGENT_FILES"] == SSHTmuxScripts.agentReporterVersion)
         #expect(markers["RTERM_AGENT_CLAUDE_GLOBAL"] == "0")
         #expect(markers["RTERM_AGENT_STATUS"] == "ok")
+    }
+
+    /// PreCompact → compacting, then PostCompact and SessionStart
+    /// "compact" (both fire) put back the state from before, once.
+    @Test func compactionRestoresThePriorState() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("relay-compact-\(UUID().uuidString)")
+        let bin = root.appendingPathComponent("bin")
+        let opts = root.appendingPathComponent("opts")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: opts, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // A tmux that keeps one session's options as files.
+        let stub = """
+        #!/bin/sh
+        o=\(POSIXShellQuote.quote(opts.path))
+        case "$1" in
+          list-sessions) printf 'rterm-mine MY-ID\\n' ;;
+          show-options) cat "$o/$5" 2>/dev/null ;;
+          set-option)
+            if [ "$2" = -u ]; then rm -f "$o/$5"; else printf '%s' "$5" > "$o/$4"; fi ;;
+        esac
+        """
+        let stubPath = bin.appendingPathComponent("tmux").path
+        try stub.write(toFile: stubPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stubPath)
+        let env = "HOME=\(POSIXShellQuote.quote(root.path)) PATH=\(POSIXShellQuote.quote(bin.path)):/usr/bin:/bin"
+        _ = try await SSHCommandRunner.runProcess(
+            executable: "/bin/sh", arguments: ["-c", "\(env) /bin/sh -s"],
+            stdin: SSHTmuxScripts.installAgentReporterFiles(), timeout: .seconds(10))
+
+        func hook(_ state: String) async throws {
+            let command = SSHTmuxScripts.reporterInvocation(agent: .claude, state: state)
+            _ = try await SSHCommandRunner.runProcess(
+                executable: "/bin/sh",
+                arguments: ["-c", "\(env) RTERM_SESSION_ID=MY-ID /bin/sh -c \(POSIXShellQuote.quote(command))"],
+                stdin: "{}", timeout: .seconds(10))
+        }
+        func current() -> String? {
+            try? String(contentsOf: opts.appendingPathComponent("@relay_agent"), encoding: .utf8)
+        }
+
+        // Manual /compact after a finished turn: back to that exact report.
+        try "claude done 1760000000".write(to: opts.appendingPathComponent("@relay_agent"), atomically: true, encoding: .utf8)
+        try await hook("compacting")
+        #expect(AgentActivity(wire: current() ?? "")?.state == .compacting)
+        try await hook("restore")
+        try await hook("restore")
+        #expect(current() == "claude done 1760000000")
+
+        // Auto-compact mid-turn: working again, from now.
+        try "claude working 1760000000".write(to: opts.appendingPathComponent("@relay_agent"), atomically: true, encoding: .utf8)
+        try await hook("compacting")
+        try await hook("compacting")
+        try await hook("restore")
+        let resumed = try #require(AgentActivity(wire: current() ?? ""))
+        #expect(resumed.state == .working)
+        #expect(resumed.since > Date(timeIntervalSince1970: 1_760_000_000))
+
+        // A restore with nothing compacting changes nothing.
+        try await hook("restore")
+        #expect(AgentActivity(wire: current() ?? "")?.state == .working)
     }
 }
