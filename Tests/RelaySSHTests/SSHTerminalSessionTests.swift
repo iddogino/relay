@@ -414,8 +414,11 @@ struct SSHTerminalSessionFakeServerTests {
         #expect(startedGhosts.isEmpty)
         #expect(late.endCallCount == 0)
         #expect(survivor.ended == nil)
-        // Exactly the survivor's channel remains.
+        // Exactly the survivor's channel remains, on the connection it had:
+        // a slow server isn't a reason to abandon a shared connection.
         try await waitForChannels(pool, server.target, total: 1)
+        #expect(await pool.activeChannels(for: server.target).count == 1)
+        #expect(server.connectionCount == 1)
     }
 
     @Test func openingWhileTheConnectionDropsFailsCleanly() async throws {

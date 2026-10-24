@@ -56,6 +56,9 @@ public final class FakeSSHServer: @unchecked Sendable {
         var faults: Faults
         var records: [SessionRecord] = []
         var connections: [Channel] = []
+        /// Set once the event loop is going away: late process exits and
+        /// timers then schedule nothing on it.
+        var isShutDown = false
         let shell: [String]
         let baseEnvironment: [String: String]
 
@@ -135,6 +138,7 @@ public final class FakeSSHServer: @unchecked Sendable {
     }
 
     public func shutdown() {
+        state.lock.withLock { state.isShutDown = true }
         dropAllConnections()
         try? serverChannel.close().wait()
         try? group.syncShutdownGracefully()
@@ -304,7 +308,9 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
         }
 
         let loop = context.eventLoop
+        let state = state
         spawned.onExit { [self] termination in
+            guard !state.lock.withLock({ state.isShutDown }) else { return }
             loop.execute { self.processExited(termination) }
         }
         let relay = MasterRelay(session: self)

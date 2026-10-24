@@ -141,6 +141,11 @@ public actor SSHConnectionPool {
                         guard let self else { return }
                         Task { await self.release(slot, target: target) }
                     })
+            } catch let error as SSHClientError where error.isTimeout {
+                // A slow server isn't a stale connection: keep it (other
+                // terminals may share it) and don't pile on another try.
+                release(slot, target: target)
+                throw error
             } catch SSHClientError.channelFailed(let detail) {
                 // As for exec: a stale pooled connection gets one retry on
                 // a fresh one.

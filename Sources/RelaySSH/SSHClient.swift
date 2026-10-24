@@ -47,6 +47,16 @@ public enum SSHClientError: Error, Sendable, CustomStringConvertible {
     /// The connection dropped while a command was running.
     case connectionLost
 
+    /// `channelFailed` details for a server that was merely slow (as
+    /// opposed to refusing): no reason to give up on the connection.
+    static let openTimedOut = "timed out opening a channel"
+    static let startTimedOut = "timed out starting the terminal"
+
+    var isTimeout: Bool {
+        if case .channelFailed(let detail) = self { return detail == Self.openTimedOut || detail == Self.startTimedOut }
+        return false
+    }
+
     public var description: String {
         switch self {
         case .unreachable(let detail): return "unreachable: \(detail)"
@@ -173,13 +183,17 @@ final class SSHConnection: @unchecked Sendable {
         let eventLoop = channel.eventLoop
         let opened = eventLoop.makePromise(of: Channel.self)
         let late = LateChannel()
+        // Recorded on the loop, so a timer firing just after the channel
+        // opened (before this task resumes to cancel it) leaves it alone.
+        opened.futureResult.whenSuccess { _ in late.opened = true }
         let openTimeout = eventLoop.scheduleTask(in: timeout) {
+            guard !late.opened else { return }
             // The open request can't be withdrawn: a channel the server
             // confirms later would run unowned. Close it, now or when it
             // turns up.
             late.timedOut = true
             late.child?.close(promise: nil)
-            opened.fail(SSHClientError.channelFailed("timed out opening a channel"))
+            opened.fail(SSHClientError.channelFailed(SSHClientError.openTimedOut))
         }
         // NIOSSHHandler is confined to its event loop: look it up there.
         eventLoop.execute { [channel] in
@@ -187,7 +201,12 @@ final class SSHConnection: @unchecked Sendable {
                 let sshHandler = try channel.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
                 sshHandler.createChannel(opened, channelType: .session) { child, _ in
                     late.child = child
-                    guard !late.timedOut else { return child.close() }
+                    // Failing setup ends a channel that hasn't been opened
+                    // yet (a close would wait for an activation that, with
+                    // no open sent, never comes).
+                    guard !late.timedOut else {
+                        return child.eventLoop.makeFailedFuture(SSHClientError.channelFailed(SSHClientError.openTimedOut))
+                    }
                     return initialize(child)
                 }
             } catch {
@@ -224,6 +243,7 @@ final class SSHConnection: @unchecked Sendable {
 
 /// A channel being opened, for the open timeout (event-loop confined).
 final class LateChannel: @unchecked Sendable {
+    var opened = false
     var timedOut = false
     var child: Channel?
 }

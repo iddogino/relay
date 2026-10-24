@@ -145,7 +145,7 @@ extension SSHConnection {
         // handler is aborted on its loop, so a reply racing the timeout
         // can't start a session nobody owns.
         let startTimer = eventLoop.scheduleTask(in: startTimeout) {
-            handler.abortStart(SSHClientError.channelFailed("timed out starting the terminal"))
+            handler.abortStart(SSHClientError.channelFailed(SSHClientError.startTimedOut))
         }
         do {
             try await started.futureResult.get()
