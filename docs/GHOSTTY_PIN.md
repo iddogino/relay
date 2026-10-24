@@ -7,15 +7,15 @@ Metal renderer), built from official source and linked statically as
 | | |
 |---|---|
 | Upstream | https://github.com/ghostty-org/ghostty |
-| Pinned tag | `v1.3.1` |
-| Pinned commit | `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28` |
-| Zig toolchain | `0.15.2` (exact; fetched locally by the build script) |
+| Pinned ref | upstream `main`, the "tip" nightly of 2026-10-23 (v1.3.1 is still the latest release) |
+| Pinned commit | `22f100c6367045bb5fc86172f837047dee2f7670` |
+| Zig toolchain | `0.17.0` (exact, SHA-256-verified; fetched locally by the build script) |
 | License | MIT (Ghostty branding/icons are **not** used by Relay) |
 
 ## Reproducing the build
 
 ```sh
-Scripts/build-libghostty.sh   # clones the pin, fetches Zig 0.15.2, builds
+Scripts/build-libghostty.sh   # fetches the pinned commit and Zig 0.17.0, builds
 Scripts/build-app.sh          # builds Relay.app (links the xcframework)
 ```
 
@@ -26,8 +26,9 @@ build anything else.
 
 An upstream bump must be a deliberate change:
 
-1. Update `GHOSTTY_TAG` / `GHOSTTY_COMMIT` (and `ZIG_VERSION` to match the new
-   `minimum_zig_version` in Ghostty's `build.zig.zon`) in
+1. Update `GHOSTTY_REF` / `GHOSTTY_COMMIT` (and `ZIG_VERSION` + `ZIG_SHA256`
+   to match the new `minimum_zig_version` in Ghostty's `build.zig.zon`; the
+   checksum is in https://ziglang.org/download/index.json) in
    `Scripts/build-libghostty.sh`, and this file.
 2. Delete `Vendor/ghostty`, re-run `Scripts/build-libghostty.sh`.
 3. Re-check the embedding surface used by Relay (the C API in

@@ -4,9 +4,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-GHOSTTY_TAG="v1.3.1"
-GHOSTTY_COMMIT="332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28"
-ZIG_VERSION="0.15.2"
+# Pinned to an upstream main commit (the "tip" nightly of 2026-10-23):
+# v1.3.1 is still the latest release, and the pty-less backend work
+# targets current main. See docs/GHOSTTY_PIN.md.
+GHOSTTY_REF="tip-2026-10-23"
+GHOSTTY_COMMIT="22f100c6367045bb5fc86172f837047dee2f7670"
+ZIG_VERSION="0.17.0"
+ZIG_SHA256="b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
 
 GHOSTTY_DIR="Vendor/ghostty"
 ZIG_DIR="Vendor/toolchain/zig-aarch64-macos-${ZIG_VERSION}"
@@ -14,11 +18,14 @@ ZIG="${ZIG_DIR}/zig"
 
 # 1. Fetch pinned Ghostty source.
 if [ ! -d "$GHOSTTY_DIR" ]; then
-  git clone --depth 1 --branch "$GHOSTTY_TAG" https://github.com/ghostty-org/ghostty "$GHOSTTY_DIR"
+  git init -q "$GHOSTTY_DIR"
+  git -C "$GHOSTTY_DIR" remote add origin https://github.com/ghostty-org/ghostty
+  git -C "$GHOSTTY_DIR" fetch -q --depth 1 origin "$GHOSTTY_COMMIT"
+  git -C "$GHOSTTY_DIR" checkout -q --detach FETCH_HEAD
 fi
 ACTUAL_COMMIT="$(git -C "$GHOSTTY_DIR" rev-parse HEAD)"
 if [ "$ACTUAL_COMMIT" != "$GHOSTTY_COMMIT" ]; then
-  echo "error: $GHOSTTY_DIR is at $ACTUAL_COMMIT, expected pinned $GHOSTTY_COMMIT ($GHOSTTY_TAG)." >&2
+  echo "error: $GHOSTTY_DIR is at $ACTUAL_COMMIT, expected pinned $GHOSTTY_COMMIT ($GHOSTTY_REF)." >&2
   echo "Delete Vendor/ghostty and re-run, or update the pin deliberately (see docs/GHOSTTY_PIN.md)." >&2
   exit 1
 fi
@@ -28,6 +35,11 @@ if [ ! -x "$ZIG" ]; then
   mkdir -p Vendor/toolchain
   TARBALL="zig-aarch64-macos-${ZIG_VERSION}.tar.xz"
   curl -fsSL -o "Vendor/toolchain/${TARBALL}" "https://ziglang.org/download/${ZIG_VERSION}/${TARBALL}"
+  echo "${ZIG_SHA256}  Vendor/toolchain/${TARBALL}" | shasum -a 256 -c - >/dev/null || {
+    echo "error: Zig tarball checksum mismatch." >&2
+    rm -f "Vendor/toolchain/${TARBALL}"
+    exit 1
+  }
   tar -xf "Vendor/toolchain/${TARBALL}" -C Vendor/toolchain
   rm "Vendor/toolchain/${TARBALL}"
 fi
