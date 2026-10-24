@@ -35,7 +35,7 @@ public struct SSHExecResult: Sendable {
     public let stderr: Data
 }
 
-public enum SSHClientError: Error, Sendable, CustomStringConvertible {
+public enum SSHClientError: Error, Sendable, Equatable, CustomStringConvertible {
     /// DNS, refused, timed out — the host isn't reachable at all.
     case unreachable(String)
     case hostKeyNotTrusted(KnownHosts.Verdict, presented: String)
@@ -46,6 +46,16 @@ public enum SSHClientError: Error, Sendable, CustomStringConvertible {
     case channelFailed(String)
     /// The connection dropped while a command was running.
     case connectionLost
+
+    /// `channelFailed` details for a server that was merely slow (as
+    /// opposed to refusing): no reason to give up on the connection.
+    static let openTimedOut = "timed out opening a channel"
+    static let startTimedOut = "timed out starting the terminal"
+
+    var isTimeout: Bool {
+        if case .channelFailed(let detail) = self { return detail == Self.openTimedOut || detail == Self.startTimedOut }
+        return false
+    }
 
     public var description: String {
         switch self {
@@ -67,6 +77,7 @@ final class SSHConnection: @unchecked Sendable {
 
     var isActive: Bool { channel.isActive }
     var closeFuture: EventLoopFuture<Void> { channel.closeFuture }
+    var channelEventLoop: EventLoop { channel.eventLoop }
 
     private init(target: SSHTarget, channel: Channel) {
         self.target = target
@@ -82,7 +93,8 @@ final class SSHConnection: @unchecked Sendable {
         offers: [NIOSSHUserAuthenticationOffer.Offer],
         knownHosts: KnownHosts,
         group: EventLoopGroup,
-        connectTimeout: TimeAmount
+        connectTimeout: TimeAmount,
+        handshakeTimeout: TimeAmount = .seconds(20)
     ) async throws -> SSHConnection {
         let failure = FailureBox()
         let authenticated = group.next().makePromise(of: Void.self)
@@ -120,16 +132,22 @@ final class SSHConnection: @unchecked Sendable {
             throw SSHClientError.unreachable(Self.describeConnectError(error, host: target.host))
         }
 
+        // A server that hangs up before authentication fails the handshake
+        // at once (NIOSSHHandler doesn't pass channelInactive on, so the
+        // watcher can't see it). After success this is a no-op.
+        channel.closeFuture.whenComplete { _ in
+            authenticated.fail(SSHClientError.handshakeFailed("connection closed"))
+        }
         // Key exchange + auth; bounded so a server that stalls mid-handshake
         // can't hang a caller.
-        let handshakeTimeout = channel.eventLoop.scheduleTask(in: .seconds(20)) {
+        let handshakeTimer = channel.eventLoop.scheduleTask(in: handshakeTimeout) {
             authenticated.fail(SSHClientError.handshakeFailed("timed out"))
         }
         do {
             try await authenticated.futureResult.get()
-            handshakeTimeout.cancel()
+            handshakeTimer.cancel()
         } catch {
-            handshakeTimeout.cancel()
+            handshakeTimer.cancel()
             channel.close(promise: nil)
             if let recorded = failure.value { throw recorded }
             if let clientError = error as? SSHClientError { throw clientError }
@@ -146,38 +164,70 @@ final class SSHConnection: @unchecked Sendable {
         environment: [(String, String)],
         onStdout: (@Sendable (Data) -> Void)?
     ) async throws -> SSHExecResult {
-        let eventLoop = channel.eventLoop
-        let done = eventLoop.makePromise(of: SSHExecResult.self)
+        let done = channel.eventLoop.makePromise(of: SSHExecResult.self)
         let handler = ExecHandler(command: command, stdin: stdin, environment: environment, onStdout: onStdout, done: done)
+        let child: Channel
+        do {
+            child = try await openChannel(timeout: .seconds(10)) { $0.pipeline.addHandler(handler) }
+        } catch {
+            done.fail(error)
+            throw error
+        }
+        return try await withTaskCancellationHandler {
+            try await done.futureResult.get()
+        } onCancel: {
+            child.close(promise: nil)
+        }
+    }
+
+    /// Opens a session channel set up by `initialize`. Throws
+    /// `SSHClientError.channelFailed` if the server refuses or doesn't
+    /// answer within `timeout`.
+    func openChannel(
+        timeout: TimeAmount,
+        initialize: @escaping @Sendable (Channel) -> EventLoopFuture<Void>
+    ) async throws -> Channel {
+        let eventLoop = channel.eventLoop
         let opened = eventLoop.makePromise(of: Channel.self)
-        let openTimeout = eventLoop.scheduleTask(in: .seconds(10)) {
-            opened.fail(SSHClientError.channelFailed("timed out opening a channel"))
+        let late = LateChannel()
+        // Recorded on the loop, so a timer firing just after the channel
+        // opened (before this task resumes to cancel it) leaves it alone.
+        opened.futureResult.whenSuccess { _ in late.opened = true }
+        let openTimeout = eventLoop.scheduleTask(in: timeout) {
+            guard !late.opened else { return }
+            // The open request can't be withdrawn: a channel the server
+            // confirms later would run unowned. Close it, now or when it
+            // turns up.
+            late.timedOut = true
+            late.child?.close(promise: nil)
+            opened.fail(SSHClientError.channelFailed(SSHClientError.openTimedOut))
         }
         // NIOSSHHandler is confined to its event loop: look it up there.
         eventLoop.execute { [channel] in
             do {
                 let sshHandler = try channel.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
                 sshHandler.createChannel(opened, channelType: .session) { child, _ in
-                    child.pipeline.addHandler(handler)
+                    late.child = child
+                    // Failing setup ends a channel that hasn't been opened
+                    // yet (a close would wait for an activation that, with
+                    // no open sent, never comes).
+                    guard !late.timedOut else {
+                        return child.eventLoop.makeFailedFuture(SSHClientError.channelFailed(SSHClientError.openTimedOut))
+                    }
+                    return initialize(child)
                 }
             } catch {
                 opened.fail(SSHClientError.channelFailed("connection closed"))
             }
         }
-        let child: Channel
         do {
-            child = try await opened.futureResult.get()
+            let child = try await opened.futureResult.get()
             openTimeout.cancel()
+            return child
         } catch {
             openTimeout.cancel()
-            done.fail(error)
             if let clientError = error as? SSHClientError { throw clientError }
             throw SSHClientError.channelFailed(String(describing: error))
-        }
-        return try await withTaskCancellationHandler {
-            try await done.futureResult.get()
-        } onCancel: {
-            child.close(promise: nil)
         }
     }
 
@@ -197,6 +247,13 @@ final class SSHConnection: @unchecked Sendable {
 }
 
 // MARK: Handlers & delegates
+
+/// A channel being opened, for the open timeout (event-loop confined).
+final class LateChannel: @unchecked Sendable {
+    var opened = false
+    var timedOut = false
+    var child: Channel?
+}
 
 /// Records the specific reason a handshake failed (NIOSSH surfaces a
 /// generic error once a delegate fails its promise).
@@ -255,14 +312,12 @@ final class KnownHostsDelegate: NIOSSHClientServerAuthenticationDelegate, @unche
     }
 
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
+        // NIOSSH renders keys as "<type> <base64 blob>"; anything else
+        // (never seen) matches no known_hosts entry and is refused below.
         let line = String(openSSHPublicKey: hostKey)
-        let fields = line.split(separator: " ")
-        guard fields.count >= 2, let blob = Data(base64Encoded: String(fields[1])) else {
-            failure.set(.hostKeyNotTrusted(.unknown, presented: line))
-            validationCompletePromise.fail(SSHClientError.hostKeyNotTrusted(.unknown, presented: line))
-            return
-        }
-        let verdict = knownHosts.verify(host: host, port: port, keyType: String(fields[0]), key: blob)
+        let fields = line.split(separator: " ").map(String.init) + ["", ""]
+        let verdict = knownHosts.verify(
+            host: host, port: port, keyType: fields[0], key: Data(base64Encoded: fields[1]) ?? Data())
         if verdict == .trusted {
             validationCompletePromise.succeed(())
         } else {
@@ -293,10 +348,6 @@ final class HandshakeWatcher: ChannelInboundHandler, @unchecked Sendable {
         context.close(promise: nil)
     }
 
-    func channelInactive(context: ChannelHandlerContext) {
-        authenticated.fail(SSHClientError.handshakeFailed("connection closed"))
-        context.fireChannelInactive()
-    }
 }
 
 /// One exec channel: sends env + exec, then stdin and EOF once the exec is
@@ -334,9 +385,8 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
     }
 
     func handlerAdded(context: ChannelHandlerContext) {
-        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
-            context.fireErrorCaught(error)
-        }
+        // NIOSSH child channels always support the option.
+        _ = context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
     }
 
     func channelActive(context: ChannelHandlerContext) {
@@ -375,20 +425,13 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
         let message = unwrapInboundIn(data)
         guard case .byteBuffer(let buffer) = message.data else { return }
         let bytes = Data(buffer.readableBytesView)
-        switch message.type {
-        case .channel:
+        // Other extended streams carry nothing a command's caller wants.
+        if message.type == .channel {
             stdout.append(bytes)
             onStdout?(bytes)
-        case .stdErr:
+        } else if message.type == .stdErr {
             stderr.append(bytes)
-        default:
-            break
         }
-    }
-
-    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
-        let buffer = unwrapOutboundIn(data)
-        context.write(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(buffer))), promise: promise)
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {

@@ -1,10 +1,12 @@
 import AppKit
 import GhosttyKit
+import RelayGhosttyIO
 
-/// A single libghostty terminal surface bound to one local child process.
-/// Rendering is done by Ghostty's Metal renderer directly into this view's
-/// layer. Adapted from Ghostty's own macOS app (MIT licensed), trimmed to
-/// Relay's single-surface embedding.
+/// A single libghostty terminal surface, bound either to one local child
+/// process or — in manual I/O mode — to a program the app connects itself
+/// (see `ManualTerminalIO`). Rendering is done by Ghostty's Metal renderer
+/// directly into this view's layer. Adapted from Ghostty's own macOS app
+/// (MIT licensed), trimmed to Relay's single-surface embedding.
 @MainActor
 final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     private(set) var surface: ghostty_surface_t?
@@ -37,9 +39,41 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     private var eventMonitor: Any?
     private var currentCursor: NSCursor = .iBeam
 
+    /// Set in manual I/O mode; the surface is then freed through it.
+    private var manualIO: ManualTerminalIO?
+
     override var acceptsFirstResponder: Bool { true }
 
-    init?(command: String, environment: [String: String]) {
+    /// A surface running `command` locally.
+    convenience init?(command: String, environment: [String: String]) {
+        let envPairs = environment.map { (key: $0.key, value: $0.value) }
+        self.init { app, config in
+            command.withCString { commandPointer in
+                config.command = commandPointer
+                return withCStringArray(envPairs) { envVars in
+                    envVars.withUnsafeMutableBufferPointer { buffer in
+                        config.env_vars = buffer.baseAddress
+                        config.env_var_count = buffer.count
+                        return ghostty_surface_new(app, &config)
+                    }
+                }
+            }
+        }
+    }
+
+    /// A surface in manual I/O mode: no local process; `io` carries the
+    /// program's output in and the terminal's input and size out.
+    convenience init?(manualIO io: ManualTerminalIO) {
+        self.init { app, config in
+            io.configure(&config)
+            let surface = ghostty_surface_new(app, &config)
+            io.attach(surface)
+            return surface
+        }
+        manualIO = io
+    }
+
+    private init?(create: (ghostty_app_t, inout ghostty_surface_config_s) -> ghostty_surface_t?) {
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
 
         guard let app = GhosttyRuntime.shared.app else { return nil }
@@ -54,20 +88,9 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         config.font_size = 0
         config.context = GHOSTTY_SURFACE_CONTEXT_WINDOW
 
-        let envPairs = environment.map { (key: $0.key, value: $0.value) }
-        let created: ghostty_surface_t? = command.withCString { commandPointer in
-            config.command = commandPointer
-            return withCStringArray(envPairs) { envVars in
-                envVars.withUnsafeMutableBufferPointer { buffer in
-                    config.env_vars = buffer.baseAddress
-                    config.env_var_count = buffer.count
-                    return ghostty_surface_new(app, &config)
-                }
-            }
-        }
-
-        guard let created else { return nil }
+        guard let created = create(app, &config) else { return nil }
         self.surface = created
+        TerminalSnapshots.register(self)
 
         updateTrackingAreas()
         registerForDraggedTypes([.fileURL])
@@ -158,6 +181,9 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     /// Frees the surface, terminating the local child process. The remote
     /// session is unaffected (detach-only semantics). Must be called exactly
     /// once before releasing the view; the attachment controller owns this.
+    /// In manual I/O mode the free happens a moment later, once no output
+    /// is being fed (see `ManualTerminalIO.teardown`); the view is kept
+    /// alive until then.
     func shutdown() {
         if let eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
@@ -165,7 +191,13 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         }
         guard let surface else { return }
         self.surface = nil
-        ghostty_surface_free(surface)
+        TerminalSnapshots.unregister(self)
+        if let manualIO {
+            let keepAlive = Unmanaged.passRetained(self)
+            manualIO.teardown(free: { ghostty_surface_free($0) }, completion: { keepAlive.release() })
+        } else {
+            ghostty_surface_free(surface)
+        }
         NotificationCenter.default.removeObserver(self)
         onTitleChange = nil
         onProcessExit = nil
