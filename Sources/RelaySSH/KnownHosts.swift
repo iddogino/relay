@@ -116,12 +116,9 @@ public struct KnownHosts: Sendable {
         guard let p = pattern.first else { return text.isEmpty }
         switch p {
         case "*":
-            var rest = text
-            while true {
-                if glob(pattern.dropFirst(), rest) { return true }
-                guard !rest.isEmpty else { return false }
-                rest = rest.dropFirst()
-            }
+            // Any suffix of the text (including the empty one) may follow.
+            return text.indices.contains { glob(pattern.dropFirst(), text[$0...]) }
+                || glob(pattern.dropFirst(), text[text.endIndex...])
         case "?":
             return !text.isEmpty && glob(pattern.dropFirst(), text.dropFirst())
         default:
