@@ -373,6 +373,46 @@ struct TerminalOverSSHTests {
         #expect(await pool.activeChannels(for: target).reduce(0, +) == baseline)
     }
 
+    @Test func closingBeforeTheSessionOpensClosesItOnceOpen() async throws {
+        // The server starts the program (whose output arrives before the
+        // session object does) but answers only later; the terminal goes
+        // away meanwhile.
+        var faults = FakeSSHServer.Faults()
+        faults.programReplyDelay = .milliseconds(600)
+        let server = try FakeSSHServer(faults: faults)
+        var options = SSHConnectionPool.Options()
+        options.knownHostsFiles = [try server.writeKnownHosts(in: Servers.scratch)]
+        options.agent = nil
+        options.defaultKeyFiles = []
+        let pool = SSHConnectionPool(options: options)
+        let io = ManualTerminalIO()
+        let surface = TestSurface(mode: .manual(io), captureIO: false)
+        try #require(surface.surface != nil)
+        let ends = EndLog()
+        let link = SSHTerminalLink(io: io, pool: pool,
+                                   configuration: .init(target: server.target, command: "echo early-output; sleep 30"),
+                                   onEnd: { end, error in ends.record(end, error) })
+        link.start()
+        try await surface.waitForScreen("early-output")
+        link.close()
+        let pid = try #require(server.sessions.first?.pid)
+        let deadline = ContinuousClock.now + .seconds(10)
+        while kill(pid, 0) == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(kill(pid, 0) != 0)
+        GhosttyTestHost.shared.tick()
+        #expect(!surface.closed)
+        #expect(await pool.activeChannels(for: server.target).reduce(0, +) == 0)
+        try await surface.free()
+    }
+
+    @Test func errorsAreDescribedForTheTerminal() {
+        #expect(SSHTerminalLink.describe(SSHClientError.authenticationFailed) == "authentication failed")
+        struct Odd: Error {}
+        #expect(SSHTerminalLink.describe(Odd()) == "Odd()")
+        #expect(SSHTerminalLink.exitStatus(for: .exited(300)) == 300 & 0xFF)
+        #expect(SSHTerminalLink.exitStatus(for: .connectionLost) == 255)
+    }
+
     @Test(arguments: Remote.allCases)
     func severalTerminalsShareOneConnection(remote: Remote) async throws {
         let (pool, target) = try Servers.endpoint(remote)

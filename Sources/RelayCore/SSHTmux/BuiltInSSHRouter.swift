@@ -23,7 +23,7 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
 
     /// How long a host stays on the system ssh after the built-in client
     /// couldn't connect to it.
-    static let fallbackCooldown: Duration = .seconds(600)
+    private let fallbackCooldown: Duration
 
     static let logger = Logger(subsystem: "com.iddogino.Relay", category: "ssh")
 
@@ -32,8 +32,10 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
         pool: SSHConnectionPool = .shared,
         isEnabled: @escaping @Sendable () -> Bool,
         isTerminalEnabled: @escaping @Sendable () -> Bool = { false },
-        passwordLookup: @escaping @Sendable (String) -> String?
+        passwordLookup: @escaping @Sendable (String) -> String?,
+        fallbackCooldown: Duration = .seconds(600)
     ) {
+        self.fallbackCooldown = fallbackCooldown
         self.registry = registry
         self.pool = pool
         self.isEnabled = isEnabled
@@ -118,7 +120,7 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
     }
 
     func noteFallback(alias: String, error: SSHClientError) {
-        lock.withLock { fallbackUntil[alias] = .now + Self.fallbackCooldown }
+        lock.withLock { fallbackUntil[alias] = .now + fallbackCooldown }
         Self.logger.notice("built-in ssh: \(alias, privacy: .public) falls back to system ssh (\(error.description, privacy: .public))")
     }
 

@@ -632,6 +632,56 @@ struct SSHTerminalSessionSSHDTests {
         #expect(transcript.text.contains("before"))
     }
 
+    @Test func commandsKeepStderrAndReportSignals() async throws {
+        let sshd = try sshd()
+        // No pty for commands: stderr stays separate.
+        let result = try await pool(sshd).exec(
+            target: sshd.target, command: "echo out; echo err >&2; kill -TERM $$", stdin: Data(), timeout: .seconds(10))
+        #expect(String(decoding: result.stdout, as: UTF8.self) == "out\n")
+        #expect(String(decoding: result.stderr, as: UTF8.self) == "err\n")
+        #expect(result.exitCode == 128 + 15)
+    }
+
+    @Test func authenticatesWithAKeyHeldByTheAgent() async throws {
+        let sshd = try sshd()
+        // A throwaway ssh-agent holding the client key: the key file is then
+        // used through the agent, as with a passphrase-protected key.
+        let socket = scratch.appendingPathComponent("agent.sock").path
+        let agent = Process()
+        agent.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-agent")
+        agent.arguments = ["-D", "-a", socket]
+        agent.standardOutput = FileHandle.nullDevice
+        agent.standardError = FileHandle.nullDevice
+        try agent.run()
+        defer { agent.terminate() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !FileManager.default.fileExists(atPath: socket), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let add = Process()
+        add.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-add")
+        add.arguments = ["-q", sshd.clientKeyPath]
+        add.environment = ["SSH_AUTH_SOCK": socket]
+        add.standardError = FileHandle.nullDevice
+        try add.run()
+        add.waitUntilExit()
+        try #require(add.terminationStatus == 0)
+
+        var options = SSHConnectionPool.Options()
+        options.knownHostsFiles = [sshd.knownHostsPath]
+        options.agent = SSHAgent(socketPath: socket)
+        options.defaultKeyFiles = []
+        let offers = SSHConnectionPool.authOffers(for: .keyFile(path: sshd.clientKeyPath), agent: options.agent, defaultKeyFiles: [])
+        #expect(offers.count == 1)
+        let transcript = TerminalTranscript()
+        let session = try await SSHConnectionPool(options: options).openTerminal(
+            target: sshd.target, request: SSHTerminalRequest(size: SSHTerminalSize(columns: 80, rows: 24), command: "echo via-agent"),
+            onOutput: transcript.onOutput, onEnd: transcript.onEnd)
+        transcript.attach(session)
+        #expect(try await transcript.waitForEnd() == .exited(0))
+        #expect(transcript.text.contains("via-agent"))
+    }
+
     func shasum(_ data: Data) throws -> String {
         let url = scratch.appendingPathComponent("input-\(UUID().uuidString)")
         try data.write(to: url)

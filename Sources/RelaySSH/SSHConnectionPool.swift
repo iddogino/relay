@@ -12,6 +12,8 @@ public actor SSHConnectionPool {
 
     public struct Options: Sendable {
         public var connectTimeout: TimeAmount = .seconds(10)
+        /// Key exchange and authentication, once connected.
+        public var handshakeTimeout: TimeAmount = .seconds(20)
         public var maxChannelsPerConnection = 8
         public var idleTimeout: Duration = .seconds(120)
         /// How long a server may take to accept a terminal's pty and
@@ -289,7 +291,8 @@ public actor SSHConnectionPool {
         let offers = Self.authOffers(for: target.credentials, agent: options.agent, defaultKeyFiles: options.defaultKeyFiles)
         let knownHosts = KnownHosts.load(files: options.knownHostsFiles)
         return try await SSHConnection.connect(
-            target: target, offers: offers, knownHosts: knownHosts, group: group, connectTimeout: options.connectTimeout)
+            target: target, offers: offers, knownHosts: knownHosts, group: group,
+            connectTimeout: options.connectTimeout, handshakeTimeout: options.handshakeTimeout)
     }
 
     /// Authentication attempts in OpenSSH's order: the configured key

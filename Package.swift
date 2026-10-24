@@ -93,7 +93,12 @@ let package = Package(
 
         .testTarget(
             name: "RelaySSHTests",
-            dependencies: ["RelaySSH", "RelayTestSupport"],
+            dependencies: [
+                "RelaySSH",
+                "RelayTestSupport",
+                .product(name: "NIOEmbedded", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ],
             path: "Tests/RelaySSHTests"
         ),
 

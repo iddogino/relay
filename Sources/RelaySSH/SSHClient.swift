@@ -35,7 +35,7 @@ public struct SSHExecResult: Sendable {
     public let stderr: Data
 }
 
-public enum SSHClientError: Error, Sendable, CustomStringConvertible {
+public enum SSHClientError: Error, Sendable, Equatable, CustomStringConvertible {
     /// DNS, refused, timed out — the host isn't reachable at all.
     case unreachable(String)
     case hostKeyNotTrusted(KnownHosts.Verdict, presented: String)
@@ -93,7 +93,8 @@ final class SSHConnection: @unchecked Sendable {
         offers: [NIOSSHUserAuthenticationOffer.Offer],
         knownHosts: KnownHosts,
         group: EventLoopGroup,
-        connectTimeout: TimeAmount
+        connectTimeout: TimeAmount,
+        handshakeTimeout: TimeAmount = .seconds(20)
     ) async throws -> SSHConnection {
         let failure = FailureBox()
         let authenticated = group.next().makePromise(of: Void.self)
@@ -133,14 +134,14 @@ final class SSHConnection: @unchecked Sendable {
 
         // Key exchange + auth; bounded so a server that stalls mid-handshake
         // can't hang a caller.
-        let handshakeTimeout = channel.eventLoop.scheduleTask(in: .seconds(20)) {
+        let handshakeTimer = channel.eventLoop.scheduleTask(in: handshakeTimeout) {
             authenticated.fail(SSHClientError.handshakeFailed("timed out"))
         }
         do {
             try await authenticated.futureResult.get()
-            handshakeTimeout.cancel()
+            handshakeTimer.cancel()
         } catch {
-            handshakeTimeout.cancel()
+            handshakeTimer.cancel()
             channel.close(promise: nil)
             if let recorded = failure.value { throw recorded }
             if let clientError = error as? SSHClientError { throw clientError }
@@ -384,9 +385,8 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
     }
 
     func handlerAdded(context: ChannelHandlerContext) {
-        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
-            context.fireErrorCaught(error)
-        }
+        // NIOSSH child channels always support the option.
+        _ = context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
     }
 
     func channelActive(context: ChannelHandlerContext) {
@@ -434,11 +434,6 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
         default:
             break
         }
-    }
-
-    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
-        let buffer = unwrapOutboundIn(data)
-        context.write(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(buffer))), promise: promise)
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {

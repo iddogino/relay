@@ -33,6 +33,16 @@ struct BuiltInSSHRouterTests {
         #expect(BuiltInSSHRouter.target(for: noPassword, password: { nil }) == nil)
     }
 
+    @Test func terminalsAreOffUnlessSwitchedOn() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-router-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let registry = SSHHostRegistry(configFile: dir.appendingPathComponent("ssh_config"), userConfigPath: "/u", systemConfigPath: "/s")
+        registry.setHosts([SSHHost(alias: "box", hostname: "box.example")])
+        let router = BuiltInSSHRouter(registry: registry, isEnabled: { true }, passwordLookup: { _ in nil })
+        #expect(router.target(for: "box") != nil)
+        #expect(router.terminalTarget(for: "box") == nil)
+    }
+
     @Test func respectsTheSwitchAndFallbacks() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-router-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -80,6 +90,40 @@ struct BuiltInSSHRouterTests {
         router.hostsChanged()
         router.noteTerminalOpenFailure(alias: "box", error: SSHClientError.channelFailed("refused a terminal"))
         #expect(router.terminalTarget(for: "box") == nil)
+    }
+
+    @Test func fallbacksExpireAndPasswordsAreLookedUpOnce() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-router-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let registry = SSHHostRegistry(configFile: dir.appendingPathComponent("ssh_config"), userConfigPath: "/u", systemConfigPath: "/s")
+        registry.setHosts([SSHHost(alias: "pw", hostname: "pw.example", auth: .password)])
+        let lookups = Counter()
+        let router = BuiltInSSHRouter(
+            registry: registry, isEnabled: { true }, isTerminalEnabled: { true },
+            passwordLookup: { _ in lookups.increment(); return "s3cret" },
+            fallbackCooldown: .milliseconds(100))
+
+        #expect(router.terminalTarget(for: "pw")?.credentials == .password("s3cret"))
+        #expect(router.target(for: "pw")?.credentials == .password("s3cret"))
+        #expect(lookups.value == 1)
+
+        router.noteTerminalOpenFailure(alias: "pw", error: SSHClientError.authenticationFailed)
+        #expect(router.terminalTarget(for: "pw") == nil)
+        try await Task.sleep(for: .milliseconds(150))
+        // The cooldown is over: the built-in client gets another chance.
+        #expect(router.terminalTarget(for: "pw") != nil)
+
+        // Changed hosts or passwords are looked up afresh.
+        router.hostsChanged()
+        _ = router.target(for: "pw")
+        #expect(lookups.value == 2)
+    }
+
+    final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        func increment() { lock.withLock { count += 1 } }
+        var value: Int { lock.withLock { count } }
     }
 
     @Test func aBuiltInTerminalRunsWhatSSHWouldRun() async throws {

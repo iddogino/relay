@@ -104,9 +104,6 @@ public final class SSHTerminalSession: @unchecked Sendable {
         }
     }
 
-    /// Completes when the channel has closed and `onEnd` has been called.
-    public var closeFuture: EventLoopFuture<Void> { channel.closeFuture }
-
     /// Unconsumed output bytes (for tests and diagnostics).
     func unconsumedBytes() async throws -> Int {
         let handler = handler
@@ -153,8 +150,8 @@ extension SSHConnection {
         } catch {
             startTimer.cancel()
             child.close(promise: nil)
-            if let clientError = error as? SSHClientError { throw clientError }
-            throw SSHClientError.channelFailed(String(describing: error))
+            // `started` only fails with an SSHClientError.
+            throw error
         }
         return SSHTerminalSession(channel: child, handler: handler)
     }
@@ -220,10 +217,9 @@ final class TerminalChannelHandler: ChannelDuplexHandler, @unchecked Sendable {
     func handlerAdded(context: ChannelHandlerContext) {
         self.context = context
         // The server sends EOF before its exit status; keep the channel
-        // open until it closes it so the status isn't lost.
-        context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { error in
-            context.fireErrorCaught(error)
-        }
+        // open until it closes it so the status isn't lost. (NIOSSH child
+        // channels always support the option.)
+        _ = context.channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
     }
 
     func handlerRemoved(context: ChannelHandlerContext) {

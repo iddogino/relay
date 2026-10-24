@@ -65,13 +65,13 @@ public final class SSHTerminalLink: @unchecked Sendable {
     }
 
     /// Ends the session (the terminal is going away). No exit is reported
-    /// to the surface.
+    /// to the surface. A session still opening is closed as soon as it
+    /// opens.
     public func close() {
-        let (session, task) = lock.withLock { () -> (SSHTerminalSession?, Task<Void, Never>?) in
+        let session: SSHTerminalSession? = lock.withLock {
             closed = true
-            return (self.session, openTask)
+            return self.session
         }
-        task?.cancel()
         session?.close()
     }
 

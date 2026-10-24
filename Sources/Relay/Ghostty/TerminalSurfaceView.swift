@@ -90,6 +90,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
 
         guard let created = create(app, &config) else { return nil }
         self.surface = created
+        TerminalSnapshots.register(self)
 
         updateTrackingAreas()
         registerForDraggedTypes([.fileURL])
@@ -190,6 +191,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         }
         guard let surface else { return }
         self.surface = nil
+        TerminalSnapshots.unregister(self)
         if let manualIO {
             let keepAlive = Unmanaged.passRetained(self)
             manualIO.teardown(free: { ghostty_surface_free($0) }, completion: { keepAlive.release() })
