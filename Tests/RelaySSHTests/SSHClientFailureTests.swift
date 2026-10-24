@@ -228,6 +228,21 @@ struct SSHClientFailureTests {
         #expect(try await exec(pool, server.target, "exit 3").exitCode == 3)
     }
 
+    @Test func aTerminalRefusedOnAPooledConnectionIsRetriedOnceOnAFreshOne() async throws {
+        let server = try FakeSSHServer()
+        let pool = try pool(for: server)
+        _ = try await exec(pool, server.target, "true")
+        server.faults.refuseProgram = true
+        await #expect(throws: SSHClientError.self) {
+            _ = try await pool.openTerminal(
+                target: server.target, request: SSHTerminalRequest(size: SSHTerminalSize(columns: 80, rows: 24), command: "true"),
+                onOutput: { _ in }, onEnd: { _ in })
+        }
+        // The pooled connection was retired and exactly one fresh one tried.
+        #expect(server.connectionCount == 2)
+        #expect(await pool.activeChannels(for: server.target).reduce(0, +) == 0)
+    }
+
     @Test func aPasswordNeedsNoAgent() {
         // Password auth offers the password alone and never asks the agent
         // (whose socket here doesn't exist).
