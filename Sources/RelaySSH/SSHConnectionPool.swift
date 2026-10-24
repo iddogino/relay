@@ -142,8 +142,11 @@ public actor SSHConnectionPool {
                         Task { await self.release(slot, target: target) }
                     })
             } catch let error as SSHClientError where error.isTimeout {
-                // A slow server isn't a stale connection: keep it (other
-                // terminals may share it) and don't pile on another try.
+                // A slow server isn't necessarily a dead connection: keep it
+                // while others use it, and don't pile on another try. Alone
+                // on it, though, let it go — the next open then starts fresh
+                // instead of timing out on a server that stopped answering.
+                if slot.activeChannels <= 1 { slot.retired = true }
                 release(slot, target: target)
                 throw error
             } catch SSHClientError.channelFailed(let detail) {

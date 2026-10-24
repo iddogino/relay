@@ -421,6 +421,22 @@ struct SSHTerminalSessionFakeServerTests {
         #expect(server.connectionCount == 1)
     }
 
+    @Test func aTimeoutOnAnOtherwiseUnusedConnectionStartsFreshNextTime() async throws {
+        let server = try FakeSSHServer()
+        let pool = try pool(for: server, startTimeout: .milliseconds(300))
+        _ = try await pool.exec(target: server.target, command: "true", stdin: Data(), timeout: .seconds(10))
+        #expect(server.connectionCount == 1)
+        server.faults.ignoreRequests = true
+        await #expect(throws: SSHClientError.self) {
+            try await open(pool, server, command: "true", transcript: TerminalTranscript())
+        }
+        server.faults.ignoreRequests = false
+        let transcript = TerminalTranscript()
+        try await open(pool, server, command: "echo fresh", transcript: transcript)
+        #expect(try await transcript.waitForEnd() == .exited(0))
+        #expect(server.connectionCount == 2)
+    }
+
     @Test func openingWhileTheConnectionDropsFailsCleanly() async throws {
         let server = try FakeSSHServer()
         let pool = try pool(for: server)
