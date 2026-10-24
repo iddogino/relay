@@ -312,14 +312,12 @@ final class KnownHostsDelegate: NIOSSHClientServerAuthenticationDelegate, @unche
     }
 
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
+        // NIOSSH renders keys as "<type> <base64 blob>"; anything else
+        // (never seen) matches no known_hosts entry and is refused below.
         let line = String(openSSHPublicKey: hostKey)
-        let fields = line.split(separator: " ")
-        guard fields.count >= 2, let blob = Data(base64Encoded: String(fields[1])) else {
-            failure.set(.hostKeyNotTrusted(.unknown, presented: line))
-            validationCompletePromise.fail(SSHClientError.hostKeyNotTrusted(.unknown, presented: line))
-            return
-        }
-        let verdict = knownHosts.verify(host: host, port: port, keyType: String(fields[0]), key: blob)
+        let fields = line.split(separator: " ").map(String.init) + ["", ""]
+        let verdict = knownHosts.verify(
+            host: host, port: port, keyType: fields[0], key: Data(base64Encoded: fields[1]) ?? Data())
         if verdict == .trusted {
             validationCompletePromise.succeed(())
         } else {
@@ -350,10 +348,6 @@ final class HandshakeWatcher: ChannelInboundHandler, @unchecked Sendable {
         context.close(promise: nil)
     }
 
-    func channelInactive(context: ChannelHandlerContext) {
-        authenticated.fail(SSHClientError.handshakeFailed("connection closed"))
-        context.fireChannelInactive()
-    }
 }
 
 /// One exec channel: sends env + exec, then stdin and EOF once the exec is
@@ -431,14 +425,12 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
         let message = unwrapInboundIn(data)
         guard case .byteBuffer(let buffer) = message.data else { return }
         let bytes = Data(buffer.readableBytesView)
-        switch message.type {
-        case .channel:
+        // Other extended streams carry nothing a command's caller wants.
+        if message.type == .channel {
             stdout.append(bytes)
             onStdout?(bytes)
-        case .stdErr:
+        } else if message.type == .stdErr {
             stderr.append(bytes)
-        default:
-            break
         }
     }
 

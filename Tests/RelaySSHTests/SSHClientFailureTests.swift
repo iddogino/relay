@@ -213,6 +213,29 @@ struct SSHClientFailureTests {
         #expect(server.connectionCount == 2)
     }
 
+    @Test func refusedChannelsFailCommandsAndTerminals() async throws {
+        let server = try FakeSSHServer()
+        let pool = try pool(for: server)
+        server.faults.refuseChannels = true
+        await #expect(throws: SSHClientError.self) { _ = try await exec(pool, server.target, "true") }
+        await #expect(throws: SSHClientError.self) {
+            _ = try await pool.openTerminal(
+                target: server.target, request: SSHTerminalRequest(size: SSHTerminalSize(columns: 80, rows: 24)),
+                onOutput: { _ in }, onEnd: { _ in })
+        }
+        #expect(await pool.activeChannels(for: server.target).reduce(0, +) == 0)
+        server.faults.refuseChannels = false
+        #expect(try await exec(pool, server.target, "exit 3").exitCode == 3)
+    }
+
+    @Test func aPasswordNeedsNoAgent() {
+        // Password auth offers the password alone and never asks the agent
+        // (whose socket here doesn't exist).
+        let offers = SSHConnectionPool.authOffers(
+            for: .password("pw"), agent: SSHAgent(socketPath: "/nonexistent/agent.sock"), defaultKeyFiles: [])
+        #expect(offers.count == 1)
+    }
+
     // MARK: Channels on a connection
 
     func connect(_ server: FakeSSHServer) async throws -> SSHConnection {
@@ -243,6 +266,36 @@ struct SSHClientFailureTests {
         let child = try await connection.openChannel(timeout: .seconds(5)) { $0.eventLoop.makeSucceededVoidFuture() }
         child.close(promise: nil)
         #expect(server.sessions.allSatisfy { $0.pid == nil })
+    }
+}
+
+/// Exec channel handler edge cases, driven directly.
+@Suite("Exec channel handler")
+struct ExecChannelHandlerTests {
+    @Test func aChannelErrorBeforeTheCommandStartsFailsIt() throws {
+        let channel = EmbeddedChannel()
+        let done = channel.eventLoop.makePromise(of: SSHExecResult.self)
+        let handler = ExecHandler(command: "true", stdin: Data(), environment: [], onStdout: nil, done: done)
+        try channel.pipeline.syncOperations.addHandler(handler)
+        channel.pipeline.fireErrorCaught(ChannelError.ioOnClosedChannel)
+        #expect(throws: SSHClientError.self) { try done.futureResult.wait() }
+    }
+
+    @Test func otherStreamsAreIgnoredAndOutputCollected() throws {
+        let channel = EmbeddedChannel()
+        let done = channel.eventLoop.makePromise(of: SSHExecResult.self)
+        let handler = ExecHandler(command: "true", stdin: Data(), environment: [], onStdout: nil, done: done)
+        try channel.pipeline.syncOperations.addHandler(handler)
+        for (type, text) in [(SSHChannelData.DataType.channel, "out"), (.stdErr, "err"), (.init(extended: 9), "odd")] {
+            var buffer = channel.allocator.buffer(capacity: 3)
+            buffer.writeString(text)
+            channel.pipeline.fireChannelRead(NIOAny(SSHChannelData(type: type, data: .byteBuffer(buffer))))
+        }
+        channel.pipeline.fireUserInboundEventTriggered(SSHChannelRequestEvent.ExitStatus(exitStatus: 0))
+        channel.pipeline.fireChannelInactive()
+        let result = try done.futureResult.wait()
+        #expect(String(decoding: result.stdout, as: UTF8.self) == "out")
+        #expect(String(decoding: result.stderr, as: UTF8.self) == "err")
     }
 }
 

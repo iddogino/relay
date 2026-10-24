@@ -86,28 +86,27 @@ public actor SSHConnectionPool {
         command: String,
         stdin: Data,
         environment: [(String, String)],
-        onStdout: (@Sendable (Data) -> Void)?
+        onStdout: (@Sendable (Data) -> Void)?,
+        isRetry: Bool = false
     ) async throws -> SSHExecResult {
-        var attempt = 0
-        while true {
-            attempt += 1
-            let (slot, reused) = try await acquire(target)
-            do {
-                let result = try await slot.connection.exec(
-                    command: command, stdin: stdin, environment: environment, onStdout: onStdout)
-                release(slot, target: target)
-                return result
-            } catch SSHClientError.channelFailed(let detail) {
-                // A pooled connection that can't open channels is stale (or
-                // at the server's session limit): retire it and retry once
-                // on a fresh one.
-                slot.retired = true
-                release(slot, target: target)
-                guard reused, attempt == 1 else { throw SSHClientError.channelFailed(detail) }
-            } catch {
-                release(slot, target: target)
-                throw error
-            }
+        let (slot, reused) = try await acquire(target)
+        do {
+            let result = try await slot.connection.exec(
+                command: command, stdin: stdin, environment: environment, onStdout: onStdout)
+            release(slot, target: target)
+            return result
+        } catch {
+            // A pooled connection that can't open channels is stale (or at
+            // the server's session limit): retire it and retry once on a
+            // fresh one. (The connection only throws SSHClientError.)
+            let stale: Bool
+            if case SSHClientError.channelFailed = error { stale = true } else { stale = false }
+            if stale { slot.retired = true }
+            release(slot, target: target)
+            guard stale, reused, !isRetry else { throw error }
+            return try await execWithRetry(
+                target: target, command: command, stdin: stdin, environment: environment,
+                onStdout: onStdout, isRetry: true)
         }
     }
 
@@ -124,54 +123,65 @@ public actor SSHConnectionPool {
         onOutput: @escaping @Sendable (Data) -> Void,
         onEnd: @escaping @Sendable (SSHTerminalEnd) -> Void
     ) async throws -> SSHTerminalSession {
-        var attempt = 0
-        while true {
-            attempt += 1
-            let (slot, reused) = try await acquire(target)
-            let session: SSHTerminalSession
-            let handedOut = HandOff()
-            do {
-                session = try await slot.connection.openTerminal(
-                    request, highWaterMark: highWaterMark, lowWaterMark: lowWaterMark,
-                    openTimeout: options.channelOpenTimeout,
-                    startTimeout: options.terminalStartTimeout,
-                    onOutput: onOutput,
-                    onEnd: { [weak self] end in
-                        // Only the owner of a session hears of its end; one
-                        // that ends before it's handed out is told then.
-                        if handedOut.ended(end) { onEnd(end) }
-                        guard let self else { return }
-                        Task { await self.release(slot, target: target) }
-                    })
-            } catch let error as SSHClientError where error.isTimeout {
+        try await openTerminal(
+            target: target, request: request, highWaterMark: highWaterMark, lowWaterMark: lowWaterMark,
+            onOutput: onOutput, onEnd: onEnd, isRetry: false)
+    }
+
+    private func openTerminal(
+        target: SSHTarget,
+        request: SSHTerminalRequest,
+        highWaterMark: Int,
+        lowWaterMark: Int,
+        onOutput: @escaping @Sendable (Data) -> Void,
+        onEnd: @escaping @Sendable (SSHTerminalEnd) -> Void,
+        isRetry: Bool
+    ) async throws -> SSHTerminalSession {
+        let (slot, reused) = try await acquire(target)
+        let session: SSHTerminalSession
+        let handedOut = HandOff()
+        do {
+            session = try await slot.connection.openTerminal(
+                request, highWaterMark: highWaterMark, lowWaterMark: lowWaterMark,
+                openTimeout: options.channelOpenTimeout,
+                startTimeout: options.terminalStartTimeout,
+                onOutput: onOutput,
+                onEnd: { [weak self] end in
+                    // Only the owner of a session hears of its end; one
+                    // that ends before it's handed out is told then.
+                    if handedOut.ended(end) { onEnd(end) }
+                    guard let self else { return }
+                    Task { await self.release(slot, target: target) }
+                })
+        } catch {
+            // The connection only throws SSHClientError.channelFailed here.
+            let timedOut = (error as? SSHClientError)?.isTimeout ?? false
+            if timedOut {
                 // A slow server isn't necessarily a dead connection: keep it
                 // while others use it, and don't pile on another try. Alone
                 // on it, though, let it go — the next open then starts fresh
                 // instead of timing out on a server that stopped answering.
                 if slot.activeChannels <= 1 { slot.retired = true }
-                release(slot, target: target)
-                throw error
-            } catch SSHClientError.channelFailed(let detail) {
-                // As for exec: a stale pooled connection gets one retry on
-                // a fresh one.
+            } else {
+                // As for exec: a stale pooled connection gets one retry on a
+                // fresh one.
                 slot.retired = true
-                release(slot, target: target)
-                guard reused, attempt == 1 else { throw SSHClientError.channelFailed(detail) }
-                continue
-            } catch {
-                release(slot, target: target)
-                throw error
             }
-            // From here the session's end releases the slot. A caller
-            // cancelled while it opened won't take ownership of it.
-            if Task.isCancelled {
-                handedOut.withhold()
-                session.close()
-                throw CancellationError()
-            }
-            if let end = handedOut.handOut() { onEnd(end) }
-            return session
+            release(slot, target: target)
+            guard !timedOut, reused, !isRetry else { throw error }
+            return try await openTerminal(
+                target: target, request: request, highWaterMark: highWaterMark, lowWaterMark: lowWaterMark,
+                onOutput: onOutput, onEnd: onEnd, isRetry: true)
         }
+        // From here the session's end releases the slot. A caller cancelled
+        // while it opened won't take ownership of it.
+        if Task.isCancelled {
+            handedOut.withhold()
+            session.close()
+            throw CancellationError()
+        }
+        if let end = handedOut.handOut() { onEnd(end) }
+        return session
     }
 
     /// Whether a session's end goes to its caller: held until the session
@@ -303,10 +313,8 @@ public actor SSHConnectionPool {
         agent: SSHAgent?,
         defaultKeyFiles: [String]
     ) -> [NIOSSHUserAuthenticationOffer.Offer] {
-        if case .password(let password) = credentials {
-            return [.password(.init(password: password))]
-        }
-        let agentIdentities = (try? agent?.identities()) ?? []
+        // Asked only when a key may be offered (not for password auth).
+        func agentIdentities() -> [SSHAgent.Identity] { (try? agent?.identities()) ?? [] }
         var offers: [NIOSSHUserAuthenticationOffer.Offer] = []
         var offeredBlobs = Set<Data>()
 
@@ -327,19 +335,20 @@ public actor SSHConnectionPool {
         }
 
         switch credentials {
+        case .password(let password):
+            return [.password(.init(password: password))]
         case .keyFile(let path):
+            let identities = agentIdentities()
             if let blob = OpenSSHKeyFile.publicKeyBlob(forPrivateKeyAt: path),
-               let identity = agentIdentities.first(where: { $0.blob == blob }) {
+               let identity = identities.first(where: { $0.blob == blob }) {
                 offerAgent(identity)
             } else {
                 offerFile(path)
             }
-            agentIdentities.forEach(offerAgent)
+            identities.forEach(offerAgent)
         case .automatic:
-            agentIdentities.forEach(offerAgent)
+            agentIdentities().forEach(offerAgent)
             defaultKeyFiles.forEach(offerFile)
-        case .password:
-            break
         }
         return offers
     }

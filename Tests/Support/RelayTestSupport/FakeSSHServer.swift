@@ -28,6 +28,8 @@ public final class FakeSSHServer: @unchecked Sendable {
         public var programReplyDelay: TimeAmount?
         /// Confirm new channels only after this long.
         public var channelOpenDelay: TimeAmount?
+        /// Refuse new channels outright.
+        public var refuseChannels = false
 
         public init() {}
     }
@@ -94,6 +96,9 @@ public final class FakeSSHServer: @unchecked Sendable {
                         allocator: channel.allocator,
                         inboundChildChannelInitializer: { child, _ in
                             let add = { child.pipeline.addHandler(FakeSessionHandler(state: state, connection: channel)) }
+                            if state.lock.withLock({ state.faults.refuseChannels }) {
+                                return child.eventLoop.makeFailedFuture(ChannelError.operationUnsupported)
+                            }
                             guard let delay = state.lock.withLock({ state.faults.channelOpenDelay }) else { return add() }
                             // The channel is confirmed once this completes.
                             return child.eventLoop.scheduleTask(in: delay) {}.futureResult.flatMap(add)
