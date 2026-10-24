@@ -112,16 +112,24 @@ struct SSHClientFailureTests {
         await #expect(throws: SSHClientError.handshakeFailed("timed out")) {
             _ = try await exec(pool, target, "true")
         }
+        withExtendedLifetime(listener) {}
     }
 
-    @Test func aServerThatHangsUpFailsTheHandshake() async throws {
+    @Test func aServerThatHangsUpFailsTheHandshakeAtOnce() async throws {
         let listener = try SilentListener(closeImmediately: true)
         let target = SSHTarget(host: "127.0.0.1", port: listener.port, username: "u", credentials: .password("p"))
-        do {
-            _ = try await exec(SSHConnectionPool(options: options(knownHosts: [])), target, "true")
-            Issue.record("expected the handshake to fail")
-        } catch SSHClientError.handshakeFailed {
+        // Repeatedly: whether the hang-up or our version string goes first,
+        // it fails promptly, not after the handshake timeout.
+        for _ in 0..<30 {
+            let started = ContinuousClock.now
+            do {
+                _ = try await exec(SSHConnectionPool(options: options(knownHosts: [])), target, "true")
+                Issue.record("expected the handshake to fail")
+            } catch SSHClientError.handshakeFailed {
+            }
+            #expect(ContinuousClock.now - started < .seconds(5))
         }
+        withExtendedLifetime(listener) {}
     }
 
     @Test func connectErrorsAreDescribedReadably() {

@@ -658,24 +658,32 @@ struct SSHTerminalSessionSSHDTests {
         while !FileManager.default.fileExists(atPath: socket), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
+        // A copy of the key whose private half is deleted once the agent
+        // has it: only the agent can sign, so success proves it was used.
+        let keyPath = scratch.appendingPathComponent("agent_key").path
+        try FileManager.default.copyItem(atPath: sshd.clientKeyPath, toPath: keyPath)
+        try FileManager.default.copyItem(atPath: sshd.clientKeyPath + ".pub", toPath: keyPath + ".pub")
         let add = Process()
         add.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-add")
-        add.arguments = ["-q", sshd.clientKeyPath]
+        add.arguments = ["-q", keyPath]
         add.environment = ["SSH_AUTH_SOCK": socket]
         add.standardError = FileHandle.nullDevice
         try add.run()
         add.waitUntilExit()
         try #require(add.terminationStatus == 0)
+        try FileManager.default.removeItem(atPath: keyPath)
 
         var options = SSHConnectionPool.Options()
         options.knownHostsFiles = [sshd.knownHostsPath]
         options.agent = SSHAgent(socketPath: socket)
         options.defaultKeyFiles = []
-        let offers = SSHConnectionPool.authOffers(for: .keyFile(path: sshd.clientKeyPath), agent: options.agent, defaultKeyFiles: [])
+        let offers = SSHConnectionPool.authOffers(for: .keyFile(path: keyPath), agent: options.agent, defaultKeyFiles: [])
         #expect(offers.count == 1)
+        var target = sshd.target
+        target.credentials = .keyFile(path: keyPath)
         let transcript = TerminalTranscript()
         let session = try await SSHConnectionPool(options: options).openTerminal(
-            target: sshd.target, request: SSHTerminalRequest(size: SSHTerminalSize(columns: 80, rows: 24), command: "echo via-agent"),
+            target: target, request: SSHTerminalRequest(size: SSHTerminalSize(columns: 80, rows: 24), command: "echo via-agent"),
             onOutput: transcript.onOutput, onEnd: transcript.onEnd)
         transcript.attach(session)
         #expect(try await transcript.waitForEnd() == .exited(0))

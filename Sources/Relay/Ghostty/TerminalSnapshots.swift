@@ -38,7 +38,11 @@ enum TerminalSnapshots {
 
     private static func writeAll() {
         let dir = AppVariant.dataDirectory.appendingPathComponent("snapshots", isDirectory: true)
+        // Start clean, so nothing from an earlier snapshot is mistaken for
+        // this one.
+        try? FileManager.default.removeItem(at: dir)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        views = views.filter { $0.value.view != nil }
         let live = views.values.compactMap(\.view)
         for view in live { view.drawNow() }
         // Give the renderer a moment to present the frame just requested.
@@ -65,11 +69,13 @@ extension TerminalSurfaceView {
         if let contents = layer?.contents,
            CFGetTypeID(contents as CFTypeRef) == IOSurfaceGetTypeID() {
             let ioSurface = unsafeBitCast(contents as AnyObject, to: IOSurfaceRef.self)
+            // Locked while copied, so a frame being drawn can't tear it.
+            IOSurfaceLock(ioSurface, .readOnly, nil)
             let image = CIImage(ioSurface: ioSurface)
             let context = CIContext()
-            if let png = context.pngRepresentation(of: image, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!) {
-                try? png.write(to: dir.appendingPathComponent("\(name).png"))
-            }
+            let png = context.pngRepresentation(of: image, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+            IOSurfaceUnlock(ioSurface, .readOnly, nil)
+            if let png { try? png.write(to: dir.appendingPathComponent("\(name).png")) }
         }
         let selection = ghostty_selection_s(
             top_left: ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),

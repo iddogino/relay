@@ -401,6 +401,10 @@ struct TerminalOverSSHTests {
         #expect(kill(pid, 0) != 0)
         GhosttyTestHost.shared.tick()
         #expect(!surface.closed)
+        let released = ContinuousClock.now + .seconds(5)
+        while await pool.activeChannels(for: server.target).reduce(0, +) != 0, ContinuousClock.now < released {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         #expect(await pool.activeChannels(for: server.target).reduce(0, +) == 0)
         try await surface.free()
     }

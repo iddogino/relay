@@ -132,6 +132,12 @@ final class SSHConnection: @unchecked Sendable {
             throw SSHClientError.unreachable(Self.describeConnectError(error, host: target.host))
         }
 
+        // A server that hangs up before authentication fails the handshake
+        // at once (NIOSSHHandler doesn't pass channelInactive on, so the
+        // watcher can't see it). After success this is a no-op.
+        channel.closeFuture.whenComplete { _ in
+            authenticated.fail(SSHClientError.handshakeFailed("connection closed"))
+        }
         // Key exchange + auth; bounded so a server that stalls mid-handshake
         // can't hang a caller.
         let handshakeTimer = channel.eventLoop.scheduleTask(in: handshakeTimeout) {

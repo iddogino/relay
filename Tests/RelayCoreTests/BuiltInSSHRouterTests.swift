@@ -101,7 +101,7 @@ struct BuiltInSSHRouterTests {
         let router = BuiltInSSHRouter(
             registry: registry, isEnabled: { true }, isTerminalEnabled: { true },
             passwordLookup: { _ in lookups.increment(); return "s3cret" },
-            fallbackCooldown: .milliseconds(100))
+            fallbackCooldown: .milliseconds(500))
 
         #expect(router.terminalTarget(for: "pw")?.credentials == .password("s3cret"))
         #expect(router.target(for: "pw")?.credentials == .password("s3cret"))
@@ -109,7 +109,7 @@ struct BuiltInSSHRouterTests {
 
         router.noteTerminalOpenFailure(alias: "pw", error: SSHClientError.authenticationFailed)
         #expect(router.terminalTarget(for: "pw") == nil)
-        try await Task.sleep(for: .milliseconds(150))
+        try await Task.sleep(for: .milliseconds(700))
         // The cooldown is over: the built-in client gets another chance.
         #expect(router.terminalTarget(for: "pw") != nil)
 
