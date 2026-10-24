@@ -356,7 +356,7 @@ struct SSHTerminalSessionFakeServerTests {
 
     @Test func aCallerCancelledAfterTheChannelOpenedNeverHearsOfTheSession() async throws {
         var faults = FakeSSHServer.Faults()
-        faults.programReplyDelay = .milliseconds(400)
+        faults.programReplyDelay = .seconds(2)
         let server = try FakeSSHServer(faults: faults)
         let pool = try pool(for: server)
         let transcript = TerminalTranscript()
@@ -366,8 +366,12 @@ struct SSHTerminalSessionFakeServerTests {
                 request: SSHTerminalRequest(size: SSHTerminalSize(columns: 80, rows: 24), command: "echo started; sleep 30"),
                 onOutput: transcript.onOutput, onEnd: transcript.onEnd)
         }
-        // Cancelled while the server is still deciding to start the program.
-        try await Task.sleep(for: .milliseconds(150))
+        // Cancelled once the server has started the program but not yet
+        // answered: the channel is open, the session not yet handed out.
+        let started = ContinuousClock.now + .seconds(10)
+        while server.sessions.first?.pid == nil, ContinuousClock.now < started {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         task.cancel()
         await #expect(throws: CancellationError.self) { _ = try await task.value }
         try await waitForChannels(pool, server.target, total: 0)
