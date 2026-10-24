@@ -14,6 +14,9 @@ public actor SSHConnectionPool {
         public var connectTimeout: TimeAmount = .seconds(10)
         public var maxChannelsPerConnection = 8
         public var idleTimeout: Duration = .seconds(120)
+        /// How long a server may take to accept a terminal's pty and
+        /// program.
+        public var terminalStartTimeout: TimeAmount = .seconds(15)
         public var knownHostsFiles = KnownHosts.defaultFiles
         public var agent: SSHAgent? = SSHAgent.fromEnvironment()
         public var defaultKeyFiles = ["~/.ssh/id_ed25519", "~/.ssh/id_ecdsa"]
@@ -104,6 +107,55 @@ public actor SSHConnectionPool {
         }
     }
 
+    /// Opens an interactive pty session on `target` (see
+    /// `SSHTerminalSession`). It occupies one of its connection's channels
+    /// until it ends, so a host with many open terminals gets a further
+    /// connection for its commands. Throws like `exec`; a session that
+    /// fails later ends with `.connectionLost` instead.
+    public func openTerminal(
+        target: SSHTarget,
+        request: SSHTerminalRequest,
+        highWaterMark: Int = SSHTerminalSession.defaultHighWaterMark,
+        lowWaterMark: Int = SSHTerminalSession.defaultLowWaterMark,
+        onOutput: @escaping @Sendable (Data) -> Void,
+        onEnd: @escaping @Sendable (SSHTerminalEnd) -> Void
+    ) async throws -> SSHTerminalSession {
+        var attempt = 0
+        while true {
+            attempt += 1
+            let (slot, reused) = try await acquire(target)
+            let session: SSHTerminalSession
+            do {
+                session = try await slot.connection.openTerminal(
+                    request, highWaterMark: highWaterMark, lowWaterMark: lowWaterMark,
+                    startTimeout: options.terminalStartTimeout,
+                    onOutput: onOutput,
+                    onEnd: { [weak self] end in
+                        onEnd(end)
+                        guard let self else { return }
+                        Task { await self.release(slot, target: target) }
+                    })
+            } catch SSHClientError.channelFailed(let detail) {
+                // As for exec: a stale pooled connection gets one retry on
+                // a fresh one.
+                slot.retired = true
+                release(slot, target: target)
+                guard reused, attempt == 1 else { throw SSHClientError.channelFailed(detail) }
+                continue
+            } catch {
+                release(slot, target: target)
+                throw error
+            }
+            // From here the session's end releases the slot. A caller
+            // cancelled while it opened won't take ownership of it.
+            if Task.isCancelled {
+                session.close()
+                throw CancellationError()
+            }
+            return session
+        }
+    }
+
     private func acquire(_ target: SSHTarget) async throws -> (Slot, reused: Bool) {
         var connectedHere = false
         while true {
@@ -174,6 +226,11 @@ public actor SSHConnectionPool {
             }
         }
         slots[target] = kept.isEmpty ? nil : kept
+    }
+
+    /// Open channels on each live connection to `target` (for tests).
+    func activeChannels(for target: SSHTarget) -> [Int] {
+        (slots[target] ?? []).filter { $0.connection.isActive }.map(\.activeChannels)
     }
 
     /// Closes every connection (e.g. after host settings change).

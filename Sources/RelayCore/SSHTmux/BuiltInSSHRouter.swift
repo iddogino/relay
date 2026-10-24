@@ -15,6 +15,7 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
     public let pool: SSHConnectionPool
     private let registry: SSHHostRegistry
     private let isEnabled: @Sendable () -> Bool
+    private let isTerminalEnabled: @Sendable () -> Bool
     private let passwordLookup: @Sendable (String) -> String?
     private let lock = NSLock()
     private var fallbackUntil: [String: ContinuousClock.Instant] = [:]
@@ -30,17 +31,32 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
         registry: SSHHostRegistry,
         pool: SSHConnectionPool = .shared,
         isEnabled: @escaping @Sendable () -> Bool,
+        isTerminalEnabled: @escaping @Sendable () -> Bool = { false },
         passwordLookup: @escaping @Sendable (String) -> String?
     ) {
         self.registry = registry
         self.pool = pool
         self.isEnabled = isEnabled
+        self.isTerminalEnabled = isTerminalEnabled
         self.passwordLookup = passwordLookup
     }
 
-    /// The built-in client's target for `alias`, or nil to use the system ssh.
+    /// The built-in client's target for `alias`'s management commands, or
+    /// nil to use the system ssh.
     func target(for alias: String) -> SSHTarget? {
-        guard isEnabled(), let host = registry.host(alias: alias) else { return nil }
+        guard isEnabled() else { return nil }
+        return eligibleTarget(for: alias)
+    }
+
+    /// The built-in client's target for `alias`'s terminals (a separate
+    /// switch, rolled out separately), or nil to use the system ssh.
+    func terminalTarget(for alias: String) -> SSHTarget? {
+        guard isTerminalEnabled() else { return nil }
+        return eligibleTarget(for: alias)
+    }
+
+    private func eligibleTarget(for alias: String) -> SSHTarget? {
+        guard let host = registry.host(alias: alias) else { return nil }
         let cooling = lock.withLock { () -> Bool in
             guard let until = fallbackUntil[alias] else { return false }
             if ContinuousClock.now < until { return true }
@@ -84,6 +100,20 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
         lock.withLock {
             passwords = [:]
             fallbackUntil = [:]
+        }
+    }
+
+    /// A terminal session couldn't be opened over the built-in client.
+    /// Failures that would recur (host key, auth, a refused channel) send
+    /// the host to the system ssh for a while; an unreachable host is just
+    /// down, and would be for ssh too.
+    func noteTerminalOpenFailure(alias: String, error: Error) {
+        guard let error = error as? SSHClientError else { return }
+        switch error {
+        case .hostKeyNotTrusted, .authenticationFailed, .handshakeFailed, .channelFailed:
+            noteFallback(alias: alias, error: error)
+        case .unreachable, .connectionLost:
+            break
         }
     }
 

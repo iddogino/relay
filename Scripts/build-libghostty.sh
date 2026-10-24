@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Builds the pinned libghostty (GhosttyKit.xcframework) from vendored source.
-# See docs/GHOSTTY_PIN.md for the pin policy.
+# Builds the pinned libghostty (GhosttyKit.xcframework) from vendored source,
+# with Relay's patches (patches/ghostty/) applied. See docs/GHOSTTY_PIN.md.
+#
+#   Scripts/build-libghostty.sh          build the xcframework
+#   Scripts/build-libghostty.sh --test   run the patches' Zig unit tests instead
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+MODE="build"
+if [ "${1:-}" = "--test" ]; then MODE="test"; fi
 
 # Pinned to an upstream main commit (the "tip" nightly of 2026-10-23):
 # v1.3.1 is still the latest release, and the pty-less backend work
@@ -30,6 +36,21 @@ if [ "$ACTUAL_COMMIT" != "$GHOSTTY_COMMIT" ]; then
   exit 1
 fi
 
+# 1b. Apply Relay's patches, in order, to the pinned tree. A stamp records
+# which patch set the working tree carries: re-runs are no-ops, and a changed
+# patch set is re-applied from a clean checkout of the pin.
+PATCH_STAMP="$GHOSTTY_DIR/.relay-patches"
+PATCH_SUM="$(cat patches/ghostty/*.patch | shasum -a 256 | cut -d' ' -f1)"
+if [ "$(cat "$PATCH_STAMP" 2>/dev/null || true)" != "$PATCH_SUM" ]; then
+  git -C "$GHOSTTY_DIR" reset -q --hard "$GHOSTTY_COMMIT"
+  git -C "$GHOSTTY_DIR" clean -fdq -- src include
+  for patch in patches/ghostty/*.patch; do
+    echo "Applying $patch"
+    git -C "$GHOSTTY_DIR" apply --whitespace=nowarn "$(pwd)/$patch"
+  done
+  echo "$PATCH_SUM" > "$PATCH_STAMP"
+fi
+
 # 2. Fetch the exact Zig toolchain (kept local to the repo; not installed system-wide).
 if [ ! -x "$ZIG" ]; then
   mkdir -p Vendor/toolchain
@@ -42,6 +63,12 @@ if [ ! -x "$ZIG" ]; then
   }
   tar -xf "Vendor/toolchain/${TARBALL}" -C Vendor/toolchain
   rm "Vendor/toolchain/${TARBALL}"
+fi
+
+# 3a. Or run the patches' unit tests (every test whose name mentions Manual).
+if [ "$MODE" = "test" ]; then
+  (cd "$GHOSTTY_DIR" && "$(pwd)/../../$ZIG" build test -Dtest-filter=Manual --summary all)
+  exit 0
 fi
 
 # 3. Build the xcframework (native arch, optimized).

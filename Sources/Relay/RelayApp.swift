@@ -16,6 +16,7 @@ struct RelayApp: App {
         let builtInSSH = BuiltInSSHRouter(
             registry: hostRegistry,
             isEnabled: { UserDefaults.standard.bool(forKey: BuiltInSSHSetting.defaultsKey) },
+            isTerminalEnabled: { UserDefaults.standard.bool(forKey: BuiltInSSHSetting.terminalsDefaultsKey) },
             passwordLookup: { SSHPasswordStore.load(alias: $0) })
         hostRegistry.onHostsChanged = { builtInSSH.hostsChanged() }
         _model = State(initialValue: AppModel(

@@ -20,11 +20,38 @@ jobs:
       - name: GhosttyKit (cached)
         uses: ./.github/actions/ghosttykit
 
+      # The terminal end-to-end tests run tmux (on a private socket) over
+      # SSH, against the system sshd and an in-process server.
+      - name: Install tmux
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install tmux
+
       - name: Run tests
         run: swift test
 
       - name: Build release binary
         run: swift build -c release --product Relay
+
+  # Relay's libghostty patches (patches/ghostty) carry their own Zig unit
+  # tests; this runs them against the pinned Ghostty source. The Swift suite
+  # covers the same code through the C API and end to end.
+  ghostty-patch:
+    name: libghostty patch (Zig tests)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Zig toolchain
+        uses: actions/cache@v4
+        with:
+          path: Vendor/toolchain
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/build-libghostty.sh') }}
+
+      - name: Run patch unit tests
+        run: ./Scripts/build-libghostty.sh --test
 
   # RelaySyntaxHighlighter is a standalone, pure-Swift package (no AppKit, no
   # libghostty) — so its Prism fixture suite runs on a cheap Linux runner,

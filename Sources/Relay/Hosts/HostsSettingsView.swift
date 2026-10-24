@@ -5,6 +5,9 @@ import RelayCore
 /// command, so flipping it applies to the next command).
 enum BuiltInSSHSetting {
     static let defaultsKey = "builtInSSHClient"
+    /// Terminals over the built-in client: a separate switch, rolled out
+    /// after the one for background work.
+    static let terminalsDefaultsKey = "builtInSSHTerminals"
 }
 
 /// Settings ▸ Hosts: Relay's host list.
@@ -12,6 +15,7 @@ struct HostsSettingsView: View {
     @Bindable var model: AppModel
 
     @AppStorage(BuiltInSSHSetting.defaultsKey) private var builtInSSH = false
+    @AppStorage(BuiltInSSHSetting.terminalsDefaultsKey) private var builtInSSHTerminals = false
     @State private var selection: String?
     @State private var editor: EditorRequest?
     @State private var confirmRemove: SSHHost?
@@ -77,7 +81,16 @@ struct HostsSettingsView: View {
             Toggle(isOn: $builtInSSH) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Use Relay\u{2019}s built-in SSH client (beta)")
-                    Text("For background work — session lists, status, machine load. Terminals still use ssh. Hosts it can\u{2019}t handle yet (ProxyJump, certificates, unknown host keys) keep using ssh automatically.")
+                    Text("For background work — session lists, status, machine load. Hosts it can\u{2019}t handle yet (ProxyJump, certificates, unknown host keys) keep using ssh automatically.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Toggle(isOn: $builtInSSHTerminals) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Also use it for terminals (beta)")
+                    Text("Terminals connect without a local ssh process. Applies to terminals attached from now on; hosts it can\u{2019}t handle keep using ssh.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -85,7 +98,7 @@ struct HostsSettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 560, height: 440)
+        .frame(width: 560, height: 500)
         .sheet(item: $editor) { request in
             HostEditorSheet(model: model, mode: request.mode) { saved in
                 selection = saved.alias

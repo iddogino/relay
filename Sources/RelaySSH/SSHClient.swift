@@ -67,6 +67,7 @@ final class SSHConnection: @unchecked Sendable {
 
     var isActive: Bool { channel.isActive }
     var closeFuture: EventLoopFuture<Void> { channel.closeFuture }
+    var channelEventLoop: EventLoop { channel.eventLoop }
 
     private init(target: SSHTarget, channel: Channel) {
         self.target = target
@@ -146,11 +147,32 @@ final class SSHConnection: @unchecked Sendable {
         environment: [(String, String)],
         onStdout: (@Sendable (Data) -> Void)?
     ) async throws -> SSHExecResult {
-        let eventLoop = channel.eventLoop
-        let done = eventLoop.makePromise(of: SSHExecResult.self)
+        let done = channel.eventLoop.makePromise(of: SSHExecResult.self)
         let handler = ExecHandler(command: command, stdin: stdin, environment: environment, onStdout: onStdout, done: done)
+        let child: Channel
+        do {
+            child = try await openChannel(timeout: .seconds(10)) { $0.pipeline.addHandler(handler) }
+        } catch {
+            done.fail(error)
+            throw error
+        }
+        return try await withTaskCancellationHandler {
+            try await done.futureResult.get()
+        } onCancel: {
+            child.close(promise: nil)
+        }
+    }
+
+    /// Opens a session channel set up by `initialize`. Throws
+    /// `SSHClientError.channelFailed` if the server refuses or doesn't
+    /// answer within `timeout`.
+    func openChannel(
+        timeout: TimeAmount,
+        initialize: @escaping @Sendable (Channel) -> EventLoopFuture<Void>
+    ) async throws -> Channel {
+        let eventLoop = channel.eventLoop
         let opened = eventLoop.makePromise(of: Channel.self)
-        let openTimeout = eventLoop.scheduleTask(in: .seconds(10)) {
+        let openTimeout = eventLoop.scheduleTask(in: timeout) {
             opened.fail(SSHClientError.channelFailed("timed out opening a channel"))
         }
         // NIOSSHHandler is confined to its event loop: look it up there.
@@ -158,26 +180,20 @@ final class SSHConnection: @unchecked Sendable {
             do {
                 let sshHandler = try channel.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
                 sshHandler.createChannel(opened, channelType: .session) { child, _ in
-                    child.pipeline.addHandler(handler)
+                    initialize(child)
                 }
             } catch {
                 opened.fail(SSHClientError.channelFailed("connection closed"))
             }
         }
-        let child: Channel
         do {
-            child = try await opened.futureResult.get()
+            let child = try await opened.futureResult.get()
             openTimeout.cancel()
+            return child
         } catch {
             openTimeout.cancel()
-            done.fail(error)
             if let clientError = error as? SSHClientError { throw clientError }
             throw SSHClientError.channelFailed(String(describing: error))
-        }
-        return try await withTaskCancellationHandler {
-            try await done.futureResult.get()
-        } onCancel: {
-            child.close(promise: nil)
         }
     }
 

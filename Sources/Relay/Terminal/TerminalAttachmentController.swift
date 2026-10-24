@@ -1,4 +1,5 @@
 import AppKit
+import RelayGhosttyIO
 import Observation
 import RelayCore
 
@@ -34,6 +35,8 @@ final class TerminalAttachmentController {
     private(set) var session: RemoteSession?
     private(set) var project: Project?
     private(set) var surfaceView: TerminalSurfaceView?
+    /// The SSH session behind a built-in-client terminal.
+    private var terminalLink: SSHTerminalLink?
     private(set) var terminalTitle: String = "" {
         didSet { onLiveTitleChange?(terminalTitle) }
     }
@@ -121,6 +124,8 @@ final class TerminalAttachmentController {
     // MARK: Lifecycle internals
 
     private func tearDownSurface() {
+        terminalLink?.close()
+        terminalLink = nil
         if let view = surfaceView {
             view.shutdown()
             view.removeFromSuperview()
@@ -148,7 +153,8 @@ final class TerminalAttachmentController {
         // itself wraps it in `exec -l …` via its login-shell wrapper, so no
         // exec prefix here). Every argv element is fully quoted.
         let command = POSIXShellQuote.quoteJoin([spec.executable.path] + spec.arguments)
-        guard let view = TerminalSurfaceView(command: command, environment: spec.environment) else {
+        let created = Self.makeSurface(spec: spec, command: command)
+        guard let view = created?.view else {
             // ghostty_surface_new can fail transiently in the first moments
             // of a launch (a restored selection may attach before the window
             // is fully realized); retry briefly before declaring failure.
@@ -191,9 +197,33 @@ final class TerminalAttachmentController {
             self.handleFileDrop(urls: urls, preferLocalPaths: preferLocalPaths)
         }
         surfaceView = view
+        terminalLink = created?.link
+        terminalLink?.start()
         view.setPresented(presented)
         lastAttachTime = Date()
         phase = .attached
+    }
+
+    /// The surface for `spec`: a local `ssh` process, or — when the
+    /// built-in client takes this host's terminals — a manual-I/O surface
+    /// and the SSH session that feeds it (started by the caller).
+    private static func makeSurface(spec: TerminalLaunchSpec, command: String) -> (view: TerminalSurfaceView, link: SSHTerminalLink?)? {
+        guard let builtIn = spec.builtIn else {
+            return TerminalSurfaceView(command: command, environment: spec.environment).map { ($0, nil) }
+        }
+        let io = ManualTerminalIO()
+        guard let view = TerminalSurfaceView(manualIO: io) else { return nil }
+        let link = SSHTerminalLink(
+            io: io,
+            pool: builtIn.pool,
+            configuration: .init(target: builtIn.target, command: builtIn.command, environment: builtIn.environment),
+            onEnd: { _, openError in
+                // The surface reports the end like a process exit (and the
+                // reconnect logic takes it from there); an open failure
+                // also moves this host to the system ssh for a while.
+                if let openError { builtIn.reportOpenFailure(openError) }
+            })
+        return (view, link)
     }
 
     // MARK: Drag & drop upload
