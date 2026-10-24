@@ -13,6 +13,7 @@ import RelayCore
 struct E2EMain {
     static func main() async {
         let args = Array(CommandLine.arguments.dropFirst())
+        await E2ETransport.setUp()
         switch args.first {
         case "discover":
             _ = try? await HostDiscovery.discoverPair(verbose: true)
@@ -70,7 +71,7 @@ enum HostDiscovery {
     }
 
     private static func probeHost(_ alias: String) async -> Probe? {
-        let runner = SSHCommandRunner()
+        let runner = E2ETransport.runner()
         let script = """
         printf 'os=%s\\n' "$(uname -s)"
         if [ -f /etc/os-release ]; then . /etc/os-release; printf 'id=%s\\n' "$ID"; fi

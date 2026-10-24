@@ -26,10 +26,12 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
     public init(
         runner: SSHCommandRunner = SSHCommandRunner(),
         sshConfigPath: String = SSHConfigDiscovery.defaultConfigPath,
-        hostRegistry: SSHHostRegistry? = nil
+        hostRegistry: SSHHostRegistry? = nil,
+        builtInSSH: BuiltInSSHRouter? = nil
     ) {
         var runner = runner
         if let hostRegistry { runner.configFile = hostRegistry.configFile.path }
+        if let builtInSSH { runner.builtIn = builtInSSH }
         self.runner = runner
         self.configPath = sshConfigPath
         self.hostRegistry = hostRegistry
@@ -826,17 +828,11 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         let parser = LockedMachineLoadParser()
         let result: SSHCommandRunner.CommandResult
         do {
-            result = try await SSHCommandRunner.runProcess(
-                executable: SSHCommandRunner.sshPath,
-                arguments: configArguments + [
-                    "-o", "BatchMode=yes",
-                    "-o", "ConnectTimeout=\(runner.connectTimeoutSeconds)",
-                    "-o", "ServerAliveInterval=15",
-                    "-o", "ServerAliveCountMax=2",
-                    "-T", "--", alias, "/bin/sh -s",
-                ],
-                stdin: script,
+            result = try await runner.runScript(
+                alias: alias,
+                script: script,
                 timeout: .seconds(interval * iterations + 120),
+                keepAlive: true,
                 onStdout: { data in
                     for sample in parser.feed(data) { onSample(sample) }
                 }
@@ -911,17 +907,11 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         let parser = LockedAgentStatusParser()
         let result: SSHCommandRunner.CommandResult
         do {
-            result = try await SSHCommandRunner.runProcess(
-                executable: SSHCommandRunner.sshPath,
-                arguments: configArguments + [
-                    "-o", "BatchMode=yes",
-                    "-o", "ConnectTimeout=\(runner.connectTimeoutSeconds)",
-                    "-o", "ServerAliveInterval=15",
-                    "-o", "ServerAliveCountMax=2",
-                    "-T", "--", alias, "/bin/sh -s",
-                ],
-                stdin: script,
+            result = try await runner.runScript(
+                alias: alias,
+                script: script,
                 timeout: .seconds(Self.agentStatusInterval * iterations + 120),
+                keepAlive: true,
                 onStdout: { data in
                     for snapshot in parser.feed(data) { onSnapshot(snapshot) }
                 }

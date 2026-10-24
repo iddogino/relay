@@ -37,9 +37,18 @@ public final class SSHHostRegistry: @unchecked Sendable {
         lock.withLock { _hosts.first { $0.alias == alias } }
     }
 
+    /// Called after every `setHosts` (e.g. to drop connection state tied
+    /// to old settings).
+    public var onHostsChanged: (@Sendable () -> Void)? {
+        get { lock.withLock { _onHostsChanged } }
+        set { lock.withLock { _onHostsChanged = newValue } }
+    }
+    private var _onHostsChanged: (@Sendable () -> Void)?
+
     public func setHosts(_ hosts: [SSHHost]) {
         lock.withLock { _hosts = hosts }
         writeConfig(hosts: hosts)
+        onHostsChanged?()
     }
 
     private func writeConfig(hosts: [SSHHost]) {

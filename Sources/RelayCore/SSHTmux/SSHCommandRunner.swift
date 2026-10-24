@@ -1,4 +1,5 @@
 import Foundation
+import RelaySSH
 
 /// Runs one-shot, non-interactive management commands through the system
 /// OpenSSH client. Scripts are delivered over stdin to a remote `/bin/sh -s`
@@ -50,8 +51,13 @@ public struct SSHCommandRunner: Sendable {
     /// nil = OpenSSH's own config lookup.
     public var configFile: String?
 
-    public init(configFile: String? = nil) {
+    /// Routes commands through the built-in SSH client for hosts it can
+    /// handle. nil = always the system ssh.
+    public var builtIn: BuiltInSSHRouter?
+
+    public init(configFile: String? = nil, builtIn: BuiltInSSHRouter? = nil) {
         self.configFile = configFile
+        self.builtIn = builtIn
     }
 
     /// `-F <config>` when a generated config is in use; prepend to every
@@ -61,24 +67,78 @@ public struct SSHCommandRunner: Sendable {
     }
 
     /// Runs a POSIX script on the remote via `/bin/sh -s` with stdin delivery.
+    ///
+    /// `keepAlive` is for long-running watch scripts: with the system ssh it
+    /// adds ServerAlive probes so a dead network ends the run (the built-in
+    /// client always has TCP keepalive). `onStdout` receives output as it
+    /// arrives (from an arbitrary thread).
     public func runScript(
         alias: String,
         script: String,
-        timeout: Duration = .seconds(30)
+        timeout: Duration = .seconds(30),
+        keepAlive: Bool = false,
+        onStdout: (@Sendable (Data) -> Void)? = nil
     ) async throws -> CommandResult {
-        try await Self.runProcess(
+        if let builtIn, let target = builtIn.target(for: alias) {
+            if let result = try await runBuiltIn(
+                builtIn, target: target, alias: alias, script: script, timeout: timeout, onStdout: onStdout) {
+                return result
+            }
+        }
+        return try await Self.runProcess(
             executable: Self.sshPath,
             arguments: configArguments + [
                 "-o", "BatchMode=yes",
                 "-o", "ConnectTimeout=\(connectTimeoutSeconds)",
+            ] + (keepAlive ? ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2"] : []) + [
                 "-T",
                 "--",
                 alias,
                 "/bin/sh -s",
             ],
             stdin: script,
-            timeout: timeout
+            timeout: timeout,
+            onStdout: onStdout
         )
+    }
+
+    /// The built-in client's run, shaped like the system ssh's: transport
+    /// failures become exit status 255 with an ssh-style message (which the
+    /// provider already classifies). Returns nil when this host should use
+    /// the system ssh instead (it failed before the command started).
+    private func runBuiltIn(
+        _ builtIn: BuiltInSSHRouter,
+        target: SSHTarget,
+        alias: String,
+        script: String,
+        timeout: Duration,
+        onStdout: (@Sendable (Data) -> Void)?
+    ) async throws -> CommandResult? {
+        do {
+            let result = try await builtIn.pool.exec(
+                target: target,
+                command: "/bin/sh -s",
+                stdin: Data(script.utf8),
+                environment: BuiltInSSHRouter.forwardedEnvironment,
+                timeout: timeout,
+                onStdout: onStdout)
+            return CommandResult(
+                exitCode: result.exitCode,
+                stdout: String(data: result.stdout, encoding: .utf8) ?? "",
+                stderr: String(data: result.stderr, encoding: .utf8) ?? "")
+        } catch SSHConnectionPool.ExecError.timedOut {
+            throw RunnerError.timedOut
+        } catch let error as SSHClientError {
+            switch error {
+            case .unreachable(let detail):
+                return CommandResult(exitCode: 255, stdout: "", stderr: "ssh: connect to host \(target.host) port \(target.port): \(detail)")
+            case .connectionLost:
+                return CommandResult(exitCode: 255, stdout: "", stderr: "Connection to \(target.host) closed.")
+            case .hostKeyNotTrusted, .authenticationFailed, .handshakeFailed, .channelFailed:
+                builtIn.noteFallback(alias: alias, error: error)
+                return nil
+            }
+        }
     }
 
     /// Low-level local process execution with stdin delivery and a hard timeout.

@@ -13,8 +13,13 @@ struct RelayApp: App {
         AppearancePreference.stored().apply()
         let hostRegistry = SSHHostRegistry(
             configFile: AppVariant.dataDirectory.appendingPathComponent("ssh_config"))
+        let builtInSSH = BuiltInSSHRouter(
+            registry: hostRegistry,
+            isEnabled: { UserDefaults.standard.bool(forKey: BuiltInSSHSetting.defaultsKey) },
+            passwordLookup: { SSHPasswordStore.load(alias: $0) })
+        hostRegistry.onHostsChanged = { builtInSSH.hostsChanged() }
         _model = State(initialValue: AppModel(
-            provider: SSHTmuxRuntimeProvider(hostRegistry: hostRegistry),
+            provider: SSHTmuxRuntimeProvider(hostRegistry: hostRegistry, builtInSSH: builtInSSH),
             store: ProjectStore(fileURL: AppVariant.dataDirectory.appendingPathComponent("state.json")),
             hostRegistry: hostRegistry))
     }

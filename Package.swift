@@ -14,6 +14,13 @@ let package = Package(
         // manifest, Linux-testable) so it can be swapped out — see
         // RelaySyntaxHighlighter/PORTING.md.
         .package(path: "RelaySyntaxHighlighter"),
+        // Built-in SSH client (RelaySSH). The maintainer's (Joannis
+        // Orlandos, of Citadel) fork of apple/swift-nio-ssh: it adds custom
+        // private keys, which signing through ssh-agent needs. Pinned
+        // exactly — this is the crypto/transport layer.
+        .package(url: "https://github.com/Joannis/swift-nio-ssh.git", exact: "0.3.5"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.3"),
     ],
     targets: [
         // Pinned libghostty build. See docs/GHOSTTY_PIN.md and Scripts/build-libghostty.sh.
@@ -22,9 +29,24 @@ let package = Package(
             path: "Vendor/ghostty/macos/GhosttyKit.xcframework"
         ),
 
+        // Built-in SSH client: connections, exec channels, ssh-agent and
+        // key-file auth, known_hosts. No Relay types; portable to iOS.
+        .target(
+            name: "RelaySSH",
+            dependencies: [
+                .product(name: "NIOSSH", package: "swift-nio-ssh"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/RelaySSH",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+
         // Domain, runtime providers, and persistence. No AppKit, no libghostty.
         .target(
             name: "RelayCore",
+            dependencies: ["RelaySSH"],
             path: "Sources/RelayCore"
         ),
 
@@ -65,6 +87,12 @@ let package = Package(
             name: "RelayCoreTests",
             dependencies: ["RelayCore"],
             path: "Tests/RelayCoreTests"
+        ),
+
+        .testTarget(
+            name: "RelaySSHTests",
+            dependencies: ["RelaySSH"],
+            path: "Tests/RelaySSHTests"
         ),
     ]
 )

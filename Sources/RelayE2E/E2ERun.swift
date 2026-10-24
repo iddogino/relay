@@ -5,8 +5,8 @@ import RelayCore
 /// with a validated sentinel, and every tmux session carries the run marker
 /// `@rterm_e2e_run=<run-id>`. See docs/remote-project-terminal-v1-spec.md §21.
 final class E2ERun {
-    let runner = SSHCommandRunner()
-    let provider = SSHTmuxRuntimeProvider()
+    let runner = E2ETransport.runner()
+    let provider = E2ETransport.provider()
     let runID: String
     var state: E2EState
     var failures: [String] = []
@@ -287,7 +287,7 @@ final class E2ERun {
         check(v1 > 0 && v2 > v1, "AC-09 process keeps running with no attachment (counter \(v1)→\(v2))")
 
         // AC-11: a fresh provider instance (fresh app) rediscovers it.
-        let freshProvider = SSHTmuxRuntimeProvider()
+        let freshProvider = E2ETransport.provider()
         do {
             let rediscovered = try await freshProvider.listSessions(for: counterProject)
             check(rediscovered.contains { $0.id == counter.id }, "AC-11 fresh provider rediscovers session")

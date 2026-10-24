@@ -1,10 +1,17 @@
 import SwiftUI
 import RelayCore
 
+/// The "built-in SSH client" switch (read by `BuiltInSSHRouter` per
+/// command, so flipping it applies to the next command).
+enum BuiltInSSHSetting {
+    static let defaultsKey = "builtInSSHClient"
+}
+
 /// Settings ▸ Hosts: Relay's host list.
 struct HostsSettingsView: View {
     @Bindable var model: AppModel
 
+    @AppStorage(BuiltInSSHSetting.defaultsKey) private var builtInSSH = false
     @State private var selection: String?
     @State private var editor: EditorRequest?
     @State private var confirmRemove: SSHHost?
@@ -63,9 +70,22 @@ struct HostsSettingsView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.trailing)
             }
+
+            Divider()
+                .padding(.vertical, 4)
+
+            Toggle(isOn: $builtInSSH) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Use Relay\u{2019}s built-in SSH client (beta)")
+                    Text("For background work — session lists, status, machine load. Terminals still use ssh. Hosts it can\u{2019}t handle yet (ProxyJump, certificates, unknown host keys) keep using ssh automatically.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
         .padding(20)
-        .frame(width: 560, height: 380)
+        .frame(width: 560, height: 440)
         .sheet(item: $editor) { request in
             HostEditorSheet(model: model, mode: request.mode) { saved in
                 selection = saved.alias
