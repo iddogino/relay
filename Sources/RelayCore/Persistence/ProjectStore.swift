@@ -17,9 +17,8 @@ public struct CleanupTombstone: Codable, Sendable, Identifiable, Hashable {
     }
 }
 
-/// The locally persisted app configuration. Hosts are rediscovered from SSH
-/// config and sessions are reconciled from remote tmux; only app-owned
-/// configuration lives here.
+/// The locally persisted app configuration. Sessions are reconciled from
+/// remote tmux; only app-owned configuration lives here.
 public struct PersistedState: Codable, Sendable {
     public var projects: [Project]
     public var tombstones: [CleanupTombstone]
@@ -29,6 +28,9 @@ public struct PersistedState: Codable, Sendable {
     public var hiddenWorkspaces: Set<WorkspaceRef>
     /// The user's drag-to-reorder session arrangement (see SessionOrdering).
     public var sessionOrder: [SessionID]
+    /// Relay's host list. nil only in state written before Relay owned its
+    /// hosts (they came from `~/.ssh/config`) — the cue to migrate.
+    public var hosts: [SSHHost]?
 
     public init(
         projects: [Project] = [],
@@ -36,7 +38,8 @@ public struct PersistedState: Codable, Sendable {
         lastSelectedSessionID: SessionID? = nil,
         collapsedProjectIDs: Set<ProjectID> = [],
         hiddenWorkspaces: Set<WorkspaceRef> = [],
-        sessionOrder: [SessionID] = []
+        sessionOrder: [SessionID] = [],
+        hosts: [SSHHost]? = nil
     ) {
         self.projects = projects
         self.tombstones = tombstones
@@ -44,6 +47,7 @@ public struct PersistedState: Codable, Sendable {
         self.collapsedProjectIDs = collapsedProjectIDs
         self.hiddenWorkspaces = hiddenWorkspaces
         self.sessionOrder = sessionOrder
+        self.hosts = hosts
     }
 
     // Every field decodes with a default so state files written by older
@@ -57,6 +61,16 @@ public struct PersistedState: Codable, Sendable {
         self.collapsedProjectIDs = try container.decodeIfPresent(Set<ProjectID>.self, forKey: .collapsedProjectIDs) ?? []
         self.hiddenWorkspaces = try container.decodeIfPresent(Set<WorkspaceRef>.self, forKey: .hiddenWorkspaces) ?? []
         self.sessionOrder = try container.decodeIfPresent([SessionID].self, forKey: .sessionOrder) ?? []
+        // Lossy per record: one unreadable host must never send the whole
+        // state file down the corrupt-state path.
+        self.hosts = try container.decodeIfPresent([LossyHost].self, forKey: .hosts)?.compactMap(\.host)
+    }
+
+    private struct LossyHost: Decodable {
+        let host: SSHHost?
+        init(from decoder: Decoder) throws {
+            host = try? SSHHost(from: decoder)
+        }
     }
 }
 

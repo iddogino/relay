@@ -97,8 +97,7 @@ final class GhosttyRuntime {
         confirm-close-surface = false
         shell-integration = none
         """
-        let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Relay", isDirectory: true)
+        let supportDir = AppVariant.dataDirectory
         let overridesURL = supportDir.appendingPathComponent("ghostty-overrides.conf")
         do {
             try FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)

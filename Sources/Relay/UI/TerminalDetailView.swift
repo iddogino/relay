@@ -315,7 +315,7 @@ private struct EmptyDetailView: View {
                 Text("Select a session, or create one with ⌘N.")
             }
         } actions: {
-            if model.projects.isEmpty, !model.remotes.isEmpty {
+            if model.projects.isEmpty {
                 Button("Add Project…") {
                     model.projectEditor = ProjectEditorContext(mode: .create(workspace: nil))
                 }

@@ -11,7 +11,12 @@ struct RelayApp: App {
         // Initialize libghostty before any UI exists.
         _ = GhosttyRuntime.shared
         AppearancePreference.stored().apply()
-        _model = State(initialValue: AppModel(provider: SSHTmuxRuntimeProvider()))
+        let hostRegistry = SSHHostRegistry(
+            configFile: AppVariant.dataDirectory.appendingPathComponent("ssh_config"))
+        _model = State(initialValue: AppModel(
+            provider: SSHTmuxRuntimeProvider(hostRegistry: hostRegistry),
+            store: ProjectStore(fileURL: AppVariant.dataDirectory.appendingPathComponent("state.json")),
+            hostRegistry: hostRegistry))
     }
 
     /// Standard cap choices, plus the current value if it was set to
@@ -27,6 +32,12 @@ struct RelayApp: App {
                 .frame(minWidth: 760, minHeight: 480)
         }
         .defaultSize(width: 1180, height: 760)
+        Settings {
+            TabView {
+                HostsSettingsView(model: model)
+                    .tabItem { Label("Hosts", systemImage: "server.rack") }
+            }
+        }
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") {

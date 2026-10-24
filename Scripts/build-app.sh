@@ -7,6 +7,9 @@
 #   RELAY_BUILD_NUMBER  CFBundleVersion override (monotonic integer)
 #   CODESIGN_IDENTITY   signing identity; default "-" (ad hoc). A real
 #                       identity also enables the hardened runtime.
+#   RELAY_VARIANT       "dev" builds "Relay Dev.app": separate bundle ID,
+#                       data folder and defaults, no auto-updates — safe to
+#                       run next to an installed Relay.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -20,13 +23,26 @@ fi
 
 swift build -c "$CONFIG" --product Relay
 
-APP="build/Relay.app"
+VARIANT="${RELAY_VARIANT:-}"
+if [ "$VARIANT" = "dev" ]; then
+  APP="build/Relay Dev.app"
+else
+  APP="build/Relay.app"
+fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp ".build/$CONFIG/Relay" "$APP/Contents/MacOS/Relay"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
+if [ "$VARIANT" = "dev" ]; then
+  PLIST="$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.iddogino.Relay.dev" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleName Relay Dev" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Relay Dev" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Add :RelayDataDirectory string Relay Dev" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$PLIST"
+fi
 if [ -n "${RELAY_VERSION:-}" ]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $RELAY_VERSION" "$APP/Contents/Info.plist"
 fi

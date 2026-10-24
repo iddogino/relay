@@ -18,15 +18,34 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
 
     private let runner: SSHCommandRunner
     private let configPath: String
+    /// Relay's own host list. When set, it's the only source of
+    /// workspaces and every ssh/scp runs against its generated config;
+    /// without it (the E2E harness), hosts come from `~/.ssh/config`.
+    private let hostRegistry: SSHHostRegistry?
 
-    public init(runner: SSHCommandRunner = SSHCommandRunner(), sshConfigPath: String = SSHConfigDiscovery.defaultConfigPath) {
+    public init(
+        runner: SSHCommandRunner = SSHCommandRunner(),
+        sshConfigPath: String = SSHConfigDiscovery.defaultConfigPath,
+        hostRegistry: SSHHostRegistry? = nil
+    ) {
+        var runner = runner
+        if let hostRegistry { runner.configFile = hostRegistry.configFile.path }
         self.runner = runner
         self.configPath = sshConfigPath
+        self.hostRegistry = hostRegistry
     }
+
+    /// `-F <config>` for direct ssh/scp invocations.
+    private var configArguments: [String] { runner.configArguments }
 
     // MARK: Workspaces
 
     public func discoverWorkspaces() async throws -> [WorkspaceDescriptor] {
+        if let hostRegistry {
+            return hostRegistry.hosts.map { host in
+                WorkspaceDescriptor(id: host.workspace, displayName: host.alias, providerID: id)
+            }
+        }
         let path = configPath
         let aliases = SSHConfigDiscovery.discoverAliases(configPath: path)
         return aliases.map { alias in
@@ -313,7 +332,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         """
         return TerminalLaunchSpec(
             executable: URL(fileURLWithPath: SSHCommandRunner.sshPath),
-            arguments: [
+            arguments: configArguments + [
                 "-tt",
                 "-o", "ConnectTimeout=10",
                 "--",
@@ -593,7 +612,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         // is worse than an extra transfer.
         let scpResult = try await SSHCommandRunner.runProcess(
             executable: "/usr/bin/scp",
-            arguments: ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--",
+            arguments: configArguments + ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--",
                         "\(alias):\(remotePath)", partial.path],
             stdin: nil,
             timeout: .seconds(600)
@@ -711,7 +730,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         // literally (no remote shell expansion). With a progress callback,
         // scp runs under a terminal (no -q) and its meter is parsed live.
         do {
-            let scpArguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-r", "--"]
+            let scpArguments = configArguments + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-r", "--"]
                 + localPaths + ["\(alias):\(dropDir)/"]
             let scpResult: SSHCommandRunner.CommandResult
             var errorText: String
@@ -809,7 +828,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         do {
             result = try await SSHCommandRunner.runProcess(
                 executable: SSHCommandRunner.sshPath,
-                arguments: [
+                arguments: configArguments + [
                     "-o", "BatchMode=yes",
                     "-o", "ConnectTimeout=\(runner.connectTimeoutSeconds)",
                     "-o", "ServerAliveInterval=15",
@@ -894,7 +913,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         do {
             result = try await SSHCommandRunner.runProcess(
                 executable: SSHCommandRunner.sshPath,
-                arguments: [
+                arguments: configArguments + [
                     "-o", "BatchMode=yes",
                     "-o", "ConnectTimeout=\(runner.connectTimeoutSeconds)",
                     "-o", "ServerAliveInterval=15",

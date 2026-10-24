@@ -42,21 +42,23 @@ struct SidebarView: View {
             if model.remotesLoaded && model.projects.isEmpty {
                 emptyState
             } else {
-                Section {
-                    ForEach(model.projects) { project in
-                        ProjectGroup(model: model, project: project)
-                    }
-                    .onMove { source, destination in
-                        model.moveProjects(fromOffsets: source, toOffset: destination)
-                    }
-                } header: {
-                    sectionHeader
+                // The header is a plain row, not a Section header: on macOS
+                // 27 a sidebar Section header shows a collapse chevron on
+                // hover even with .collapsible(false) (shoving the + aside),
+                // and clicking it traps inside SwiftUI's list code.
+                sectionHeader
+                    .selectionDisabled()
+                    .moveDisabled(true)
+                ForEach(model.projects) { project in
+                    ProjectGroup(model: model, project: project)
                 }
-                .collapsible(false)
+                .onMove { source, destination in
+                    model.moveProjects(fromOffsets: source, toOffset: destination)
+                }
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("Relay")
+        .navigationTitle(AppVariant.dataDirectoryName)
         .overlay(alignment: .bottom) {
             if !model.remotesLoaded {
                 ProgressView()
@@ -69,25 +71,25 @@ struct SidebarView: View {
     private var sectionHeader: some View {
         HStack(spacing: 2) {
             Text("Projects")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
             Spacer()
-            Menu {
-                Button("Refresh All") {
-                    Task { await model.refreshAll() }
-                }
+            // A plain button popping an NSMenu rather than a SwiftUI Menu:
+            // in a list row (vs. a Section header) the Menu's AppKit-drawn
+            // label ignores dark mode and renders black.
+            Button {
+                PopUpMenu.show([("Refresh All", { Task { await model.refreshAll() } })])
             } label: {
                 Image(systemName: "ellipsis")
             }
-            .menuStyle(.button)
             .buttonStyle(.borderless)
-            .menuIndicator(.hidden)
-            .fixedSize()
+            .padding(.trailing, 6)
             Button {
                 model.createSheetPresented = true
             } label: {
                 Image(systemName: "plus")
             }
             .buttonStyle(.borderless)
-            .disabled(model.remotes.isEmpty && model.projects.isEmpty)
             .help("New session or project")
         }
         // Trailing inset chosen so the + sits on the project rows' status
@@ -96,23 +98,36 @@ struct SidebarView: View {
     }
 
     @ViewBuilder private var emptyState: some View {
-        if model.remotes.isEmpty {
-            ContentUnavailableView(
-                "No SSH Hosts",
-                systemImage: "network.slash",
-                description: Text("Add hosts to ~/.ssh/config and they'll appear here.")
-            )
-        } else {
-            ContentUnavailableView {
-                Label("No Projects", systemImage: "folder.badge.plus")
-            } description: {
-                Text("A project is a folder on one of your hosts.")
-            } actions: {
-                Button("Add Project…") {
-                    model.projectEditor = ProjectEditorContext(mode: .create(workspace: nil))
-                }
+        ContentUnavailableView {
+            Label("No Projects", systemImage: "folder.badge.plus")
+        } description: {
+            Text("A project is a folder on one of your hosts.")
+        } actions: {
+            Button("Add Project…") {
+                model.projectEditor = ProjectEditorContext(mode: .create(workspace: nil))
             }
         }
+    }
+}
+
+/// Pops a context-style menu at the mouse pointer.
+private enum PopUpMenu {
+    private final class Item: NSObject {
+        let handler: () -> Void
+        init(_ handler: @escaping () -> Void) { self.handler = handler }
+        @objc func fire() { handler() }
+    }
+
+    @MainActor static func show(_ items: [(String, () -> Void)]) {
+        let menu = NSMenu()
+        for (title, handler) in items {
+            let target = Item(handler)
+            let item = NSMenuItem(title: title, action: #selector(Item.fire), keyEquivalent: "")
+            item.target = target
+            item.representedObject = target  // NSMenuItem.target is weak
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 }
 
@@ -179,7 +194,7 @@ private struct ProjectRow: View {
     }
 
     private var helpText: String {
-        if remoteMissing { return "\(hostAlias) is missing from ~/.ssh/config" }
+        if remoteMissing { return "\(hostAlias) isn't in Relay's hosts — add it in Settings ▸ Hosts" }
         switch hostStatus {
         case .online: return "\(hostAlias) — online"
         case .offline: return "\(hostAlias) — unreachable"

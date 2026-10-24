@@ -46,8 +46,19 @@ public struct SSHCommandRunner: Sendable {
     public static let sshPath = "/usr/bin/ssh"
 
     public var connectTimeoutSeconds: Int = 10
+    /// Relay's generated ssh config (`SSHHostRegistry`), passed as `-F`.
+    /// nil = OpenSSH's own config lookup.
+    public var configFile: String?
 
-    public init() {}
+    public init(configFile: String? = nil) {
+        self.configFile = configFile
+    }
+
+    /// `-F <config>` when a generated config is in use; prepend to every
+    /// ssh/scp argument list.
+    public var configArguments: [String] {
+        configFile.map { ["-F", $0] } ?? []
+    }
 
     /// Runs a POSIX script on the remote via `/bin/sh -s` with stdin delivery.
     public func runScript(
@@ -57,7 +68,7 @@ public struct SSHCommandRunner: Sendable {
     ) async throws -> CommandResult {
         try await Self.runProcess(
             executable: Self.sshPath,
-            arguments: [
+            arguments: configArguments + [
                 "-o", "BatchMode=yes",
                 "-o", "ConnectTimeout=\(connectTimeoutSeconds)",
                 "-T",

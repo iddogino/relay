@@ -21,10 +21,11 @@ public enum SSHHostNameResolver {
     /// Resolves the alias, falling back to the alias itself when `ssh -G`
     /// fails or resolves to a loopback address (tunnel-style configs where
     /// the real endpoint is not reachable by name from a browser anyway).
-    public static func resolve(alias: String) async -> String {
+    /// `configFile` is Relay's generated config (see `SSHHostRegistry`).
+    public static func resolve(alias: String, configFile: String? = nil) async -> String {
         let result = try? await SSHCommandRunner.runProcess(
             executable: SSHCommandRunner.sshPath,
-            arguments: ["-G", "--", alias],
+            arguments: (configFile.map { ["-F", $0] } ?? []) + ["-G", "--", alias],
             stdin: nil,
             timeout: .seconds(5)
         )

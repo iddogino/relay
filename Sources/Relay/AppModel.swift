@@ -50,8 +50,8 @@ struct ProjectEditorContext: Identifiable {
     let mode: Mode
 }
 
-/// Central UI state. Talks exclusively to `RuntimeProvider` — no SSH/tmux
-/// concepts appear here or anywhere above.
+/// Central UI state. Sessions go exclusively through `RuntimeProvider`; the
+/// one SSH concept here is the host list Relay owns (`SSHHostRegistry`).
 @MainActor
 @Observable
 final class AppModel {
@@ -88,8 +88,12 @@ final class AppModel {
         return controller
     }
     private let store: ProjectStore
+    /// Relay's own host list, rendered to the ssh config every connection
+    /// uses. `hosts` mirrors it for the UI and persistence.
+    let hostRegistry: SSHHostRegistry?
+    private(set) var hosts: [SSHHost] = []
 
-    // Remotes (rediscovered from provider, never persisted)
+    // Remotes: the provider's view of the host list.
     private(set) var remotes: [WorkspaceDescriptor] = []
     private(set) var remotesLoaded = false
 
@@ -128,9 +132,10 @@ final class AppModel {
 
     private var restoredSelection: SessionID?
 
-    init(provider: any RuntimeProvider, store: ProjectStore = ProjectStore()) {
+    init(provider: any RuntimeProvider, store: ProjectStore = ProjectStore(), hostRegistry: SSHHostRegistry? = nil) {
         self.provider = provider
         self.store = store
+        self.hostRegistry = hostRegistry
         self.idleAttachment = TerminalAttachmentController(provider: provider)
         // Clamped on read so a hand-edited default can't disable attachment
         // (0/missing means unset) or leak connections without bound.
@@ -240,7 +245,7 @@ final class AppModel {
             if let cached = resolvedLinkHosts[alias] {
                 host = cached
             } else {
-                host = await SSHHostNameResolver.resolve(alias: alias)
+                host = await SSHHostNameResolver.resolve(alias: alias, configFile: hostRegistry?.configFile.path)
                 resolvedLinkHosts[alias] = host
             }
             NSWorkspace.shared.open(LocalhostURLRewriter.rewrite(url, remoteHost: host) ?? url)
@@ -290,6 +295,7 @@ final class AppModel {
     // MARK: Startup
 
     private func bootstrap() async {
+        var loadedHosts: [SSHHost]?
         do {
             let state = try await store.load()
             projects = state.projects
@@ -297,6 +303,7 @@ final class AppModel {
             sessionOrder = state.sessionOrder
             collapsedProjects = state.collapsedProjectIDs
             restoredSelection = state.lastSelectedSessionID
+            loadedHosts = state.hosts
         } catch ProjectStoreError.corruptState(let backupPath) {
             alert = AppAlert(
                 title: "Settings Reset",
@@ -305,6 +312,7 @@ final class AppModel {
         } catch {
             alert = AppAlert(title: "Couldn't Load Settings", message: error.localizedDescription)
         }
+        await loadHosts(loadedHosts)
         await refreshRemotes()
         // All projects are visible (expanded) in the sidebar, so reconcile
         // each once at launch; restore the last-selected session when found
@@ -340,6 +348,67 @@ final class AppModel {
         markSelectedAgentSeen()
     }
 
+    // MARK: Hosts
+
+    /// Installs the persisted host list. State from before Relay owned its
+    /// hosts has none: every host a project uses is imported from
+    /// `~/.ssh/config` (same alias, so projects keep working untouched).
+    private func loadHosts(_ loaded: [SSHHost]?) async {
+        guard let hostRegistry else { return }
+        if let loaded {
+            hosts = loaded
+        } else {
+            var seen = Set<String>()
+            var imported: [SSHHost] = []
+            for project in projects where project.workspace.provider == .sshTmux {
+                let alias = project.workspace.opaqueID
+                guard seen.insert(alias).inserted, SSHHost.isValidAlias(alias) else { continue }
+                imported.append(await SSHConfigImporter.importHost(alias: alias))
+            }
+            hosts = imported
+            ghosttyLogger.info("migrated \(imported.count, privacy: .public) hosts from ssh config")
+        }
+        hostRegistry.setHosts(hosts)
+        if loaded == nil { persist() }
+    }
+
+    func host(for workspace: WorkspaceRef) -> SSHHost? {
+        hosts.first { $0.workspace == workspace }
+    }
+
+    /// Projects living on the host (a host in use can't be removed).
+    func projects(on host: SSHHost) -> [Project] {
+        projects.filter { $0.workspace == host.workspace }
+    }
+
+    /// Adds or replaces (by alias) a host and applies it to every
+    /// connection from now on. Live terminals keep their connection.
+    func saveHost(_ host: SSHHost, password: String?) async {
+        if let index = hosts.firstIndex(where: { $0.alias == host.alias }) {
+            hosts[index] = host
+        } else {
+            hosts.append(host)
+        }
+        if case .password = host.auth {
+            if let password, !password.isEmpty { SSHPasswordStore.save(password, alias: host.alias) }
+        } else {
+            SSHPasswordStore.delete(alias: host.alias)
+        }
+        hostRegistry?.setHosts(hosts)
+        resolvedLinkHosts[host.alias] = nil
+        persist()
+        await refreshRemotes()
+    }
+
+    func removeHost(_ host: SSHHost) async {
+        guard projects(on: host).isEmpty else { return }
+        hosts.removeAll { $0.alias == host.alias }
+        SSHPasswordStore.delete(alias: host.alias)
+        hostRegistry?.setHosts(hosts)
+        persist()
+        await refreshRemotes()
+    }
+
     // MARK: Remotes
 
     func refreshRemotes() async {
@@ -353,7 +422,7 @@ final class AppModel {
         syncAgentMonitors()
     }
 
-    /// True when the project's host no longer appears in SSH config. Only
+    /// True when the project's host isn't in the host list. Only
     /// meaningful once discovery has completed (before that, nothing is
     /// "missing" — it just hasn't been found yet).
     func isRemoteMissing(_ project: Project) -> Bool {
@@ -1526,7 +1595,8 @@ final class AppModel {
             tombstones: tombstones,
             lastSelectedSessionID: selectedSessionID,
             collapsedProjectIDs: collapsedProjects,
-            sessionOrder: sessionOrder
+            sessionOrder: sessionOrder,
+            hosts: hostRegistry == nil ? nil : hosts
         )
         // Chain saves so an older snapshot can never overwrite a newer one.
         persistChain = Task { [store, previous = persistChain] in

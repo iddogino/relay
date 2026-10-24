@@ -15,6 +15,7 @@ struct ProjectEditorSheet: View {
     /// The host the project lives on. Picked at creation; fixed afterwards
     /// (a project's sessions live on its host — moving it is meaningless).
     @State private var workspace: WorkspaceRef?
+    @State private var addHostPresented = false
     @State private var validating = false
     @State private var validationError: String?
     @FocusState private var nameFocused: Bool
@@ -30,6 +31,23 @@ struct ProjectEditorSheet: View {
     private var isEditing: Bool {
         if case .edit = context.mode { return true }
         return false
+    }
+
+    /// Picker sentinel for the "Add Host…" item (never a real alias:
+    /// aliases can't contain spaces).
+    private static let addHostTag = WorkspaceRef(provider: .sshTmux, opaqueID: " add-host")
+
+    /// Picking "Add Host…" opens the host sheet instead of selecting.
+    private var hostSelection: Binding<WorkspaceRef?> {
+        Binding(
+            get: { workspace },
+            set: { newValue in
+                if newValue == Self.addHostTag {
+                    addHostPresented = true
+                } else {
+                    workspace = newValue
+                }
+            })
     }
 
     var body: some View {
@@ -49,10 +67,12 @@ struct ProjectEditorSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Picker("Host", selection: $workspace) {
+                    Picker("Host", selection: hostSelection) {
                         ForEach(model.remotes) { remote in
                             Text(remote.displayName).tag(Optional(remote.id))
                         }
+                        if !model.remotes.isEmpty { Divider() }
+                        Text("Add Host…").tag(Optional(Self.addHostTag))
                     }
                 }
                 TextField("Folder", text: $path, prompt: Text("~/code/my-app"))
@@ -147,6 +167,11 @@ struct ProjectEditorSheet: View {
         .frame(width: embedded ? nil : 480)
         .onAppear(perform: populate)
         .task { nameFocused = true }
+        .sheet(isPresented: $addHostPresented) {
+            HostEditorSheet(model: model, mode: .create) { host in
+                workspace = host.workspace
+            }
+        }
         // The suggestion dropdown floats above everything in the sheet,
         // anchored to the folder field via its reported bounds.
         .overlayPreferenceValue(FolderFieldBounds.self) { anchor in

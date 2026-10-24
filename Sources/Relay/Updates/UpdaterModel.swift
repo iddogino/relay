@@ -17,7 +17,7 @@ final class UpdaterModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     override init() {
         super.init()
         controller = SPUStandardUpdaterController(
-            startingUpdater: true,
+            startingUpdater: AppVariant.updatesEnabled,
             updaterDelegate: self,
             userDriverDelegate: nil
         )
