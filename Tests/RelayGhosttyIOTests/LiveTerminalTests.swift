@@ -129,6 +129,25 @@ struct LiveTerminalTests {
     }
 
     @Test(.enabled(if: target != nil))
+    func outputIsRenderedOnScreen() async throws {
+        let terminal = try Terminal(
+            command: "printf '\\033[2J\\033[H\\033[41m%20s\\033[0m\\n\\033[44m%20s\\033[0m\\n' '' ''; echo RENDER-$((1+1)); sleep 30")
+        let surface = terminal.surface
+        try await surface.waitForScreen("RENDER-2", timeout: .seconds(30))
+        func isRed(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool {
+            p.map { Int($0.r) > Int($0.g) + 50 && Int($0.r) > Int($0.b) + 50 } ?? false
+        }
+        func isBlue(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool {
+            p.map { Int($0.b) > Int($0.r) + 30 && Int($0.b) > Int($0.g) + 10 } ?? false
+        }
+        try await GhosttyTestHost.shared.waitUntil("the bars to be drawn") {
+            isRed(surface.renderedCell(column: 5, row: 0)) && isBlue(surface.renderedCell(column: 5, row: 1))
+        }
+        #expect(!isRed(surface.renderedCell(column: 25, row: 0)))
+        try await terminal.close()
+    }
+
+    @Test(.enabled(if: target != nil))
     func vimWorks() async throws {
         let terminal = try Terminal(command: "vim -u NONE -i NONE -N -n")
         let surface = terminal.surface

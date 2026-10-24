@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import GhosttyKit
+import IOSurface
 import RelayGhosttyIO
 import RelaySSH
 
@@ -263,6 +264,38 @@ final class TestSurface {
     }
 
     // MARK: Reading
+
+    /// A pixel of the last frame libghostty's Metal renderer presented, as
+    /// (red, green, blue). libghostty presents frames as an IOSurface set
+    /// as the view's layer contents; this reads it back. Coordinates are in
+    /// the surface's pixels (points × scale), origin top-left.
+    func renderedPixel(x: Int, y: Int) -> (r: UInt8, g: UInt8, b: UInt8)? {
+        guard let contents = view.layer?.contents,
+              CFGetTypeID(contents as CFTypeRef) == IOSurfaceGetTypeID() else { return nil }
+        let surface = unsafeBitCast(contents as AnyObject, to: IOSurfaceRef.self)
+        let width = IOSurfaceGetWidth(surface), height = IOSurfaceGetHeight(surface)
+        guard x >= 0, y >= 0, x < width, y < height else { return nil }
+        IOSurfaceLock(surface, .readOnly, nil)
+        defer { IOSurfaceUnlock(surface, .readOnly, nil) }
+        let row = IOSurfaceGetBaseAddress(surface).advanced(by: y * IOSurfaceGetBytesPerRow(surface))
+        let pixel = row.advanced(by: x * 4).assumingMemoryBound(to: UInt8.self)
+        // BGRA.
+        return (pixel[2], pixel[1], pixel[0])
+    }
+
+    /// The centre of a cell, in surface pixels.
+    func cellCenter(column: Int, row: Int) -> (x: Int, y: Int)? {
+        guard let surface else { return nil }
+        let size = ghostty_surface_size(surface)
+        guard size.cell_width_px > 0, size.cell_height_px > 0 else { return nil }
+        return (column * Int(size.cell_width_px) + Int(size.cell_width_px) / 2,
+                row * Int(size.cell_height_px) + Int(size.cell_height_px) / 2)
+    }
+
+    func renderedCell(column: Int, row: Int) -> (r: UInt8, g: UInt8, b: UInt8)? {
+        guard let center = cellCenter(column: column, row: row) else { return nil }
+        return renderedPixel(x: center.x, y: center.y)
+    }
 
     /// The visible screen's text (trailing blanks trimmed by libghostty).
     var screen: String { read(tag: GHOSTTY_POINT_VIEWPORT) }
