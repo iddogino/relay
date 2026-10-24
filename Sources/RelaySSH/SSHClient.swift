@@ -172,7 +172,13 @@ final class SSHConnection: @unchecked Sendable {
     ) async throws -> Channel {
         let eventLoop = channel.eventLoop
         let opened = eventLoop.makePromise(of: Channel.self)
+        let late = LateChannel()
         let openTimeout = eventLoop.scheduleTask(in: timeout) {
+            // The open request can't be withdrawn: a channel the server
+            // confirms later would run unowned. Close it, now or when it
+            // turns up.
+            late.timedOut = true
+            late.child?.close(promise: nil)
             opened.fail(SSHClientError.channelFailed("timed out opening a channel"))
         }
         // NIOSSHHandler is confined to its event loop: look it up there.
@@ -180,7 +186,9 @@ final class SSHConnection: @unchecked Sendable {
             do {
                 let sshHandler = try channel.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
                 sshHandler.createChannel(opened, channelType: .session) { child, _ in
-                    initialize(child)
+                    late.child = child
+                    guard !late.timedOut else { return child.close() }
+                    return initialize(child)
                 }
             } catch {
                 opened.fail(SSHClientError.channelFailed("connection closed"))
@@ -213,6 +221,12 @@ final class SSHConnection: @unchecked Sendable {
 }
 
 // MARK: Handlers & delegates
+
+/// A channel being opened, for the open timeout (event-loop confined).
+final class LateChannel: @unchecked Sendable {
+    var timedOut = false
+    var child: Channel?
+}
 
 /// Records the specific reason a handshake failed (NIOSSH surfaces a
 /// generic error once a delegate fails its promise).

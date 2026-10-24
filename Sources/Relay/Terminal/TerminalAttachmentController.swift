@@ -37,6 +37,10 @@ final class TerminalAttachmentController {
     private(set) var surfaceView: TerminalSurfaceView?
     /// The SSH session behind a built-in-client terminal.
     private var terminalLink: SSHTerminalLink?
+    /// Why the built-in client last failed to open this attachment's
+    /// terminal; shown if reconnecting gives up (the surface closes too
+    /// quickly for its own message to be read).
+    private var lastOpenFailure: String?
     private(set) var terminalTitle: String = "" {
         didSet { onLiveTitleChange?(terminalTitle) }
     }
@@ -87,6 +91,7 @@ final class TerminalAttachmentController {
         detach()
         self.session = session
         self.project = project
+        lastOpenFailure = nil
         phase = .connecting
         startAttach(attempt: 0)
     }
@@ -153,7 +158,7 @@ final class TerminalAttachmentController {
         // itself wraps it in `exec -l …` via its login-shell wrapper, so no
         // exec prefix here). Every argv element is fully quoted.
         let command = POSIXShellQuote.quoteJoin([spec.executable.path] + spec.arguments)
-        let created = Self.makeSurface(spec: spec, command: command)
+        let created = makeSurface(spec: spec, command: command)
         guard let view = created?.view else {
             // ghostty_surface_new can fail transiently in the first moments
             // of a launch (a restored selection may attach before the window
@@ -207,21 +212,28 @@ final class TerminalAttachmentController {
     /// The surface for `spec`: a local `ssh` process, or — when the
     /// built-in client takes this host's terminals — a manual-I/O surface
     /// and the SSH session that feeds it (started by the caller).
-    private static func makeSurface(spec: TerminalLaunchSpec, command: String) -> (view: TerminalSurfaceView, link: SSHTerminalLink?)? {
+    private func makeSurface(spec: TerminalLaunchSpec, command: String) -> (view: TerminalSurfaceView, link: SSHTerminalLink?)? {
         guard let builtIn = spec.builtIn else {
             return TerminalSurfaceView(command: command, environment: spec.environment).map { ($0, nil) }
         }
+        let gen = generation
         let io = ManualTerminalIO()
         guard let view = TerminalSurfaceView(manualIO: io) else { return nil }
         let link = SSHTerminalLink(
             io: io,
             pool: builtIn.pool,
             configuration: .init(target: builtIn.target, command: builtIn.command, environment: builtIn.environment),
-            onEnd: { _, openError in
+            onEnd: { [weak self] end, openError in
                 // The surface reports the end like a process exit (and the
                 // reconnect logic takes it from there); an open failure
                 // also moves this host to the system ssh for a while.
                 if let openError { builtIn.reportOpenFailure(openError) }
+                let failure = openError.map(SSHTerminalLink.describe)
+                Task { @MainActor [weak self] in
+                    guard let self, gen == self.generation else { return }
+                    // A session that opened clears an earlier failure.
+                    if failure != nil || end != nil { self.lastOpenFailure = failure }
+                }
             })
         return (view, link)
     }
@@ -402,7 +414,8 @@ final class TerminalAttachmentController {
         let quickFailure = Date().timeIntervalSince(lastAttachTime) < 30
         let attempt = quickFailure ? previousAttempt + 1 : 0
         guard attempt < Self.maxAutoRetries else {
-            phase = .failed(message: "Can't reach \(project.workspace.opaqueID). The connection keeps dropping.")
+            let reason = lastOpenFailure.map { " Last error: \($0)." } ?? ""
+            phase = .failed(message: "Can't reach \(project.workspace.opaqueID). The connection keeps dropping.\(reason)")
             return
         }
         phase = .reconnecting(attempt: attempt)

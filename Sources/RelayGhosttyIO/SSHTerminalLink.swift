@@ -121,6 +121,8 @@ public final class SSHTerminalLink: @unchecked Sendable {
 
     private func consumed(_ byteCount: Int) {
         let session: SSHTerminalSession? = lock.withLock {
+            // A closed link's session reads nothing more.
+            if closed { return nil }
             if let session = self.session { return session }
             consumedBeforeSession += byteCount
             return nil
@@ -135,7 +137,7 @@ public final class SSHTerminalLink: @unchecked Sendable {
         }
     }
 
-    static func describe(_ error: Error) -> String {
+    public static func describe(_ error: Error) -> String {
         if let clientError = error as? SSHClientError { return clientError.description }
         return String(describing: error)
     }

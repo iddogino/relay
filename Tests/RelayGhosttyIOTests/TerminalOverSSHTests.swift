@@ -302,7 +302,9 @@ struct TerminalOverSSHTests {
     }
 
     @Test func closingDuringAFloodTearsDownCleanly() async throws {
-        let terminal = try Terminal(.fake, command: "echo flooding; yes")
+        // (The pause lets the marker be seen before the flood scrolls it
+        // out of the scrollback.)
+        let terminal = try Terminal(.fake, command: "echo flooding; sleep 0.5; yes")
         try await terminal.surface.waitForScreen("flooding")
         try await Task.sleep(for: .milliseconds(300))
         let pid = try #require(Servers.fake.sessions.last?.pid)
@@ -312,7 +314,32 @@ struct TerminalOverSSHTests {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(kill(pid, 0) != 0)
+        try await GhosttyTestHost.shared.waitUntil("the end") { terminal.ends.end != nil }
         #expect(terminal.ends.end == .closedLocally)
+    }
+
+    @Test(arguments: Remote.allCases)
+    func closingWhileTheSessionOpensLeavesNothingBehind(remote: Remote) async throws {
+        let (pool, target) = try Servers.endpoint(remote)
+        let baseline = await pool.activeChannels(for: target).reduce(0, +)
+        for _ in 0..<5 {
+            // Output starts immediately, so some is consumed before the
+            // link knows its session.
+            let terminal = try Terminal(remote, command: "yes early-output")
+            try await Task.sleep(for: .milliseconds(Int.random(in: 0...40)))
+            terminal.link.close()
+            try await terminal.surface.free()
+            // A local close reports no exit: the surface never closes itself.
+            try await Task.sleep(for: .milliseconds(100))
+            GhosttyTestHost.shared.tick()
+            #expect(!terminal.surface.closed)
+            #expect(terminal.ends.end == nil || terminal.ends.end == .closedLocally)
+        }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while await pool.activeChannels(for: target).reduce(0, +) != baseline, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(await pool.activeChannels(for: target).reduce(0, +) == baseline)
     }
 
     @Test(arguments: Remote.allCases)
@@ -349,8 +376,10 @@ struct TerminalOverSSHTests {
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         guard (try? process.run()) != nil else { return "" }
+        // Read before waiting, so a full pipe can't stall the process.
+        let output = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        return String(decoding: output, as: UTF8.self)
     }
 
     static func sha256(_ data: Data) -> String {

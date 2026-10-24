@@ -16,9 +16,10 @@ let package = Package(
         .package(path: "RelaySyntaxHighlighter"),
         // Built-in SSH client (RelaySSH). The maintainer's (Joannis
         // Orlandos, of Citadel) fork of apple/swift-nio-ssh: it adds custom
-        // private keys, which signing through ssh-agent needs. Pinned
-        // exactly — this is the crypto/transport layer.
-        .package(url: "https://github.com/Joannis/swift-nio-ssh.git", exact: "0.3.5"),
+        // private keys, which signing through ssh-agent needs. Vendored at
+        // 0.3.5 with a crash fix from upstream — see
+        // ThirdParty/swift-nio-ssh/RELAY.md.
+        .package(path: "ThirdParty/swift-nio-ssh"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.3"),
     ],

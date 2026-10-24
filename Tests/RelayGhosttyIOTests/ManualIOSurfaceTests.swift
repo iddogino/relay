@@ -46,8 +46,11 @@ struct ManualIOSurfaceTests {
         #expect(surface.io?.size == size)
         // No login wrapper, no shell: nothing an exec surface starts. (Other
         // suites may start unrelated helpers meanwhile.)
-        let spawned = Self.childPIDs().subtracting(before)
-        #expect(spawned.isEmpty, "\(spawned.map(Self.processName))")
+        // An exec surface's child is the setuid login(1), whose name this
+        // process can't read; children other suites start meanwhile (their
+        // servers' programs) have readable names.
+        let spawned = Self.childPIDs().subtracting(before).map(Self.processName)
+        #expect(!spawned.contains { $0.isEmpty || $0 == "login" }, "\(spawned)")
         // And libghostty knows of no process for it.
         #expect(ghostty_surface_foreground_pid(try #require(surface.surface)) == 0)
         try await surface.free()
@@ -223,13 +226,35 @@ struct ManualIOSurfaceTests {
         try #require(surface.surface != nil)
         surface.type("early ")
         surface.type("keys")
-        try await Task.sleep(for: .milliseconds(200))
+        try await GhosttyTestHost.shared.waitUntil("input to be buffered") {
+            io.pendingInputCount == "early keys".utf8.count
+        }
         let received = ByteLog()
         io.setInputHandler { received.append($0) }
         surface.type(" later")
         try await GhosttyTestHost.shared.waitUntil("all input") {
             received.data == Data("early keys later".utf8)
         }
+        try await surface.free()
+    }
+
+    @Test func bufferedInputIsCappedWithoutHoles() async throws {
+        let io = ManualTerminalIO()
+        let surface = TestSurface(mode: .manual(io), captureIO: false)
+        try #require(surface.surface != nil)
+        let first = String(repeating: "a", count: ManualTerminalIO.maxPendingInput - 10)
+        surface.type(first)
+        try await GhosttyTestHost.shared.waitUntil("buffered") { io.pendingInputCount == first.utf8.count }
+        // Too big to fit: dropped, and so is everything after it.
+        surface.type(String(repeating: "b", count: 100))
+        surface.type("c")
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(io.pendingInputCount == first.utf8.count)
+        let received = ByteLog()
+        io.setInputHandler { received.append($0) }
+        surface.type("d")
+        try await GhosttyTestHost.shared.waitUntil("delivery") { received.data.count == first.utf8.count + 1 }
+        #expect(received.data == Data((first + "d").utf8))
         try await surface.free()
     }
 
@@ -327,9 +352,12 @@ struct ManualIOSurfaceTests {
         // (The process check in the manual test is meaningful: exec mode
         // does start a login process.)
         try await surface.waitForScreen("exec-mode-ok")
-        // An exec surface has a process on its pty.
+        // An exec surface has a process on its pty, and it shows up as the
+        // unreadable child the manual test checks for.
         #expect(ghostty_surface_foreground_pid(raw) > 0)
-        _ = before
+        try await GhosttyTestHost.shared.waitUntil("the login child", timeout: .seconds(3)) {
+            Self.childPIDs().subtracting(before).map(Self.processName).contains { $0.isEmpty || $0 == "login" }
+        }
         try await surface.waitForScreen("exec-mode-ok")
         // The manual-only API leaves exec surfaces alone.
         let marker = "should-not-appear"
@@ -343,6 +371,24 @@ struct ManualIOSurfaceTests {
     }
 
     // MARK: Teardown and threads
+
+    @Test func aSurfaceWhoseIOThreadFailedToStartStillFrees() async throws {
+        // Configured input that opens but can't be read (over libghostty's
+        // 10 MiB input limit) fails the IO thread's entry after the backend
+        // entered; the thread then drains its loop. A manual surface's exit
+        // wait must not keep that loop (and so the free) from finishing.
+        let big = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-big-input-\(UUID().uuidString)")
+        try Data(count: 11 << 20).write(to: big)
+        defer { try? FileManager.default.removeItem(at: big) }
+        let app = GhosttyTestHost.shared.makeApp(extraConfig: "input = path:\(big.path)")
+        let surface = TestSurface(mode: .manual(ManualTerminalIO()), app: app)
+        try #require(surface.surface != nil)
+        // libghostty's own report of the failed thread start.
+        try await surface.waitForScreen("configured `input`")
+        // No exit is reported (that alone would end the wait): the free
+        // must finish on the backend's own cleanup.
+        try await surface.free()
+    }
 
     @Test func teardownReleasesEverything() async throws {
         weak var weakIO: ManualTerminalIO?
@@ -363,10 +409,12 @@ struct ManualIOSurfaceTests {
         let surface = TestSurface(mode: .manual(io))
         try #require(surface.surface != nil)
         let stop = Flag()
+        let enqueued = Counter()
         let completions = Counter()
         let chunk = Data(String(repeating: "streaming output 0123456789 ", count: 200).utf8)
         let feeder = Thread {
             while !stop.isSet {
+                enqueued.increment()
                 io.feed(chunk) { completions.increment() }
                 usleep(100)
             }
@@ -375,10 +423,11 @@ struct ManualIOSurfaceTests {
         try await Task.sleep(for: .milliseconds(300))
         try await surface.free()
         stop.set()
-        // Feeds queued after teardown complete without touching the surface.
-        let settled = completions.value
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(completions.value >= settled)
+        // Every feed completes — those queued after teardown without
+        // touching the surface — so nobody waits on one forever.
+        try await GhosttyTestHost.shared.waitUntil("every feed to complete") {
+            enqueued.value > 0 && completions.value == enqueued.value
+        }
     }
 
     @Test func teardownDoesNotDeadlockWhenTheAppMailboxIsFull() async throws {

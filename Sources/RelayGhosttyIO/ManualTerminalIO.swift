@@ -34,6 +34,9 @@ public final class ManualTerminalIO: @unchecked Sendable {
     private var inputHandler: InputHandler?
     private var resizeHandler: ResizeHandler?
     private var pendingInput = Data()
+    /// Input overflowed the buffer: everything until a handler exists is
+    /// dropped, so what's kept is a clean prefix rather than having holes.
+    private var pendingInputOverflowed = false
     private var latestSize: SSHTerminalSize?
     private var retained: Unmanaged<ManualTerminalIO>?
     /// Set (under `lock`) once teardown starts; no new output is fed.
@@ -147,7 +150,9 @@ public final class ManualTerminalIO: @unchecked Sendable {
         let flushed: Data? = lock.withLock {
             guard !closing else { return nil }
             inputHandler = handler
-            guard handler != nil, !pendingInput.isEmpty else { return nil }
+            guard handler != nil else { return nil }
+            pendingInputOverflowed = false
+            guard !pendingInput.isEmpty else { return nil }
             let data = pendingInput
             pendingInput = Data()
             return data
@@ -171,14 +176,19 @@ public final class ManualTerminalIO: @unchecked Sendable {
     /// does so while creating the surface).
     public var size: SSHTerminalSize? { lock.withLock { latestSize } }
 
+    /// Input buffered while no handler is set (for tests).
+    var pendingInputCount: Int { lock.withLock { pendingInput.count } }
+
     fileprivate func terminalWrote(_ data: Data) {
         deliveryLock.lock()
         defer { deliveryLock.unlock() }
         let handler: InputHandler? = lock.withLock {
             guard !closing else { return nil }
             if let inputHandler { return inputHandler }
-            if pendingInput.count + data.count <= Self.maxPendingInput {
+            if !pendingInputOverflowed, pendingInput.count + data.count <= Self.maxPendingInput {
                 pendingInput.append(data)
+            } else {
+                pendingInputOverflowed = true
             }
             return nil
         }

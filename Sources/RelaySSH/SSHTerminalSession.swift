@@ -122,6 +122,7 @@ extension SSHConnection {
         _ request: SSHTerminalRequest,
         highWaterMark: Int = SSHTerminalSession.defaultHighWaterMark,
         lowWaterMark: Int = SSHTerminalSession.defaultLowWaterMark,
+        openTimeout: TimeAmount = .seconds(10),
         startTimeout: TimeAmount = .seconds(15),
         onOutput: @escaping @Sendable (Data) -> Void,
         onEnd: @escaping @Sendable (SSHTerminalEnd) -> Void
@@ -131,12 +132,20 @@ extension SSHConnection {
         let handler = TerminalChannelHandler(
             request: request, highWaterMark: highWaterMark, lowWaterMark: lowWaterMark,
             onOutput: onOutput, onEnd: onEnd, started: started)
-        let child = try await openChannel(timeout: .seconds(10)) { child in
-            child.pipeline.addHandler(handler)
+        let child: Channel
+        do {
+            child = try await openChannel(timeout: openTimeout) { child in
+                child.pipeline.addHandler(handler)
+            }
+        } catch {
+            started.fail(error)
+            throw error
         }
-        // Bounded so a server that never answers can't hang the caller.
+        // Bounded so a server that never answers can't hang the caller. The
+        // handler is aborted on its loop, so a reply racing the timeout
+        // can't start a session nobody owns.
         let startTimer = eventLoop.scheduleTask(in: startTimeout) {
-            started.fail(SSHClientError.channelFailed("timed out starting the terminal"))
+            handler.abortStart(SSHClientError.channelFailed("timed out starting the terminal"))
         }
         do {
             try await started.futureResult.get()
@@ -166,14 +175,21 @@ final class TerminalChannelHandler: ChannelDuplexHandler, @unchecked Sendable {
     private var onEnd: (@Sendable (SSHTerminalEnd) -> Void)?
     private var started: EventLoopPromise<Void>?
 
-    private enum Phase { case requestingPTY, startingProgram, running }
+    private enum Phase { case requestingPTY, startingProgram, running, aborted }
     private var phase = Phase.requestingPTY
     private var context: ChannelHandlerContext?
     private var lastSize: SSHTerminalSize
     private var exitCode: Int32?
     fileprivate(set) var inFlight = 0
     private var readHeld = false
-    var closeRequested = false
+    var closeRequested = false {
+        didSet { if closeRequested { closing = true } }
+    }
+    /// Once the channel is closing, nothing more is read: data the server
+    /// sent before seeing our close stays undelivered (NIOSSH delivers it
+    /// on close anyway), and a read on a locally closed channel would make
+    /// NIOSSH send a window adjust its state machine forbids.
+    private var closing = false
 
     init(
         request: SSHTerminalRequest,
@@ -248,7 +264,7 @@ final class TerminalChannelHandler: ChannelDuplexHandler, @unchecked Sendable {
                 phase = .running
                 started?.succeed(())
                 started = nil
-            case .running:
+            case .running, .aborted:
                 break
             }
         case is ChannelFailureEvent:
@@ -257,6 +273,7 @@ final class TerminalChannelHandler: ChannelDuplexHandler, @unchecked Sendable {
                 : "the server refused to start the \(request.command == nil ? "shell" : "command")"
             started?.fail(SSHClientError.channelFailed(detail))
             started = nil
+            closing = true
             context.close(promise: nil)
         case let status as SSHChannelRequestEvent.ExitStatus:
             exitCode = Int32(truncatingIfNeeded: status.exitStatus)
@@ -289,7 +306,7 @@ final class TerminalChannelHandler: ChannelDuplexHandler, @unchecked Sendable {
     /// in NIOSSH's buffer, so the channel window isn't replenished and the
     /// server stops sending.
     func read(context: ChannelHandlerContext) {
-        if inFlight >= highWaterMark {
+        if inFlight >= highWaterMark || closing {
             readHeld = true
         } else {
             context.read()
@@ -298,10 +315,20 @@ final class TerminalChannelHandler: ChannelDuplexHandler, @unchecked Sendable {
 
     func consumed(_ byteCount: Int) {
         inFlight = max(0, inFlight - byteCount)
-        if readHeld, inFlight <= lowWaterMark, let context {
+        if readHeld, !closing, inFlight <= lowWaterMark, let context {
             readHeld = false
             context.read()
         }
+    }
+
+    /// Gives up on starting: the opener gets `error` and the channel closes.
+    func abortStart(_ error: Error) {
+        guard phase != .running, phase != .aborted else { return }
+        phase = .aborted
+        started?.fail(error)
+        started = nil
+        closing = true
+        context?.close(promise: nil)
     }
 
     func resize(_ size: SSHTerminalSize) {
@@ -317,6 +344,7 @@ final class TerminalChannelHandler: ChannelDuplexHandler, @unchecked Sendable {
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         started?.fail(SSHClientError.channelFailed(String(describing: error)))
         started = nil
+        closing = true
         context.close(promise: nil)
     }
 

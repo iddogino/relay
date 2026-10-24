@@ -76,6 +76,7 @@ public final class TestSSHD: @unchecked Sendable {
             process.standardError = log
             process.standardOutput = log
             try process.run()
+            try? log?.close()
 
             if Self.waitForListener(port: port, process: process) {
                 Self.bindLifetime(of: process.processIdentifier, directory: dir)

@@ -23,15 +23,7 @@ final class GhosttyTestHost {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-ghostty-test-\(getpid())")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent("config")
-        try! """
-        term = xterm-256color
-        confirm-close-surface = false
-        shell-integration = none
-        font-size = 13
-        window-padding-x = 0
-        window-padding-y = 0
-        scrollback-limit = 10000000
-        """.write(to: file, atomically: true, encoding: .utf8)
+        try! Self.baseConfig.write(to: file, atomically: true, encoding: .utf8)
         ghostty_config_load_file(config, file.path)
         ghostty_config_finalize(config)
         self.config = config
@@ -49,9 +41,40 @@ final class GhosttyTestHost {
         ghostty_app_set_focus(app, true)
     }
 
+    /// A further app whose configuration adds `extraConfig` (for surfaces
+    /// that need different settings). Ticked along with the main one.
+    func makeApp(extraConfig: String) -> ghostty_app_t {
+        let config = ghostty_config_new()!
+        let file = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-ghostty-extra-\(UUID().uuidString)")
+        try! (Self.baseConfig + "\n" + extraConfig + "\n").write(to: file, atomically: true, encoding: .utf8)
+        ghostty_config_load_file(config, file.path)
+        ghostty_config_finalize(config)
+        var runtime = ghostty_runtime_config_s(
+            userdata: nil, supports_selection_clipboard: false,
+            wakeup_cb: testWakeup, action_cb: testAction, read_clipboard_cb: testReadClipboard,
+            confirm_read_clipboard_cb: testConfirmReadClipboard, write_clipboard_cb: testWriteClipboard,
+            close_surface_cb: testCloseSurface)
+        let app = ghostty_app_new(&runtime, config)!
+        extraApps.append(app)
+        return app
+    }
+
+    private var extraApps: [ghostty_app_t] = []
+
     func tick() {
         ghostty_app_tick(app)
+        for extra in extraApps { ghostty_app_tick(extra) }
     }
+
+    static let baseConfig = """
+    term = xterm-256color
+    confirm-close-surface = false
+    shell-integration = none
+    font-size = 13
+    window-padding-x = 0
+    window-padding-y = 0
+    scrollback-limit = 10000000
+    """
 
     struct Timeout: Error, CustomStringConvertible {
         let what: String
@@ -101,7 +124,9 @@ final class TestSurface {
         case raw((inout ghostty_surface_config_s) -> Void)
     }
 
-    init(mode: Mode, width: Double = 800, height: Double = 480, waitAfterCommand: Bool = false, captureIO: Bool = true) {
+    init(mode: Mode, width: Double = 800, height: Double = 480, waitAfterCommand: Bool = false, captureIO: Bool = true,
+         app: ghostty_app_t? = nil) {
+        let app = app ?? GhosttyTestHost.shared.app
         view = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         var config = ghostty_surface_config_new()
         config.platform_tag = GHOSTTY_PLATFORM_MACOS
@@ -135,13 +160,13 @@ final class TestSurface {
         case .exec(let command):
             created = command.withCString { pointer in
                 config.command = pointer
-                return ghostty_surface_new(GhosttyTestHost.shared.app, &config)
+                return ghostty_surface_new(app, &config)
             }
         case .raw(let adjust):
             adjust(&config)
-            created = ghostty_surface_new(GhosttyTestHost.shared.app, &config)
+            created = ghostty_surface_new(app, &config)
         case .manual:
-            created = ghostty_surface_new(GhosttyTestHost.shared.app, &config)
+            created = ghostty_surface_new(app, &config)
         }
         surface = created
         io?.attach(created)

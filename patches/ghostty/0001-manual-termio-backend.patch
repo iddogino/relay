@@ -14,10 +14,10 @@ the threading contract that PR lacked. Applies to the pinned commit in
 Scripts/build-libghostty.sh.
 
 diff --git a/include/ghostty.h b/include/ghostty.h
-index 9a12b9c..57f7aeb 100644
+index 9a12b9c..5358aff 100644
 --- a/include/ghostty.h
 +++ b/include/ghostty.h
-@@ -505,6 +505,32 @@ typedef enum {
+@@ -505,6 +505,33 @@ typedef enum {
    GHOSTTY_SURFACE_CONTEXT_SPLIT = 2,
  } ghostty_surface_context_e;
  
@@ -30,9 +30,10 @@ index 9a12b9c..57f7aeb 100644
 +//
 +// The callbacks run on the surface's IO thread (the initial size is
 +// reported on the thread calling ghostty_surface_new), possibly with
-+// internal locks held: they must not call back into the surface, and the
-+// data pointer is only valid for the duration of the call. No callback
-+// runs after ghostty_surface_free returns.
++// internal locks held: they must not call back into the surface or block,
++// and the data pointer is only valid for the duration of the call. No
++// callback runs after ghostty_surface_free returns. Output may be fed from
++// any thread but the one calling ghostty_app_tick (feeding can wait for it).
 +typedef enum {
 +  GHOSTTY_SURFACE_IO_EXEC = 0,
 +  GHOSTTY_SURFACE_IO_MANUAL = 1,
@@ -50,7 +51,7 @@ index 9a12b9c..57f7aeb 100644
  typedef struct {
    ghostty_platform_e platform_tag;
    ghostty_platform_u platform;
-@@ -518,6 +544,10 @@ typedef struct {
+@@ -518,6 +545,10 @@ typedef struct {
    const char* initial_input;
    bool wait_after_command;
    ghostty_surface_context_e context;
@@ -61,7 +62,7 @@ index 9a12b9c..57f7aeb 100644
  } ghostty_surface_config_s;
  
  typedef struct {
-@@ -1202,6 +1232,10 @@ GHOSTTY_API bool ghostty_surface_key_is_binding(ghostty_surface_t,
+@@ -1202,6 +1233,10 @@ GHOSTTY_API bool ghostty_surface_key_is_binding(ghostty_surface_t,
                                                     ghostty_input_key_s,
                                                     ghostty_binding_flags_e*);
  GHOSTTY_API void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
@@ -196,7 +197,7 @@ index 369bb23..1e18762 100644
      const runtime_str = try alloc.print("{d} ms", .{info.runtime_ms});
  
 diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
-index 697f0a7..1ce0fee 100644
+index 697f0a7..2393430 100644
 --- a/src/apprt/embedded.zig
 +++ b/src/apprt/embedded.zig
 @@ -19,6 +19,7 @@ const terminal = @import("../terminal/main.zig");
@@ -277,27 +278,35 @@ index 697f0a7..1ce0fee 100644
      pub fn rtApp(self: *const Surface) *App {
          return self.app;
      }
-@@ -2115,6 +2161,41 @@ pub const CAPI = struct {
+@@ -2115,6 +2161,49 @@ pub const CAPI = struct {
          surface.textCallback(ptr[0..len]);
      }
  
 +    /// Feeds output from a manual surface's program to the terminal, as
-+    /// though it were read from a pty. Callable from any thread, but calls
-+    /// must be serialized by the caller (output is order-sensitive) and
-+    /// must not overlap or follow ghostty_surface_free. It may block while
-+    /// the terminal is busy, which is the backpressure a pty would apply.
-+    /// Ignored for surfaces that aren't in manual mode.
++    /// though it were read from a pty. Callable from any thread except the
++    /// one that runs the app (ghostty_app_tick): feeding can block until
++    /// the app drains its mailbox, which is the backpressure a pty would
++    /// apply. Calls must be serialized by the caller (output is
++    /// order-sensitive) and must not overlap or follow
++    /// ghostty_surface_free. Ignored for surfaces not in manual mode.
 +    export fn ghostty_surface_write_output(
 +        surface: *Surface,
-+        ptr: [*]const u8,
++        ptr: ?[*]const u8,
 +        len: usize,
 +    ) void {
++        const bytes = ptr orelse return;
 +        if (len == 0) return;
 +        if (surface.core_surface.io.backend != .manual) {
 +            log.warn("ghostty_surface_write_output on a surface not in manual io mode", .{});
 +            return;
 +        }
-+        surface.core_surface.io.processOutput(ptr[0..len]);
++        // In pieces, like the exec backend's pty reads, so the renderer
++        // lock is released between them however large the buffer is.
++        const chunk = 64 * 1024;
++        var i: usize = 0;
++        while (i < len) : (i += chunk) {
++            surface.core_surface.io.processOutput(bytes[i..@min(len, i + chunk)]);
++        }
 +    }
 +
 +    /// Reports that a manual surface's program has ended with the given
@@ -333,10 +342,10 @@ index b168851..03e8817 100644
  pub const Thread = @import("termio/Thread.zig");
 diff --git a/src/termio/Manual.zig b/src/termio/Manual.zig
 new file mode 100644
-index 0000000..3d48ecf
+index 0000000..b53e02a
 --- /dev/null
 +++ b/src/termio/Manual.zig
-@@ -0,0 +1,468 @@
+@@ -0,0 +1,487 @@
 +//! Manual is a termio backend with no subprocess and no pty. The embedder
 +//! owns the program's I/O (for example an SSH channel): it feeds the
 +//! program's output to the terminal with `Termio.processOutput`, and it
@@ -351,15 +360,23 @@ index 0000000..3d48ecf
 +//!     thread, except for the initial size, which is reported on the
 +//!     thread creating the surface.
 +//!   - Either may run with the renderer state lock held, so a callback
-+//!     must not call back into the surface. It should copy what it needs
-+//!     (the data pointer is only valid during the call) and return.
++//!     must not call back into the surface. It must not block either
++//!     (the termio thread, and with it keyboard input, would stall) — in
++//!     particular not on the thread feeding output, which may itself be
++//!     waiting on the termio thread. It should copy what it needs (the data
++//!     pointer is only valid during the call) and return.
 +//!   - Neither runs after the surface has been freed.
++//!
++//! Feeding output (`ghostty_surface_write_output`) can block until the
++//! app thread drains its mailbox, so it must not be done on that thread
++//! (the one calling `ghostty_app_tick`).
 +const Manual = @This();
 +
 +const std = @import("std");
 +const Allocator = std.mem.Allocator;
 +const global = @import("../global.zig");
 +const xev = global.xev;
++const apprt = @import("../apprt.zig");
 +const renderer = @import("../renderer.zig");
 +const terminal = @import("../terminal/main.zig");
 +const termio = @import("../termio.zig");
@@ -422,6 +439,19 @@ index 0000000..3d48ecf
 +/// instead, as the exec backend's process watcher does.
 +exit_async: xev.Async,
 +
++/// The wait on `exit_async`, and what its callback needs. These live here,
++/// not in the termio thread data, so the armed wait never points into a
++/// stack frame that may be gone: if thread entry fails after this backend
++/// entered (e.g. the configured input can't be read), the termio thread
++/// drains its loop after `threadExit` with the thread data already gone.
++/// All termio-thread only.
++exit_c: xev.Completion = .{},
++surface_mailbox: ?apprt.surface.Mailbox = null,
++/// The exit has been delivered to the surface.
++exited: bool = false,
++/// The termio thread is leaving; a pending wait just ends.
++stopping: bool = false,
++
 +pub fn init(cfg: Config) !Manual {
 +    var exit_async = try xev.Async.init();
 +    errdefer exit_async.deinit();
@@ -455,21 +485,22 @@ index 0000000..3d48ecf
 +    _ = alloc;
 +    _ = io;
 +    td.backend = .{ .manual = .{ .manual = self } };
-+    self.exit_async.wait(
-+        td.loop,
-+        &td.backend.manual.exit_c,
-+        termio.Termio.ThreadData,
-+        td,
-+        exitCallback,
-+    );
++    self.surface_mailbox = td.surface_mailbox;
++    self.stopping = false;
++    self.exit_async.wait(td.loop, &self.exit_c, Manual, self, exitCallback);
 +
 +    // An exit requested before the thread started has already notified
 +    // the handle, which stays signaled until waited on; nothing else to do.
 +}
 +
 +pub fn threadExit(self: *Manual, td: *termio.Termio.ThreadData) void {
-+    _ = self;
 +    _ = td;
++    // If the loop runs again (it drains after a failed thread entry), the
++    // pending wait fires and ends instead of keeping the loop alive.
++    self.stopping = true;
++    if (self.exit_c.state() == .active) self.exit_async.notify() catch |err| {
++        log.warn("error ending the manual exit wait err={}", .{err});
++    };
 +}
 +
 +pub fn focusGained(
@@ -512,8 +543,9 @@ index 0000000..3d48ecf
 +    linefeed: bool,
 +) !void {
 +    _ = alloc;
++    _ = td;
 +    // Like a pty after its process exits, nothing is written anymore.
-+    if (td.backend.manual.exited or self.exitRequested()) return;
++    if (self.exited or self.exitRequested()) return;
 +    self.write(data, linefeed);
 +}
 +
@@ -565,31 +597,33 @@ index 0000000..3d48ecf
 +}
 +
 +fn exitCallback(
-+    td_: ?*termio.Termio.ThreadData,
++    self_: ?*Manual,
 +    _: *xev.Loop,
 +    _: *xev.Completion,
 +    r: xev.Async.WaitError!void,
 +) xev.CallbackAction {
++    const self = self_.?;
 +    _ = r catch |err| {
++        // Rearming could spin on a persistent error; without the wait the
++        // exit is lost, but the surface stays usable.
 +        log.err("error waiting for manual exit err={}", .{err});
-+        return .rearm;
++        return .disarm;
 +    };
-+    const td = td_.?;
-+    const data = &td.backend.manual;
-+    if (data.exited) return .disarm;
++    if (self.stopping or self.exited) return .disarm;
 +
-+    const state = data.manual.exit_state.load(.acquire);
++    const state = self.exit_state.load(.acquire);
 +    if (state & exit_requested_bit == 0) return .rearm;
-+    data.exited = true;
++    self.exited = true;
 +
 +    const exit_code: u32 = @truncate(state);
 +    const runtime_ms: u64 = @intCast(@max(
 +        0,
-+        data.manual.start.untilNow(global.io(), .awake).toMilliseconds(),
++        self.start.untilNow(global.io(), .awake).toMilliseconds(),
 +    ));
 +    log.debug("manual io exited status={} runtime={}ms", .{ exit_code, runtime_ms });
 +
-+    _ = td.surface_mailbox.push(.{
++    // Pushed from the termio thread, never the app thread that drains it.
++    _ = self.surface_mailbox.?.push(.{
 +        .child_exited = .{
 +            .exit_code = exit_code,
 +            .runtime_ms = runtime_ms,
@@ -620,12 +654,6 @@ index 0000000..3d48ecf
 +
 +pub const ThreadData = struct {
 +    manual: *Manual,
-+
-+    /// Whether the exit has been delivered to the surface. Termio thread
-+    /// only.
-+    exited: bool = false,
-+
-+    exit_c: xev.Completion = .{},
 +
 +    pub fn deinit(self: *ThreadData, alloc: Allocator) void {
 +        _ = self;

@@ -15,12 +15,13 @@ struct SSHTerminalSessionFakeServerTests {
         scratch = try makeScratchDirectory("ssh-term")
     }
 
-    func pool(for server: FakeSSHServer, startTimeout: TimeAmount = .seconds(15)) throws -> SSHConnectionPool {
+    func pool(for server: FakeSSHServer, startTimeout: TimeAmount = .seconds(15), openTimeout: TimeAmount = .seconds(10)) throws -> SSHConnectionPool {
         var options = SSHConnectionPool.Options()
         options.knownHostsFiles = [try server.writeKnownHosts(in: scratch)]
         options.agent = nil
         options.defaultKeyFiles = []
         options.terminalStartTimeout = startTimeout
+        options.channelOpenTimeout = openTimeout
         return SSHConnectionPool(options: options)
     }
 
@@ -215,12 +216,17 @@ struct SSHTerminalSessionFakeServerTests {
         var faults = FakeSSHServer.Faults()
         faults.ignoreRequests = true
         let server = try FakeSSHServer(faults: faults)
+        let pool = try pool(for: server, startTimeout: .milliseconds(500))
         let started = ContinuousClock.now
-        await #expect(throws: SSHClientError.self) {
-            try await open(try pool(for: server, startTimeout: .milliseconds(500)), server, command: "true",
-                           transcript: TerminalTranscript())
+        do {
+            try await open(pool, server, command: "true", transcript: TerminalTranscript())
+            Issue.record("expected the open to time out")
+        } catch SSHClientError.channelFailed(let detail) {
+            #expect(detail.contains("timed out starting"), "\(detail)")
         }
-        #expect(ContinuousClock.now - started < .seconds(5))
+        let elapsed = ContinuousClock.now - started
+        #expect(elapsed >= .milliseconds(450) && elapsed < .seconds(5))
+        try await waitForChannels(pool, server.target, total: 0)
     }
 
     @Test func aDroppedConnectionEndsTheSessionAsLost() async throws {
@@ -254,6 +260,38 @@ struct SSHTerminalSessionFakeServerTests {
         let transcript = TerminalTranscript()
         try await open(try pool(for: server), server, command: "exit 3", transcript: transcript)
         #expect(try await transcript.waitForEnd() == .connectionLost)
+    }
+
+    @Test func closingDuringAFloodNeverCrashes() async throws {
+        // Data the server sends after our close must not trigger a window
+        // adjust (NIOSSH precondition; see ThirdParty/swift-nio-ssh/RELAY.md).
+        let server = try FakeSSHServer()
+        let pool = try pool(for: server)
+        for _ in 0..<25 {
+            let transcript = TerminalTranscript()
+            let session = try await open(pool, server, command: "stty raw -echo; yes flood-data", transcript: transcript)
+            try await Task.sleep(for: .milliseconds(Int.random(in: 0...30)))
+            session.close()
+            #expect(try await transcript.waitForEnd() == .closedLocally)
+        }
+        try await waitForChannels(pool, server.target, total: 0)
+    }
+
+    @Test func consumingOutputAfterClosingNeverReadsTheClosedChannel() async throws {
+        // The exact app sequence: reads held at the high-water mark, the
+        // terminal closes, then its dropped feeds still report consumption.
+        let server = try FakeSSHServer()
+        let pool = try pool(for: server)
+        for _ in 0..<10 {
+            let transcript = TerminalTranscript(autoConsume: false)
+            let session = try await open(pool, server, command: "stty raw -echo; yes held-data", transcript: transcript,
+                                         highWaterMark: 16 * 1024, lowWaterMark: 4 * 1024)
+            try await transcript.waitUntil("reads held") { $0.receivedBytes >= 16 * 1024 }
+            session.close()
+            session.outputConsumed(transcript.receivedBytes)
+            #expect(try await transcript.waitForEnd() == .closedLocally)
+        }
+        try await waitForChannels(pool, server.target, total: 0)
     }
 
     @Test func closingHangsUpTheRemoteProgram() async throws {
@@ -313,6 +351,86 @@ struct SSHTerminalSessionFakeServerTests {
 
         for session in sessions { session.close() }
         for transcript in transcripts { #expect(try await transcript.waitForEnd() == .closedLocally) }
+        try await waitForChannels(pool, server.target, total: 0)
+    }
+
+    @Test func aCallerCancelledAfterTheChannelOpenedNeverHearsOfTheSession() async throws {
+        var faults = FakeSSHServer.Faults()
+        faults.programReplyDelay = .milliseconds(400)
+        let server = try FakeSSHServer(faults: faults)
+        let pool = try pool(for: server)
+        let transcript = TerminalTranscript()
+        let task = Task {
+            try await pool.openTerminal(
+                target: server.target,
+                request: SSHTerminalRequest(size: SSHTerminalSize(columns: 80, rows: 24), command: "echo started; sleep 30"),
+                onOutput: transcript.onOutput, onEnd: transcript.onEnd)
+        }
+        // Cancelled while the server is still deciding to start the program.
+        try await Task.sleep(for: .milliseconds(150))
+        task.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        try await waitForChannels(pool, server.target, total: 0)
+        let pid = try #require(server.sessions.first?.pid)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while kill(pid, 0) == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(kill(pid, 0) != 0)
+        #expect(transcript.endCallCount == 0)
+    }
+
+    @Test func aSessionThatEndsBeforeItIsHandedOutStillReportsItsEnd() async throws {
+        let server = try FakeSSHServer()
+        let pool = try pool(for: server)
+        for _ in 0..<20 {
+            let transcript = TerminalTranscript()
+            try await open(pool, server, command: "exit 4", transcript: transcript)
+            #expect(try await transcript.waitForEnd() == .exited(4))
+            #expect(transcript.endCallCount == 1)
+        }
+    }
+
+    @Test func aChannelConfirmedAfterTheTimeoutIsClosedAndCostsNothing() async throws {
+        let server = try FakeSSHServer()
+        let pool = try pool(for: server, openTimeout: .milliseconds(300))
+        // A live terminal on the same connection must survive the late one.
+        let survivor = TerminalTranscript()
+        try await open(pool, server, command: "echo alive; sleep 30", transcript: survivor)
+        try await survivor.waitFor("alive")
+
+        server.faults.channelOpenDelay = .milliseconds(800)
+        let late = TerminalTranscript()
+        do {
+            try await open(pool, server, command: "echo ghost-$((1+1)); sleep 30", transcript: late)
+            Issue.record("expected the open to time out")
+        } catch let error as SSHClientError {
+            #expect("\(error)".contains("timed out opening"))
+        }
+        server.faults.channelOpenDelay = nil
+        // Past the late confirmation: the channel was closed, never started.
+        try await Task.sleep(for: .milliseconds(1200))
+        let startedGhosts = server.sessions.filter { record in
+            (record.command ?? "").contains("ghost") && record.pid != nil
+        }
+        #expect(startedGhosts.isEmpty)
+        #expect(late.endCallCount == 0)
+        #expect(survivor.ended == nil)
+        // Exactly the survivor's channel remains.
+        try await waitForChannels(pool, server.target, total: 1)
+    }
+
+    @Test func openingWhileTheConnectionDropsFailsCleanly() async throws {
+        let server = try FakeSSHServer()
+        let pool = try pool(for: server)
+        for _ in 0..<15 {
+            // Warm a pooled connection, then drop it as the next open starts.
+            _ = try await pool.exec(target: server.target, command: "true", stdin: Data(), timeout: .seconds(10))
+            server.dropAllConnections()
+            let transcript = TerminalTranscript()
+            if let session = try? await open(pool, server, command: "echo ok", transcript: transcript) {
+                _ = session
+                _ = try await transcript.waitForEnd()
+            }
+        }
         try await waitForChannels(pool, server.target, total: 0)
     }
 

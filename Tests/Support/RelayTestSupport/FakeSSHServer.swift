@@ -17,13 +17,17 @@ public final class FakeSSHServer: @unchecked Sendable {
     public struct Faults: Sendable {
         public var refusePTY = false
         public var refuseProgram = false
-        /// Never answer the pty request (the client must time out).
+        /// Never answer any channel request (the client must time out).
         public var ignoreRequests = false
         /// End sessions without an exit status.
         public var omitExitStatus = false
         /// Abruptly close the whole connection once this many output bytes
         /// have been sent on a session.
         public var dropConnectionAfterBytes: Int?
+        /// Answer the request to start the program only after this long.
+        public var programReplyDelay: TimeAmount?
+        /// Confirm new channels only after this long.
+        public var channelOpenDelay: TimeAmount?
 
         public init() {}
     }
@@ -86,7 +90,10 @@ public final class FakeSSHServer: @unchecked Sendable {
                         role: .server(.init(hostKeys: [hostKey], userAuthDelegate: PasswordDelegate())),
                         allocator: channel.allocator,
                         inboundChildChannelInitializer: { child, _ in
-                            child.pipeline.addHandler(FakeSessionHandler(state: state, connection: channel))
+                            let add = { child.pipeline.addHandler(FakeSessionHandler(state: state, connection: channel)) }
+                            guard let delay = state.lock.withLock({ state.faults.channelOpenDelay }) else { return add() }
+                            // The channel is confirmed once this completes.
+                            return child.eventLoop.scheduleTask(in: delay) {}.futureResult.flatMap(add)
                         }))
                 }
             }
@@ -200,9 +207,13 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         let faults = faults
+        if faults.ignoreRequests, event is SSHChannelRequestEvent.PseudoTerminalRequest
+            || event is SSHChannelRequestEvent.ShellRequest || event is SSHChannelRequestEvent.ExecRequest
+            || event is SSHChannelRequestEvent.EnvironmentRequest {
+            return
+        }
         switch event {
         case let request as SSHChannelRequestEvent.PseudoTerminalRequest:
-            if faults.ignoreRequests { return }
             let size = SSHTerminalSize(
                 columns: request.terminalCharacterWidth, rows: request.terminalRowHeight,
                 widthPx: request.terminalPixelWidth, heightPx: request.terminalPixelHeight)
@@ -284,7 +295,13 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
         // NIO takes ownership of a duplicate; `master` stays ours for
         // resizing until the session finishes.
         let relayFD = dup(master)
-        reply(context, wantReply, success: true)
+        if let delay = faults.programReplyDelay {
+            context.eventLoop.scheduleTask(in: delay) { [self] in
+                if let context = self.context { reply(context, wantReply, success: true) }
+            }
+        } else {
+            reply(context, wantReply, success: true)
+        }
 
         let loop = context.eventLoop
         spawned.onExit { [self] termination in

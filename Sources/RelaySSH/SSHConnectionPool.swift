@@ -17,6 +17,8 @@ public actor SSHConnectionPool {
         /// How long a server may take to accept a terminal's pty and
         /// program.
         public var terminalStartTimeout: TimeAmount = .seconds(15)
+        /// How long a server may take to confirm a new channel.
+        public var channelOpenTimeout: TimeAmount = .seconds(10)
         public var knownHostsFiles = KnownHosts.defaultFiles
         public var agent: SSHAgent? = SSHAgent.fromEnvironment()
         public var defaultKeyFiles = ["~/.ssh/id_ed25519", "~/.ssh/id_ecdsa"]
@@ -125,13 +127,17 @@ public actor SSHConnectionPool {
             attempt += 1
             let (slot, reused) = try await acquire(target)
             let session: SSHTerminalSession
+            let handedOut = HandOff()
             do {
                 session = try await slot.connection.openTerminal(
                     request, highWaterMark: highWaterMark, lowWaterMark: lowWaterMark,
+                    openTimeout: options.channelOpenTimeout,
                     startTimeout: options.terminalStartTimeout,
                     onOutput: onOutput,
                     onEnd: { [weak self] end in
-                        onEnd(end)
+                        // Only the owner of a session hears of its end; one
+                        // that ends before it's handed out is told then.
+                        if handedOut.ended(end) { onEnd(end) }
                         guard let self else { return }
                         Task { await self.release(slot, target: target) }
                     })
@@ -149,11 +155,43 @@ public actor SSHConnectionPool {
             // From here the session's end releases the slot. A caller
             // cancelled while it opened won't take ownership of it.
             if Task.isCancelled {
+                handedOut.withhold()
                 session.close()
                 throw CancellationError()
             }
+            if let end = handedOut.handOut() { onEnd(end) }
             return session
         }
+    }
+
+    /// Whether a session's end goes to its caller: held until the session
+    /// is handed out, dropped if it never is.
+    private final class HandOff: @unchecked Sendable {
+        private enum State { case opening(SSHTerminalEnd?), handedOut, withheld }
+        private let lock = NSLock()
+        private var state = State.opening(nil)
+
+        /// Whether to deliver `end` now (else it's kept or dropped).
+        func ended(_ end: SSHTerminalEnd) -> Bool {
+            lock.withLock {
+                switch state {
+                case .opening: state = .opening(end); return false
+                case .handedOut: return true
+                case .withheld: return false
+                }
+            }
+        }
+
+        /// Marks the session handed out; returns an end to deliver now.
+        func handOut() -> SSHTerminalEnd? {
+            lock.withLock {
+                guard case .opening(let end) = state else { return nil }
+                state = .handedOut
+                return end
+            }
+        }
+
+        func withhold() { lock.withLock { state = .withheld } }
     }
 
     private func acquire(_ target: SSHTarget) async throws -> (Slot, reused: Bool) {

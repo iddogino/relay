@@ -25,8 +25,10 @@ pid_t relay_spawn_on_pty(const char *path,
     if (ioctl(slave_fd, TIOCSCTTY, 0) < 0) _exit(126);
     if (dup2(slave_fd, 0) < 0 || dup2(slave_fd, 1) < 0 || dup2(slave_fd, 2) < 0) _exit(126);
     if (slave_fd > 2) close(slave_fd);
-    // Don't leak the test process's descriptors (e.g. other ptys).
-    for (int fd = 3; fd < 256; fd++) close(fd);
+    // Don't leak the test process's descriptors (e.g. other ptys, which
+    // would keep them open past their programs).
+    int max_fd = getdtablesize();
+    for (int fd = 3; fd < max_fd; fd++) close(fd);
     if (cwd != NULL && chdir(cwd) < 0) _exit(126);
     execve(path, argv, envp);
     _exit(127);
