@@ -31,7 +31,9 @@ public final class TestSSHD: @unchecked Sendable {
     public static let sshdPath = "/usr/sbin/sshd"
 
     /// Starts sshd; throws if it can't (e.g. no sshd on this system).
-    public init(acceptEnv: [String] = ["LANG", "LC_*", "RELAY_*"]) throws {
+    /// `extraConfig` lines come first, so they win over the defaults below
+    /// (sshd takes the first value it reads for an option).
+    public init(acceptEnv: [String] = ["LANG", "LC_*", "RELAY_*"], extraConfig: [String] = []) throws {
         guard FileManager.default.isExecutableFile(atPath: Self.sshdPath) else {
             throw StartError.unavailable("\(Self.sshdPath) not found")
         }
@@ -53,7 +55,7 @@ public final class TestSSHD: @unchecked Sendable {
         for _ in 0..<5 {
             let port = try Self.freePort()
             let config = dir.appendingPathComponent("sshd_config")
-            try """
+            try (extraConfig.map { $0 + "\n" }.joined() + """
             Port \(port)
             ListenAddress 127.0.0.1
             HostKey \(hostKey)
@@ -66,7 +68,7 @@ public final class TestSSHD: @unchecked Sendable {
             PidFile none
             AcceptEnv \(acceptEnv.joined(separator: " "))
             LogLevel VERBOSE
-            """.write(to: config, atomically: true, encoding: .utf8)
+            """).write(to: config, atomically: true, encoding: .utf8)
 
             FileManager.default.createFile(atPath: logPath, contents: nil)
             let process = Process()

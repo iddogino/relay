@@ -57,6 +57,14 @@ public final class NIOSSHHandler {
 
     private var pendingGlobalRequestResponses: CircularBuffer<PendingGlobalRequestResponse?>
 
+    // RELAY PATCH: messages from child channels (data, window adjusts,
+    // requests, closes) written while a key re-exchange is under way, sent
+    // once this side has sent its NEWKEYS. Writing them then failed them
+    // instead (the state machine refuses them), and as most such writes
+    // have no promise, nobody noticed: a lost window adjust stalled the
+    // channel for good, and keystrokes, window changes and closes vanished.
+    private var childWritesHeldForRekey: CircularBuffer<(SSHMessage, EventLoopPromise<Void>?)> = CircularBuffer(initialCapacity: 8)
+
     // The authenticated username, if there was one.
     public var username: String? { stateMachine.username }
     
@@ -131,6 +139,9 @@ extension NIOSSHHandler: ChannelDuplexHandler {
         while let next = self.pendingChannelInitializations.popFirst() {
             next.promise?.fail(ChannelError.eof)
         }
+        while let held = self.childWritesHeldForRekey.popFirst() {
+            held.1?.fail(ChannelError.eof)
+        }
     }
 
     public func channelActive(context: ChannelHandlerContext) {
@@ -164,9 +175,26 @@ extension NIOSSHHandler: ChannelDuplexHandler {
         do {
             while let result = try self.stateMachine.processInboundMessage(allocator: context.channel.allocator, loop: context.eventLoop) {
                 try self.processInboundMessageResult(result, context: context)
+                self.writeChildMessagesHeldForRekeyIfPossible(context: context)
             }
         } catch {
             context.fireErrorCaught(error)
+        }
+    }
+
+    // RELAY PATCH: see `childWritesHeldForRekey`.
+    private func writeChildMessagesHeldForRekeyIfPossible(context: ChannelHandlerContext) {
+        guard !self.childWritesHeldForRekey.isEmpty, !self.stateMachine.isRekeyingBeforeSendingNewKeys else { return }
+        while let held = self.childWritesHeldForRekey.popFirst() {
+            do {
+                try self.writeMessage(SSHMultiMessage(held.0), context: context, promise: held.1)
+            } catch {
+                held.1?.fail(error)
+            }
+        }
+        if !self.expectingChannelReadComplete {
+            self.pendingWrite = false
+            context.flush()
         }
     }
 
@@ -209,6 +237,7 @@ extension NIOSSHHandler: ChannelDuplexHandler {
                         try self.writeMessage(message, context: context)
                         self.pendingWrite = false
                         context.flush()
+                        self.writeChildMessagesHeldForRekeyIfPossible(context: context)
                     } catch {
                         context.fireErrorCaught(error)
                     }
@@ -465,6 +494,13 @@ extension NIOSSHHandler: SSHMultiplexerDelegate {
     func writeFromChildChannel(_ message: SSHMessage, _ promise: EventLoopPromise<Void>?) {
         guard let context = self.context else {
             promise?.fail(ChannelError.ioOnClosedChannel)
+            return
+        }
+
+        // RELAY PATCH: held while rekeying (and behind anything already
+        // held, to keep the order); see `childWritesHeldForRekey`.
+        if self.stateMachine.isRekeyingBeforeSendingNewKeys || !self.childWritesHeldForRekey.isEmpty {
+            self.childWritesHeldForRekey.append((message, promise))
             return
         }
 

@@ -1120,6 +1120,20 @@ extension SSHConnectionStateMachine {
         }
     }
 
+    // RELAY PATCH: whether a key re-exchange is under way and this side
+    // hasn't sent its NEWKEYS yet. Until then only transport and key
+    // exchange messages may be sent (RFC 4253 section 7.1), so channel
+    // messages must wait; `processOutboundMessage` throws on them.
+    var isRekeyingBeforeSendingNewKeys: Bool {
+        switch self.state {
+        case .receivedKexInitWhenActive, .sentKexInitWhenActive, .rekeying, .rekeyingReceivedNewKeysState:
+            return true
+        case .idle, .sentVersion, .keyExchange, .receivedNewKeys, .sentNewKeys, .userAuthentication, .active,
+             .rekeyingSentNewKeysState, .receivedDisconnect, .sentDisconnect:
+            return false
+        }
+    }
+
     /// Like `isActive`, but covers all states past `.active`.
     var hasActivated: Bool {
         switch self.state {

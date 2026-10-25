@@ -37,6 +37,21 @@ trimmed to match.
    Relay's tests reproduce it (`fullSizePacketsFromTheServerArrive`,
    `aLargeWriteReachesTheProgramWhole`, `aLargeBracketedPasteArrivesWhole`).
 
+3. **Hold channel messages during a key re-exchange**
+   (`Sources/NIOSSH/NIOSSHHandler.swift` and
+   `Sources/NIOSSH/Connection State Machine/SSHConnectionStateMachine.swift`,
+   marked `RELAY PATCH`). Once a re-exchange starts, a side may send only key
+   exchange messages until it has sent its NEWKEYS (RFC 4253 §7.1); the state
+   machine enforced that by refusing anything else, so whatever a channel
+   wrote meanwhile — data, window adjusts, requests, closes — failed, mostly
+   with no promise to notice. OpenSSH servers re-key every 1–4 GB by default
+   (or as configured, e.g. hourly), and the first lost window adjust stalled
+   that channel for good: a long-lived terminal froze, keystrokes and window
+   changes vanished. Channel messages are now held and sent, in order, once
+   our NEWKEYS is out. Relay's tests reproduce it against sshd with a tiny
+   `RekeyLimit` (`rekeyingMidStreamLosesNothing`,
+   `rekeyingMidStreamKeepsTheTerminalWhole`).
+
 ## Updating
 
 Copy `Sources/NIOSSH` from the new tag over this one, re-apply the patches
