@@ -8,7 +8,7 @@ import Testing
 
 /// Interactive pty sessions against the in-process fake server: real
 /// processes on real ptys, plus injected faults.
-@Suite("SSH terminal sessions (fake server)", .serialized)
+@Suite("SSH terminal sessions (fake server)", .serialized, .timeLimit(.minutes(5)))
 struct SSHTerminalSessionFakeServerTests {
     let scratch: URL
 
@@ -47,6 +47,40 @@ struct SSHTerminalSessionFakeServerTests {
     }
 
     // MARK: Program, pty, and exit
+
+    @Test func theServerShutsDownTwiceWithoutHanging() {
+        // A test that shuts its server down, then deinit doing it again,
+        // used to block forever on a channel whose event loop was gone.
+        let done = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            let server = try? FakeSSHServer()
+            server?.shutdown()
+            server?.shutdown()
+            done.signal()
+        }
+        #expect(done.wait(timeout: .now() + 20) == .success)
+    }
+
+    @Test func thePTYRequestCarriesTheModesOpenSSHSends() async throws {
+        // What OpenSSH sends from a terminal on macOS (captured from it with
+        // this server), so a remote pty is set up the same either way.
+        let openSSH: [UInt8: UInt32] = [
+            1: 3, 2: 28, 3: 127, 4: 21, 5: 4, 6: 255, 7: 255, 8: 17, 9: 19, 10: 26, 11: 25, 12: 18, 13: 23, 14: 22,
+            17: 20, 18: 15, 30: 0, 31: 0, 32: 0, 33: 0, 34: 0, 35: 0, 36: 1, 38: 1, 39: 1, 40: 0, 41: 1, 42: 1,
+            50: 1, 51: 1, 53: 1, 54: 1, 55: 0, 56: 0, 57: 0, 58: 0, 59: 1, 60: 1, 61: 1, 62: 0,
+            70: 1, 72: 1, 73: 0, 74: 0, 75: 0, 90: 1, 91: 1, 92: 0, 93: 0, 128: 9600, 129: 9600,
+        ]
+        let server = try FakeSSHServer()
+        let transcript = TerminalTranscript()
+        try await open(pool(for: server), server, command: "stty -a", transcript: transcript)
+        #expect(try await transcript.waitForEnd() == .exited(0))
+        #expect(server.sessions.first?.terminalModes == openSSH)
+        // And they apply: IUTF8 (the line discipline erases characters,
+        // not bytes), DEL as erase, 9600 baud.
+        #expect(transcript.text.contains(" iutf8"))
+        #expect(transcript.text.contains("erase = ^?"))
+        #expect(transcript.text.contains("9600 baud"))
+    }
 
     @Test func runsTheCommandOnAPTYOfTheRequestedSize() async throws {
         let server = try FakeSSHServer()
@@ -508,7 +542,7 @@ struct SSHTerminalSessionFakeServerTests {
 
 /// The same session behavior against a real OpenSSH sshd (the system's,
 /// run as this user on a loopback port).
-@Suite("SSH terminal sessions (real sshd)", .serialized)
+@Suite("SSH terminal sessions (real sshd)", .serialized, .timeLimit(.minutes(5)))
 struct SSHTerminalSessionSSHDTests {
     static let sshd: TestSSHD? = try? TestSSHD()
 
@@ -654,6 +688,47 @@ struct SSHTerminalSessionSSHDTests {
         try await transcript.waitFor("done")
         let digest = try shasum(input)
         #expect(transcript.text.contains(digest))
+    }
+
+    @Test func rekeyingMidStreamLosesNothing() async throws {
+        // OpenSSH re-keys a connection every 1–4 GB by default (sooner, or
+        // also hourly, where configured); here every 32 KiB, so it happens
+        // over and over while output streams, input arrives and the window
+        // changes. Channel messages written during a key exchange used to
+        // be refused: a lost window adjust stalled the session for good.
+        let sshd = try TestSSHD(extraConfig: ["RekeyLimit 32K", "LogLevel DEBUG1"])
+        defer { sshd.stop() }
+        let pool = pool(sshd)
+        let file = scratch.appendingPathComponent("rekey-blob")
+        let blob = try writeRandomFile(at: file, count: 4 << 20, seed: 11)
+        let transcript = TerminalTranscript()
+        let session = try await open(
+            sshd, pool,
+            // The input is read as it arrives (a tty holds little unread).
+            command: "stty raw -echo; d=$(mktemp -d); exec 3<&0; head -c 4096 <&3 | shasum -a 256 > $d/sum & "
+                + "echo ready; cat '\(file.path)'; wait; cat $d/sum; rm -r $d; stty size; echo done",
+            transcript: transcript)
+        try await transcript.waitFor("ready")
+        var input = Data()
+        for i in 0..<4096 { input.append(UInt8(truncatingIfNeeded: i &* 13 &+ 5)) }
+        // Typed while the output streams (and keys are exchanged).
+        for chunk in stride(from: 0, to: input.count, by: 64) {
+            session.write(input.subdata(in: chunk..<min(chunk + 64, input.count)))
+            if chunk == 2048 { session.resize(SSHTerminalSize(columns: 123, rows: 45)) }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        try await transcript.waitFor("done", timeout: .seconds(60))
+        let output = transcript.output
+        let start = try #require(output.range(of: Data("ready\n".utf8))).upperBound
+        #expect(output[start...].prefix(blob.count) == blob)
+        #expect(transcript.text.contains(try shasum(input)))
+        #expect(transcript.text.contains("45 123"))
+        #expect(try await transcript.waitForEnd() == .exited(0))
+        // Commands on the same connection carry on too.
+        let result = try await pool.exec(target: sshd.target, command: "head -c 300000 /dev/zero | wc -c", stdin: Data(), timeout: .seconds(30))
+        #expect(String(decoding: result.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "300000")
+        let rekeys = sshd.log.components(separatedBy: "SSH2_MSG_KEXINIT sent").count - 1
+        #expect(rekeys > 20, "the server re-keyed \(rekeys) times")
     }
 
     @Test func aKilledServerSessionIsALostConnection() async throws {

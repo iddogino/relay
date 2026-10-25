@@ -27,7 +27,8 @@ public final class PTYProcess: @unchecked Sendable {
         rows: Int,
         widthPx: Int = 0,
         heightPx: Int = 0,
-        cwd: String? = nil
+        cwd: String? = nil,
+        modes: (inout termios) -> Void = { _ in }
     ) throws -> PTYProcess {
         var master: Int32 = -1
         var slave: Int32 = -1
@@ -36,6 +37,11 @@ public final class PTYProcess: @unchecked Sendable {
             ws_xpixel: UInt16(clamping: widthPx), ws_ypixel: UInt16(clamping: heightPx))
         guard openpty(&master, &slave, nil, nil, &size) == 0 else { throw SpawnError.openpty(errno) }
         defer { close(slave) }
+        var attributes = termios()
+        if tcgetattr(slave, &attributes) == 0 {
+            modes(&attributes)
+            tcsetattr(slave, TCSANOW, &attributes)
+        }
         _ = fcntl(master, F_SETFD, FD_CLOEXEC)
 
         let path = argv[0]
@@ -61,6 +67,38 @@ public final class PTYProcess: @unchecked Sendable {
         let fd = master
         master = -1
         return fd
+    }
+
+    /// Applies SSH terminal modes (RFC 4254 opcodes, as a pty request
+    /// carries them) to `attributes`, as sshd does; unknown ones are skipped.
+    public static func apply(sshModes: [UInt8: UInt32], to attributes: inout termios) {
+        let characters: [UInt8: Int32] = [
+            1: VINTR, 2: VQUIT, 3: VERASE, 4: VKILL, 5: VEOF, 6: VEOL, 7: VEOL2, 8: VSTART, 9: VSTOP,
+            10: VSUSP, 11: VDSUSP, 12: VREPRINT, 13: VWERASE, 14: VLNEXT, 17: VSTATUS, 18: VDISCARD,
+        ]
+        let input: [UInt8: tcflag_t] = [30: tcflag_t(IGNPAR), 31: tcflag_t(PARMRK), 32: tcflag_t(INPCK), 33: tcflag_t(ISTRIP), 34: tcflag_t(INLCR), 35: tcflag_t(IGNCR), 36: tcflag_t(ICRNL),
+                                     38: tcflag_t(IXON), 39: tcflag_t(IXANY), 40: tcflag_t(IXOFF), 41: tcflag_t(IMAXBEL), 42: tcflag_t(IUTF8)]
+        let local: [UInt8: tcflag_t] = [50: tcflag_t(ISIG), 51: tcflag_t(ICANON), 53: tcflag_t(ECHO), 54: tcflag_t(ECHOE), 55: tcflag_t(ECHOK), 56: tcflag_t(ECHONL), 57: tcflag_t(NOFLSH),
+                                     58: tcflag_t(TOSTOP), 59: tcflag_t(IEXTEN), 60: tcflag_t(ECHOCTL), 61: tcflag_t(ECHOKE), 62: tcflag_t(PENDIN)]
+        let output: [UInt8: tcflag_t] = [70: tcflag_t(OPOST), 72: tcflag_t(ONLCR), 73: tcflag_t(OCRNL), 74: tcflag_t(ONOCR), 75: tcflag_t(ONLRET)]
+        func set(_ flags: inout tcflag_t, _ bit: tcflag_t, _ on: Bool) {
+            if on { flags |= bit } else { flags &= ~bit }
+        }
+        for (opcode, value) in sshModes {
+            if let index = characters[opcode] {
+                withUnsafeMutableBytes(of: &attributes.c_cc) { $0[Int(index)] = UInt8(truncatingIfNeeded: value) }
+            } else if let bit = input[opcode] {
+                set(&attributes.c_iflag, bit, value != 0)
+            } else if let bit = local[opcode] {
+                set(&attributes.c_lflag, bit, value != 0)
+            } else if let bit = output[opcode] {
+                set(&attributes.c_oflag, bit, value != 0)
+            } else if opcode == 128 {
+                cfsetispeed(&attributes, speed_t(value))
+            } else if opcode == 129 {
+                cfsetospeed(&attributes, speed_t(value))
+            }
+        }
     }
 
     public static func resize(master: Int32, columns: Int, rows: Int, widthPx: Int, heightPx: Int) {

@@ -34,6 +34,9 @@ public final class FakeSSHServer: @unchecked Sendable {
         /// this many bytes (the rest when the program's output ends): each
         /// fills SSH packets to the most the client accepts.
         public var coalesceOutput: Int?
+        /// Send the program's output in packets of at most this many bytes,
+        /// so multi-byte characters and escape sequences arrive split.
+        public var fragmentOutput: Int?
 
         public init() {}
     }
@@ -42,6 +45,8 @@ public final class FakeSSHServer: @unchecked Sendable {
     public struct SessionRecord: Sendable {
         public var term: String?
         public var initialSize: SSHTerminalSize?
+        /// The terminal modes the pty request carried, by opcode.
+        public var terminalModes: [UInt8: UInt32] = [:]
         public var sizes: [SSHTerminalSize] = []
         public var environment: [String: String] = [:]
         public var command: String?
@@ -146,8 +151,15 @@ public final class FakeSSHServer: @unchecked Sendable {
         for connection in connections { connection.close(promise: nil) }
     }
 
+    /// Idempotent: a second call (e.g. a test's, then `deinit`'s) returns at
+    /// once — closing the channel again, after its event loop is gone,
+    /// would wait forever.
     public func shutdown() {
-        state.lock.withLock { state.isShutDown = true }
+        let first = state.lock.withLock { () -> Bool in
+            defer { state.isShutDown = true }
+            return !state.isShutDown
+        }
+        guard first else { return }
         dropAllConnections()
         try? serverChannel.close().wait()
         try? group.syncShutdownGracefully()
@@ -187,6 +199,7 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
 
     private var ptySize = SSHTerminalSize(columns: 80, rows: 24)
     private var term = "dumb"
+    private var modes: [UInt8: UInt32] = [:]
     private var hasPTY = false
     private var environment: [String: String] = [:]
     private var process: PTYProcess?
@@ -234,6 +247,9 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
             record {
                 $0.term = request.term
                 $0.initialSize = size
+                $0.terminalModes = Dictionary(uniqueKeysWithValues: request.terminalModes.modeMapping.map {
+                    ($0.key.rawValue, $0.value.rawValue)
+                })
             }
             if faults.refusePTY {
                 reply(context, request.wantReply, success: false)
@@ -241,6 +257,7 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
             }
             ptySize = size
             term = request.term
+            modes = Dictionary(uniqueKeysWithValues: request.terminalModes.modeMapping.map { ($0.key.rawValue, $0.value.rawValue) })
             hasPTY = true
             reply(context, request.wantReply, success: true)
 
@@ -297,8 +314,10 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
         env["TERM"] = term
         let spawned: PTYProcess
         do {
+            let modes = modes
             spawned = try PTYProcess.spawn(argv, environment: env, columns: ptySize.columns, rows: ptySize.rows,
-                                           widthPx: ptySize.widthPx, heightPx: ptySize.heightPx)
+                                           widthPx: ptySize.widthPx, heightPx: ptySize.heightPx,
+                                           modes: { PTYProcess.apply(sshModes: modes, to: &$0) })
         } catch {
             reply(context, wantReply, success: false)
             return
@@ -361,6 +380,12 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
         outputSent += buffer.readableBytes
         let sent = outputSent
         record { $0.outputBytes = sent }
+        var buffer = buffer
+        if let size = faults.fragmentOutput {
+            while buffer.readableBytes > size, let piece = buffer.readSlice(length: size) {
+                context.writeAndFlush(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(piece))), promise: nil)
+            }
+        }
         context.writeAndFlush(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(buffer))), promise: nil)
         if let limit = faults.dropConnectionAfterBytes, outputSent >= limit {
             connection.close(promise: nil)

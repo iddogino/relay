@@ -205,13 +205,27 @@ final class TerminalChannelHandler: ChannelDuplexHandler, @unchecked Sendable {
         self.lastSize = request.size
     }
 
-    /// Modes the client's tty would contribute (OpenSSH sends its local
-    /// tty's): DEL as erase, which is what the terminal sends for
-    /// backspace, and IUTF8 so the remote line discipline edits UTF-8
-    /// characters as units.
+    /// The modes OpenSSH sends from a terminal on macOS (it sends its local
+    /// tty's, and Relay's other path runs `ssh` in a libghostty terminal):
+    /// the full set, so the remote pty is set up the same whatever the
+    /// server's defaults — a Linux pty otherwise differs (no IXANY or
+    /// IMAXBEL, ECHOK, 38400 baud). Notably DEL as erase, which is what
+    /// the terminal sends for backspace, and IUTF8 so the remote line
+    /// discipline edits UTF-8 characters as units. Captured from OpenSSH;
+    /// `theRemotePTYIsSetUpAsTheSystemSSHSetsItUp` compares the result.
     static let terminalModes = SSHTerminalModes([
-        .VERASE: 0x7F,
+        .VINTR: 0x03, .VQUIT: 0x1C, .VERASE: 0x7F, .VKILL: 0x15, .VEOF: 0x04,
+        .VEOL: 0xFF, .VEOL2: 0xFF, // disabled
+        .VSTART: 0x11, .VSTOP: 0x13, .VSUSP: 0x1A, .VDSUSP: 0x19, .VREPRINT: 0x12,
+        .VWERASE: 0x17, .VLNEXT: 0x16, .VSTATUS: 0x14, .VDISCARD: 0x0F,
+        .IGNPAR: 0, .PARMRK: 0, .INPCK: 0, .ISTRIP: 0, .INLCR: 0, .IGNCR: 0, .ICRNL: 1,
+        .IXON: 1, .IXANY: 1, .IXOFF: 0, .IMAXBEL: 1,
         SSHTerminalModes.Opcode(rawValue: 42): 1, // IUTF8 (RFC 8160)
+        .ISIG: 1, .ICANON: 1, .ECHO: 1, .ECHOE: 1, .ECHOK: 0, .ECHONL: 0, .NOFLSH: 0,
+        .TOSTOP: 0, .IEXTEN: 1, .ECHOCTL: 1, .ECHOKE: 1, .PENDIN: 0,
+        .OPOST: 1, .ONLCR: 1, .OCRNL: 0, .ONOCR: 0, .ONLRET: 0,
+        .CS7: 1, .CS8: 1, .PARENB: 0, .PARODD: 0,
+        .TTY_OP_ISPEED: 9600, .TTY_OP_OSPEED: 9600,
     ])
 
     func handlerAdded(context: ChannelHandlerContext) {
