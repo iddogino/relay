@@ -18,7 +18,18 @@
 #                                  image (fmt 32 = RGBA, 100 = PNG) in
 #                                  base64 chunks of <chunk> bytes; record
 #                                  the replies
-import base64, hashlib, os, select, sys, termios, time, tty, zlib, struct
+#   termios                        report the terminal's modes (TIOS lines)
+#                                  and the environment a terminal sets (ENV)
+#   winsize <seconds>              report the window size (WS:rows,cols,
+#                                  xpixels,ypixels) now and on each SIGWINCH,
+#                                  until "q" is typed or <seconds> pass
+#   cooked <seconds> [noecho]      leave the line discipline as it is: report
+#                                  each line read (LINE:<hex>), end of file
+#                                  (EOF) and signals (SIG:<name>), until a
+#                                  line "quit" or <seconds> pass
+#   flood <bytes>                  write <bytes> of numbered lines as fast as
+#                                  the terminal takes them, then FLOOD-DONE
+import base64, hashlib, os, select, signal, struct, sys, termios, time, tty, zlib, fcntl
 
 fd = sys.stdin.fileno()
 
@@ -65,8 +76,68 @@ def png(w, h, rgba):
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
+def winsize():
+    rows, cols, xpix, ypix = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))
+    return "%d,%d,%d,%d" % (rows, cols, xpix, ypix)
+
+
+def cooked(seconds, noecho):
+    """Reads lines with the line discipline as the terminal set it up."""
+    saved = termios.tcgetattr(fd)
+    if noecho:
+        attrs = termios.tcgetattr(fd)
+        attrs[3] &= ~termios.ECHO
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    got = []
+    for name in ("SIGINT", "SIGQUIT", "SIGTSTP", "SIGWINCH"):
+        signal.signal(getattr(signal, name), lambda n, f, name=name: got.append("SIG:" + name[3:]))
+    try:
+        write(b"READY\r\n")
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            while got:
+                write((got.pop(0) + "\r\n").encode())
+            try:
+                ready, _, _ = select.select([fd], [], [], 0.1)
+            except InterruptedError:
+                continue
+            if not ready:
+                continue
+            try:
+                line = os.read(fd, 4096)
+            except InterruptedError:
+                continue
+            if not line:
+                write(b"EOF\r\n")
+                continue
+            write(("LINE:%s\r\n" % line.hex()).encode())
+            if line.rstrip(b"\n") == b"quit":
+                break
+        while got:
+            write((got.pop(0) + "\r\n").encode())
+    finally:
+        termios.tcsetattr(fd, termios.TCSANOW, saved)
+    write(b"END\r\n")
+
+
 def main(args):
     mode = args[0]
+    if mode == "cooked":
+        return cooked(float(args[1]), "noecho" in args[2:])
+    if mode == "flood":
+        total, n, chunk = int(args[1]), 0, []
+        sent = 0
+        while sent < total:
+            n += 1
+            line = b"flood line %d %s\r\n" % (n, b"x" * (n % 60))
+            chunk.append(line)
+            sent += len(line)
+            if len(chunk) == 256:
+                write(b"".join(chunk))
+                chunk = []
+        write(b"".join(chunk) + b"FLOOD-DONE %d\r\n" % n)
+        write(b"END\r\n")
+        return
     saved = termios.tcgetattr(fd)
     tty.setraw(fd)
     try:
@@ -107,6 +178,33 @@ def main(args):
             text = "\n".join("line %d of a large copy" % i for i in range(int(args[1])))
             write(b"\x1b]52;c;" + base64.b64encode(text.encode()) + b"\x1b\\")
             time.sleep(0.5)
+        elif mode == "termios":
+            iflag, oflag, cflag, lflag, _, _, cc = saved
+            write(("TIOS:i=%x o=%x c=%x l=%x\r\n" % (iflag, oflag, cflag, lflag)).encode())
+            names = [n for n in dir(termios) if n.startswith("V") and n.isupper() and isinstance(getattr(termios, n), int)
+                     and getattr(termios, n) < len(cc) and n not in ("VMIN", "VTIME", "VT0", "VT1", "VTDLY")]
+            for name in sorted(names):
+                c = cc[getattr(termios, name)]
+                write(("TIOS:%s=%02x\r\n" % (name, c if isinstance(c, int) else ord(c))).encode())
+            for name in sorted(os.environ):
+                if name in ("TERM", "COLORTERM", "TERM_PROGRAM", "LANG") or name.startswith("LC_"):
+                    write(("ENV:%s=%s\r\n" % (name, os.environ[name])).encode())
+        elif mode == "winsize":
+            changes = []
+            signal.signal(signal.SIGWINCH, lambda n, f: changes.append(1))
+            write(("WS:%s\r\nREADY\r\n" % winsize()).encode())
+            deadline = time.time() + float(args[1])
+            while time.time() < deadline:
+                try:
+                    ready, _, _ = select.select([fd], [], [], 0.05)
+                except InterruptedError:
+                    ready = []
+                if changes:
+                    del changes[:]
+                    write(("WS:%s\r\n" % winsize()).encode())
+                if ready and b"q" in os.read(fd, 1024):
+                    break
+            write(("WS:%s\r\n" % winsize()).encode())
         elif mode == "image":
             image_id, w, h = int(args[1]), int(args[2]), int(args[3])
             rgba, fmt, size = bytes.fromhex(args[4]), int(args[5]), int(args[6])

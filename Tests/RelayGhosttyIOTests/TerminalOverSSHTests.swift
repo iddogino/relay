@@ -267,6 +267,54 @@ struct TerminalOverSSHTests {
     }
 
     @Test(arguments: Remote.allCases)
+    func aFloodsLastLinesAndExitStatusArrive(remote: Remote) async throws {
+        // Far more than the session leaves unconsumed (1 MiB): the program
+        // exits while the server still holds output for the terminal, and
+        // all of it arrives, then the status.
+        let terminal = try Terminal(remote, command: TerminalProtocolTests.probeCommand(["flood", "6000000"]) + "; exit 7",
+                                    waitAfterCommand: true)
+        let surface = terminal.surface
+        try await surface.waitForScreen("FLOOD-DONE", timeout: .seconds(90))
+        try await GhosttyTestHost.shared.waitUntil("the end", timeout: .seconds(30)) { terminal.ends.end != nil }
+        #expect(terminal.ends.end == .exited(7))
+        let lines = surface.allText.components(separatedBy: "\n")
+        let done = try #require(lines.last { $0.hasPrefix("FLOOD-DONE ") })
+        let count = try #require(Int(done.dropFirst("FLOOD-DONE ".count).trimmingCharacters(in: .whitespaces)))
+        // The last thousand lines, in order, then the end.
+        let tail = lines.filter { $0.hasPrefix("flood line ") }.suffix(1000).map { $0.split(separator: " ")[2] }
+        #expect(tail == (count - 999...count).map { Substring(String($0)) })
+        #expect(lines.contains { $0.trimmingCharacters(in: .whitespaces) == "END" })
+        try await terminal.close()
+    }
+
+    @Test(arguments: Remote.allCases)
+    func aFloodInOneTerminalLeavesAnotherResponsive(remote: Remote) async throws {
+        // Two terminals on one connection: one streaming as fast as it can
+        // (a build log, `cat` of a big file), the other typed in.
+        let flood = TerminalProtocolTests.probeCommand(["flood", "1000000"])
+        let flooding = try Terminal(remote, command: "while :; do \(flood); stty size; done")
+        let shell = try Terminal(remote, command: Self.shell)
+        try await shell.surface.waitForScreen(Self.prompt, timeout: .seconds(20))
+        try await flooding.surface.waitForScreen("FLOOD-DONE", timeout: .seconds(30))
+        for i in 1...3 {
+            let started = ContinuousClock.now
+            shell.typeLine("echo ping-$((\(i)*11))")
+            try await shell.surface.waitForScreen("ping-\(i * 11)", timeout: .seconds(5))
+            print("[e2e] \(remote): echo during a flood in \(ContinuousClock.now - started)")
+        }
+        // The flooding one follows a resize meanwhile.
+        let before = flooding.surface.gridSize
+        flooding.surface.setSize(width: 1000, height: 600)
+        try await GhosttyTestHost.shared.waitUntil("a new grid") { flooding.surface.gridSize != before }
+        let grid = try #require(flooding.surface.gridSize)
+        try await GhosttyTestHost.shared.waitUntil("the program to see it", timeout: .seconds(30)) {
+            flooding.surface.screenLines.contains { $0.trimmingCharacters(in: .whitespaces) == "\(grid.rows) \(grid.columns)" }
+        }
+        try await flooding.close()
+        try await shell.close()
+    }
+
+    @Test(arguments: Remote.allCases)
     func unicodeSurvivesBothDirections(remote: Remote) async throws {
         let terminal = try Terminal(remote, command: Self.shell)
         let surface = terminal.surface
@@ -406,6 +454,42 @@ struct TerminalOverSSHTests {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(await pool.activeChannels(for: server.target).reduce(0, +) == 0)
+        try await surface.free()
+    }
+
+    @Test func rekeyingMidStreamKeepsTheTerminalWhole() async throws {
+        // A server re-keying every 64 KiB (OpenSSH: every 1–4 GB, or as
+        // configured) while a terminal streams, is typed in and resized.
+        let sshd = try TestSSHD(extraConfig: ["RekeyLimit 64K", "LogLevel DEBUG1"])
+        defer { sshd.stop() }
+        var options = SSHConnectionPool.Options()
+        options.knownHostsFiles = [sshd.knownHostsPath]
+        options.agent = nil
+        options.defaultKeyFiles = []
+        let pool = SSHConnectionPool(options: options)
+        let io = ManualTerminalIO()
+        let surface = TestSurface(mode: .manual(io), waitAfterCommand: true, captureIO: false)
+        try #require(surface.surface != nil)
+        let ends = EndLog()
+        let flood = TerminalProtocolTests.probeCommand(["flood", "8000000"])
+        let link = SSHTerminalLink(io: io, pool: pool,
+                                   configuration: .init(target: sshd.target, command: "\(flood); read x; echo got=$x; stty size; exit 4"),
+                                   onEnd: { end, error in ends.record(end, error) })
+        link.start()
+        try await surface.waitForScreen("flood line 2000 ", timeout: .seconds(30))
+        surface.typeKeys("abc")
+        surface.setSize(width: 1000, height: 600)
+        try await surface.waitForScreen("FLOOD-DONE", timeout: .seconds(120))
+        surface.typeKeys("def")
+        surface.press(keycode: Key.returnKey)
+        try await surface.waitForScreen("got=abcdef", timeout: .seconds(20))
+        let grid = try #require(surface.gridSize)
+        try await surface.waitForScreen("\(grid.rows) \(grid.columns)")
+        try await GhosttyTestHost.shared.waitUntil("the end", timeout: .seconds(20)) { ends.end != nil }
+        #expect(ends.end == .exited(4))
+        let rekeys = sshd.log.components(separatedBy: "SSH2_MSG_KEXINIT sent").count - 1
+        #expect(rekeys > 20, "the server re-keyed \(rekeys) times")
+        link.close()
         try await surface.free()
     }
 

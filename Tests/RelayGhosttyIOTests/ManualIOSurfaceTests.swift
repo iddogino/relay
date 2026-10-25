@@ -12,7 +12,7 @@ import RelaySSH
 /// libghostty's state is process-wide, and the end-to-end suite's fake
 /// server runs its programs as this process's children, which the process
 /// checks here would see: the Ghostty suites run one at a time.
-@Suite("Ghostty I/O", .serialized)
+@Suite("Ghostty I/O", .serialized, .timeLimit(.minutes(10)))
 struct GhosttyIOSuites {}
 
 /// macOS virtual keycodes used by the tests.
@@ -23,6 +23,13 @@ enum Key {
     static let escape: UInt32 = 53
     static let up: UInt32 = 126
     static let down: UInt32 = 125
+    static let backspace: UInt32 = 51
+    static let backslash: UInt32 = 42
+    static let d: UInt32 = 2
+    static let q: UInt32 = 12
+    static let u: UInt32 = 32
+    static let w: UInt32 = 13
+    static let z: UInt32 = 6
 }
 
 extension GhosttyIOSuites {

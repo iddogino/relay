@@ -191,6 +191,85 @@ struct RealTUITests {
         }
     }
 
+    /// less over 500 numbered lines: the wheel (no mouse mode, alternate
+    /// screen) turns into cursor keys that scroll it; q leaves it and the
+    /// shell's screen as they were.
+    static func driveLess(_ surface: TestSurface) async throws {
+        let host = GhosttyTestHost.shared
+        try await host.waitUntil("less to show the start", timeout: .seconds(30), screen: { surface.screen }) {
+            surface.screenLines.first?.trimmingCharacters(in: .whitespaces) == "1"
+        }
+        surface.scroll(dy: -3)
+        try await host.waitUntil("the wheel to scroll it", screen: { surface.screen }) {
+            (Int(surface.screenLines.first?.trimmingCharacters(in: .whitespaces) ?? "") ?? 1) > 1
+        }
+        surface.scroll(dy: 10)
+        try await host.waitUntil("the wheel to scroll back", screen: { surface.screen }) {
+            surface.screenLines.first?.trimmingCharacters(in: .whitespaces) == "1"
+        }
+        surface.typeKeys("G")
+        try await host.waitUntil("the end", screen: { surface.screen }) { surface.screen.contains("500") }
+        surface.typeKeys("q")
+        try await host.waitUntil("less to exit", timeout: .seconds(15), screen: { surface.allText }) {
+            surface.allText.contains("TUI-EXIT=0")
+        }
+    }
+
+    /// top: full-screen redraws every second; it follows a resize and quits.
+    static func driveTop(_ surface: TestSurface) async throws {
+        let host = GhosttyTestHost.shared
+        try await host.waitUntil("top to draw", timeout: .seconds(30), screen: { surface.screen }) {
+            surface.screen.contains("PID")
+        }
+        let before = surface.gridSize
+        surface.setSize(width: 560, height: 360)
+        try await host.waitUntil("a new grid") { surface.gridSize != before }
+        try await host.waitUntil("a redraw at the new size", timeout: .seconds(15), screen: { surface.screen }) {
+            surface.screen.contains("PID") && surface.screenLines.allSatisfy { $0.count <= (surface.gridSize?.columns ?? 0) }
+        }
+        for attempt in 0..<5 where !surface.allText.contains("TUI-EXIT=") {
+            surface.typeKeys("q")
+            try? await host.waitUntil("top to quit", timeout: .seconds(attempt == 4 ? 10 : 2)) { surface.allText.contains("TUI-EXIT=") }
+        }
+        #expect(surface.allText.contains("TUI-EXIT=0"))
+    }
+
+    /// vim with the mouse on: a click moves the cursor, the wheel scrolls,
+    /// a paste in insert mode arrives bracketed (no auto-indent cascade).
+    static func driveVim(_ surface: TestSurface) async throws {
+        let host = GhosttyTestHost.shared
+        try await host.waitUntil("vim to draw", timeout: .seconds(30), screen: { surface.screen }) {
+            surface.screenLines.first?.hasPrefix("line 1") ?? false
+        }
+        surface.click(column: 3, row: 9)
+        surface.typeKeys(":echo 'at '.line('.')")
+        surface.press(keycode: Key.returnKey)
+        try await surface.waitForScreen("at 10")
+        surface.moveMouse(column: 3, row: 5)
+        surface.scroll(dy: -3)
+        try await host.waitUntil("the wheel to scroll", screen: { surface.screen }) {
+            surface.screenLines.first.map { $0.hasPrefix("line ") && $0 != "line 1" } ?? false
+        }
+        surface.typeKeys("ggO")
+        surface.paste("    pasted one\n    pasted two")
+        surface.press(keycode: Key.escape)
+        surface.typeKeys(":echo 'second='.getline(2)")
+        surface.press(keycode: Key.returnKey)
+        try await surface.waitForScreen("second=    pasted two")
+        surface.typeKeys(":q!")
+        surface.press(keycode: Key.returnKey)
+        try await host.waitUntil("vim to exit", timeout: .seconds(15), screen: { surface.allText }) {
+            surface.allText.contains("TUI-EXIT=0")
+        }
+    }
+
+    static let lessCommand = command("sh -c 'seq 1 500 | less'", extraEnvironment: "LESS= LESSOPEN= LESSKEY=/dev/null", path: "/usr/bin:/bin")
+    static let topCommand = command("top", path: "/usr/bin:/bin")
+    static let vimCommand = command(
+        "vim -u NONE -i NONE -N -n -c 'set mouse=a ttymouse=sgr autoindent' -c 'call setline(1, map(range(1, 200), \"\\\"line \\\".v:val\"))'",
+        path: "/usr/bin:/bin")
+
+    // MARK: Tests
     // MARK: Tests
 
     @Test(.enabled(if: claude != nil || required), arguments: Remote.allCases)
@@ -217,6 +296,30 @@ struct RealTUITests {
         // It cleans up after itself, then ends.
         try await GhosttyTestHost.shared.waitUntil("the end", timeout: .seconds(15)) { terminal.ends.end != nil }
         #expect(terminal.ends.end == .exited(0))
+        try await terminal.close()
+    }
+
+    @Test(arguments: Remote.allCases)
+    func lessScrollsWithTheWheel(remote: Remote) async throws {
+        let terminal = try TerminalOverSSHTests.Terminal(remote, command: Self.lessCommand, waitAfterCommand: true)
+        try await Self.driveLess(terminal.surface)
+        try await Self.expectModesRestored(terminal.surface)
+        try await terminal.close()
+    }
+
+    @Test(arguments: Remote.allCases)
+    func topRedrawsResizesAndQuits(remote: Remote) async throws {
+        let terminal = try TerminalOverSSHTests.Terminal(remote, command: Self.topCommand, waitAfterCommand: true)
+        try await Self.driveTop(terminal.surface)
+        try await Self.expectModesRestored(terminal.surface)
+        try await terminal.close()
+    }
+
+    @Test(arguments: Remote.allCases)
+    func vimTakesTheMouseAndPastes(remote: Remote) async throws {
+        let terminal = try TerminalOverSSHTests.Terminal(remote, command: Self.vimCommand, waitAfterCommand: true)
+        try await Self.driveVim(terminal.surface)
+        try await Self.expectModesRestored(terminal.surface)
         try await terminal.close()
     }
 }

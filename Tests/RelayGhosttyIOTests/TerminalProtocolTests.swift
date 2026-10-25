@@ -47,6 +47,8 @@ struct TerminalProtocolTests {
             + arguments.map { "'\($0)'" }.joined(separator: " ")
     }
 
+    static func shellQuote(_ string: String) -> String { "'" + string.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
     static func hex(_ string: String) -> String { hex(Data(string.utf8)) }
     static func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
 
@@ -56,20 +58,26 @@ struct TerminalProtocolTests {
         let surface: TestSurface
         let link: SSHTerminalLink?
 
+        /// The probe with `arguments`, or `command` (a shell command line)
+        /// instead; `endpoint` replaces the path's server.
         @MainActor
-        init(_ path: Path, _ arguments: [String], width: Double = 800, height: Double = 480,
-             before: (TestSurface) -> Void = { _ in }) throws {
+        init(_ path: Path, _ arguments: [String], command: String? = nil, width: Double = 800, height: Double = 480,
+             endpoint: (SSHConnectionPool, SSHTarget)? = nil, before: (TestSurface) -> Void = { _ in }) throws {
             self.path = path
-            let command = TerminalProtocolTests.probeCommand(arguments)
+            let custom = command != nil
+            let command = command ?? TerminalProtocolTests.probeCommand(arguments)
             switch path {
             case .local:
-                surface = TestSurface(mode: .exec(command: command), width: width, height: height, waitAfterCommand: true)
+                // libghostty runs a command as `exec -l <command>`: a shell
+                // runs anything more than one program.
+                let local = custom ? "/bin/sh -c " + TerminalProtocolTests.shellQuote(command) : command
+                surface = TestSurface(mode: .exec(command: local), width: width, height: height, waitAfterCommand: true)
                 link = nil
                 before(surface)
             case .fake, .sshd, .live:
-                let (pool, target) = path == .live
+                let (pool, target) = try endpoint ?? (path == .live
                     ? (LiveTerminalTests.pool, LiveTerminalTests.target!)
-                    : try TerminalOverSSHTests.Servers.endpoint(path == .fake ? .fake : .sshd)
+                    : TerminalOverSSHTests.Servers.endpoint(path == .fake ? .fake : .sshd))
                 let io = ManualTerminalIO()
                 surface = TestSurface(mode: .manual(io), width: width, height: height, waitAfterCommand: true, captureIO: false)
                 before(surface)
@@ -222,6 +230,21 @@ struct TerminalProtocolTests {
         ("terminfo name (XTGETTCAP)", "\u{1B}P+q544e\u{1B}\\"),
         ("kitty graphics support", "\u{1B}_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\u{1B}\\"),
         ("color scheme (DSR 996)", "\u{1B}[?996n"),
+        ("alternate scroll mode (DECRQM 1007)", "\u{1B}[?1007$p"),
+        ("in-band resize mode (DECRQM 2048)", "\u{1B}[?2048$p"),
+        ("alternate screen mode (DECRQM 1047)", "\u{1B}[?1047$p"),
+        ("autowrap mode (DECRQM 7)", "\u{1B}[?7$p"),
+        ("cursor visible mode (DECRQM 25)", "\u{1B}[?25$p"),
+        ("SGR pixel mouse mode (DECRQM 1016)", "\u{1B}[?1016$p"),
+        ("scroll region (DECRQSS)", "\u{1B}[3;10r\u{1B}P$qr\u{1B}\\\u{1B}[r"),
+        ("cursor shape, set then read (DECSCUSR, DECRQSS)", "\u{1B}[5 q\u{1B}P$q q\u{1B}\\\u{1B}[0 q"),
+        // Co, RGB, Smulx, Setulc, Ms, kbs: what neovim and tmux ask.
+        ("terminfo capabilities (XTGETTCAP)", "\u{1B}P+q436f;524742;536d756c78;536574756c63;4d73;6b6273\u{1B}\\"),
+        ("palette colors, several (OSC 4)", "\u{1B}]4;0;?;15;?;255;?\u{1B}\\"),
+        ("colors (kitty's OSC 21)", "\u{1B}]21;foreground=?;background=?\u{1B}\\"),
+        ("kitty keyboard flags, pushed and popped", "\u{1B}[>1u\u{1B}[>3u\u{1B}[?u\u{1B}[<u\u{1B}[?u\u{1B}[<u\u{1B}[?u"),
+        ("kitty keyboard flags, per screen", "\u{1B}[?1049h\u{1B}[>1u\u{1B}[?u\u{1B}[?1049l\u{1B}[?u\u{1B}[?1049h\u{1B}[<u\u{1B}[?1049l"),
+        ("screen size in cells (XTWINOPS 19)", "\u{1B}[19t"),
     ]
 
     @Test func repliesToQueriesMatchTheLocalTerminal() async throws {
@@ -249,6 +272,23 @@ struct TerminalProtocolTests {
         #expect(replies["text area cell size (XTWINOPS 18)"] == "\u{1B}[8;\(grid.rows);\(grid.columns)t")
         #expect(replies["kitty graphics support"] == "\u{1B}_Gi=31;OK\u{1B}\\")
         #expect(replies["color scheme (DSR 996)"]!.hasPrefix("\u{1B}[?997;"))
+        #expect(replies["alternate scroll mode (DECRQM 1007)"] == "\u{1B}[?1007;1$y")
+        #expect(replies["in-band resize mode (DECRQM 2048)"] == "\u{1B}[?2048;2$y")
+        #expect(replies["alternate screen mode (DECRQM 1047)"] == "\u{1B}[?1047;2$y")
+        #expect(replies["autowrap mode (DECRQM 7)"] == "\u{1B}[?7;1$y")
+        #expect(replies["cursor visible mode (DECRQM 25)"] == "\u{1B}[?25;1$y")
+        #expect(replies["SGR pixel mouse mode (DECRQM 1016)"] == "\u{1B}[?1016;2$y")
+        #expect(replies["scroll region (DECRQSS)"] == "\u{1B}P1$r3;10r\u{1B}\\")
+        #expect(replies["cursor shape, set then read (DECSCUSR, DECRQSS)"] == "\u{1B}P1$r5 q\u{1B}\\")
+        let caps = replies["terminfo capabilities (XTGETTCAP)"]!
+        #expect(caps.hasPrefix("\u{1B}P1+r436F=323536\u{1B}\\"), "\(caps.debugDescription)")   // Co=256
+        #expect(caps.contains("\u{1B}P1+r524742=38\u{1B}\\"), "\(caps.debugDescription)")       // RGB=8
+        #expect(caps.contains("\u{1B}P1+r4D73="), "\(caps.debugDescription)")                     // Ms (OSC 52)
+        #expect(replies["palette colors, several (OSC 4)"]!.components(separatedBy: "\u{1B}]4;").count == 4)
+        #expect(replies["colors (kitty's OSC 21)"]!.hasPrefix("\u{1B}]21;foreground=rgb:"))
+        #expect(replies["kitty keyboard flags, pushed and popped"] == "\u{1B}[?3u\u{1B}[?1u\u{1B}[?0u")
+        #expect(replies["kitty keyboard flags, per screen"] == "\u{1B}[?1u\u{1B}[?0u")
+        #expect(replies["screen size in cells (XTWINOPS 19)"] == "\u{1B}[9;\(grid.rows);\(grid.columns)t")
         try await closeAll(probes)
     }
 

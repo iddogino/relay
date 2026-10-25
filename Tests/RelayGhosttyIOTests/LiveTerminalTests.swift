@@ -187,6 +187,35 @@ struct LiveTerminalTests {
         try await terminal.close()
     }
 
+    // MARK: Everyday TUIs
+
+    @Test(.enabled(if: target != nil))
+    func lessScrollsWithTheWheel() async throws {
+        let terminal = try Terminal(command: RealTUITests.lessCommand)
+        try await RealTUITests.driveLess(terminal.surface)
+        try await RealTUITests.expectModesRestored(terminal.surface)
+        try await terminal.surface.waitForClose(timeout: .seconds(15))
+        try await terminal.close()
+    }
+
+    @Test(.enabled(if: target != nil))
+    func topRedrawsResizesAndQuits() async throws {
+        let terminal = try Terminal(command: RealTUITests.topCommand)
+        try await RealTUITests.driveTop(terminal.surface)
+        try await RealTUITests.expectModesRestored(terminal.surface)
+        try await terminal.surface.waitForClose(timeout: .seconds(15))
+        try await terminal.close()
+    }
+
+    @Test(.enabled(if: target != nil))
+    func vimTakesTheMouseAndPastes() async throws {
+        let terminal = try Terminal(command: RealTUITests.vimCommand)
+        try await RealTUITests.driveVim(terminal.surface)
+        try await RealTUITests.expectModesRestored(terminal.surface)
+        try await terminal.surface.waitForClose(timeout: .seconds(15))
+        try await terminal.close()
+    }
+
     // MARK: Coding agents
 
     /// The remote's own copy of `tool`, run like RealTUITests does locally
