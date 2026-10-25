@@ -186,5 +186,86 @@ struct LiveTerminalTests {
         try await surface.waitForScreen(TerminalOverSSHTests.sha256(Data(input.utf8)), timeout: .seconds(30))
         try await terminal.close()
     }
+
+    // MARK: Coding agents
+
+    /// The remote's own copy of `tool`, run like RealTUITests does locally
+    /// (fresh home: the first-run screen, no account needed).
+    static func agentCommand(_ tool: String, extraEnvironment: String = "", setup: String = "", cleanup: String = "") -> String {
+        "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; c=$(command -v \(tool)) || exit 127; "
+            + RealTUITests.command("\"$c\"", extraEnvironment: extraEnvironment, path: "\"$PATH\"",
+                                 setup: setup, cleanup: cleanup)
+    }
+
+    /// The same inside tmux on a private socket, as Relay runs sessions
+    /// (status line off, mouse left to the terminal).
+    static func agentInTmuxCommand(_ tool: String, socket: String, extraEnvironment: String = "", setup: String = "",
+                                   cleanup: String = "") -> String {
+        let script = """
+        export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; c=$(command -v \(tool)) || exit 127
+        trap '' INT; t=$(mktemp -d /tmp/relay-tui.XXXXXX); cd "$t"; \(setup)
+        HOME="$t" DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \(extraEnvironment) "$c"
+        s=$?; \(cleanup)
+        printf '\\033[0m\\033[H\\033[2J'; echo "TUI-EXIT=$s"; sleep 2; cd /; rm -rf "$t"
+        """
+        let encoded = Data(script.utf8).base64EncodedString()
+        return "\(path) f=$(mktemp /tmp/relay-tui-run.XXXXXX) && printf %s \(encoded) | base64 -d > \"$f\" && "
+            + "tmux -L \(socket) -f /dev/null new-session -s tui \"sh $f\" \\; set status off \\; set mouse off; "
+            + "rm -f \"$f\" \"${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/\(socket)\""
+    }
+
+    func killTmux(_ socket: String) async throws {
+        _ = try? await Self.pool.exec(target: Self.target!, command: "\(Self.path) tmux -L \(socket) kill-server; rm -f \"${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/\(socket)\"",
+                                      stdin: Data(), timeout: .seconds(15))
+    }
+
+    @Test(.enabled(if: target != nil))
+    func claudeCode() async throws {
+        let terminal = try Terminal(command: Self.agentCommand("claude"))
+        try await RealTUITests.driveClaude(terminal.surface)
+        try await RealTUITests.expectModesRestored(terminal.surface)
+        try await terminal.surface.waitForClose(timeout: .seconds(15))
+        try await terminal.close()
+    }
+
+    @Test(.enabled(if: target != nil))
+    func codex() async throws {
+        let terminal = try Terminal(command: Self.agentCommand("codex", extraEnvironment: "CODEX_HOME=\"$t\"", setup: RealTUITests.codexConfig,
+                                                               cleanup: RealTUITests.stopCodexDaemon("\"$c\"", path: "\"$PATH\"")))
+        try await RealTUITests.driveCodex(terminal.surface)
+        try await RealTUITests.expectModesRestored(terminal.surface)
+        try await terminal.surface.waitForClose(timeout: .seconds(15))
+        try await terminal.close()
+    }
+
+    @Test(.enabled(if: target != nil))
+    func claudeCodeInTmux() async throws {
+        let socket = "relay-live-\(UUID().uuidString.prefix(8))"
+        let terminal = try Terminal(command: Self.agentInTmuxCommand("claude", socket: socket))
+        do {
+            try await RealTUITests.driveClaude(terminal.surface)
+            try await terminal.surface.waitForClose(timeout: .seconds(30))
+        } catch {
+            try await killTmux(socket)
+            throw error
+        }
+        try await terminal.surface.free()
+    }
+
+    @Test(.enabled(if: target != nil))
+    func codexInTmux() async throws {
+        let socket = "relay-live-\(UUID().uuidString.prefix(8))"
+        let terminal = try Terminal(command: Self.agentInTmuxCommand(
+            "codex", socket: socket, extraEnvironment: "CODEX_HOME=\"$t\"", setup: RealTUITests.codexConfig,
+            cleanup: RealTUITests.stopCodexDaemon("\"$c\"", path: "\"$PATH\"")))
+        do {
+            try await RealTUITests.driveCodex(terminal.surface)
+            try await terminal.surface.waitForClose(timeout: .seconds(30))
+        } catch {
+            try await killTmux(socket)
+            throw error
+        }
+        try await terminal.surface.free()
+    }
 }
 }

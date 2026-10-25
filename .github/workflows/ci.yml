@@ -28,7 +28,20 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: brew install tmux
 
+      # Real coding agents for the TUI tests (Tests/RelayGhosttyIOTests/
+      # RealTUITests.swift), pinned. They run in a fresh home, showing
+      # their first-run screens: no account needed. The probe program those
+      # tests and the protocol parity suite use is Python 3, which the
+      # runner has.
+      - name: Install Claude Code and Codex
+        run: |
+          npm install --global --no-audit --no-fund @anthropic-ai/claude-code@2.1.310 @openai/codex@0.163.0
+          claude --version
+          codex --version
+
       - name: Run tests
+        env:
+          RELAY_TEST_REQUIRE_TUIS: "1"
         run: swift test
 
       - name: Build release binary

@@ -42,6 +42,10 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     /// Set in manual I/O mode; the surface is then freed through it.
     private var manualIO: ManualTerminalIO?
 
+    /// Whether the terminal's program is connected in manual I/O mode.
+    var isManualIO: Bool { manualIO != nil }
+    var isPresented: Bool { presented }
+
     override var acceptsFirstResponder: Bool { true }
 
     /// A surface running `command` locally.

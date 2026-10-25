@@ -22,6 +22,7 @@ enum Key {
     static let returnKey: UInt32 = 36
     static let escape: UInt32 = 53
     static let up: UInt32 = 126
+    static let down: UInt32 = 125
 }
 
 extension GhosttyIOSuites {

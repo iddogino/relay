@@ -7,7 +7,7 @@ through ssh-agent needs. Apple's upstream doesn't have them.
 
 This directory is that fork at tag **0.3.5**, commit
 `791437a67f5394b13060314c778c0f63124803b1`: the `NIOSSH` library target
-(`Sources/NIOSSH`) and its license, unchanged except for the patch below. The
+(`Sources/NIOSSH`) and its license, unchanged except for the patches below. The
 example executables, tests, and tooling are left out; `Package.swift` is
 trimmed to match.
 
@@ -24,6 +24,18 @@ trimmed to match.
    is streaming. Relay's tests reproduce it
    (`closingWhileTheSessionOpensLeavesNothingBehind`,
    `closingDuringAFloodNeverCrashes`).
+
+2. **Announce a maximum packet size the parser accepts**
+   (`Sources/NIOSSH/Child Channels/SSHChannelMultiplexer.swift` and
+   `SSHChildChannel.swift`, marked `RELAY PATCH`). Channel open messages
+   announced `maximumPacketSize` (128 KiB) as the most data the peer may put
+   in one packet, while the packet parser refuses any packet of that size or
+   more — and a packet carries a header and padding besides its data. A peer
+   that fills packets to what was announced (another NIOSSH; Go's
+   x/crypto/ssh) broke the connection: a large paste into a terminal on such
+   a server killed it. The announcement now leaves 1 KiB of headroom.
+   Relay's tests reproduce it (`fullSizePacketsFromTheServerArrive`,
+   `aLargeWriteReachesTheProgramWhole`, `aLargeBracketedPasteArrivesWhole`).
 
 ## Updating
 

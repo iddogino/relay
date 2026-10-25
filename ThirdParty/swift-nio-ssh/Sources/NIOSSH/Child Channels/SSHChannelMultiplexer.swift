@@ -36,6 +36,14 @@ final class SSHChannelMultiplexer {
 
     internal let maximumPacketSize: Int
 
+    /// RELAY PATCH: the most channel data the peer may put in one packet, as announced in channel open
+    /// messages. The packet parser refuses packets of `maximumPacketSize` bytes or more, and a packet carries
+    /// a header and up to 255 bytes of padding besides its data: announcing `maximumPacketSize` itself (as the
+    /// fork did) lets a peer that fills its packets — another NIOSSH, Go's x/crypto/ssh — break the connection.
+    internal var announcedMaximumPacketSize: UInt32 {
+        UInt32(self.maximumPacketSize - 1024)
+    }
+
     init(delegate: SSHMultiplexerDelegate, allocator: ByteBufferAllocator, childChannelInitializer: SSHChildChannel.Initializer?, maximumPacketSize: Int = 1 << 17) {
         self.channels = [:]
         self.channels.reserveCapacity(8)

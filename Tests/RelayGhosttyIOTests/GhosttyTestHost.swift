@@ -83,6 +83,15 @@ final class GhosttyTestHost {
         var description: String { "timed out waiting for \(what); screen:\n\(screen)" }
     }
 
+    /// Pumps the app loop for `duration`.
+    func pump(for duration: Duration) async throws {
+        let deadline = ContinuousClock.now + duration
+        while ContinuousClock.now < deadline {
+            tick()
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
     /// Pumps the app loop until `condition` holds.
     func waitUntil(
         _ what: String,
@@ -115,6 +124,14 @@ final class TestSurface {
     private(set) var closed = false
     private(set) var closedWithProcessAlive: Bool?
     private(set) var clipboardWrites: [String] = []
+    /// What a clipboard read (paste, OSC 52 read) is served; nil: empty.
+    var clipboardText: String?
+    /// Whether a clipboard read the terminal asks to confirm is allowed.
+    var allowClipboardRead = false
+    private(set) var clipboardConfirmations = 0
+    /// Actions libghostty performed on this surface, described (e.g.
+    /// "title:x", "bell", "notify:title|body", "pwd:url", "progress:1/50").
+    private(set) var actions: [String] = []
 
     var host: GhosttyTestHost { .shared }
 
@@ -246,6 +263,54 @@ final class TestSurface {
         }
     }
 
+    // MARK: Mouse and focus (as the app's view forwards them)
+
+    /// Moves the mouse to the centre of a cell.
+    func moveMouse(column: Int, row: Int, mods: ghostty_input_mods_e = GHOSTTY_MODS_NONE) {
+        guard let surface, let center = cellCenter(column: column, row: row) else { return }
+        // Points, origin top-left, like the view reports.
+        ghostty_surface_mouse_pos(surface, Double(center.x) / 2, Double(center.y) / 2, mods)
+    }
+
+    func mouseButton(_ button: ghostty_input_mouse_button_e, _ state: ghostty_input_mouse_state_e,
+                     mods: ghostty_input_mods_e = GHOSTTY_MODS_NONE) {
+        guard let surface else { return }
+        _ = ghostty_surface_mouse_button(surface, state, button, mods)
+    }
+
+    func click(column: Int, row: Int, button: ghostty_input_mouse_button_e = GHOSTTY_MOUSE_LEFT) {
+        moveMouse(column: column, row: row)
+        mouseButton(button, GHOSTTY_MOUSE_PRESS)
+        mouseButton(button, GHOSTTY_MOUSE_RELEASE)
+    }
+
+    /// A wheel step; positive `dy` scrolls up (towards older lines).
+    /// `precise` marks trackpad-style (pixel) deltas.
+    func scroll(dy: Double, precise: Bool = false) {
+        guard let surface else { return }
+        ghostty_surface_mouse_scroll(surface, 0, dy, precise ? 1 : 0)
+    }
+
+    func setFocus(_ focused: Bool) {
+        guard let surface else { return }
+        ghostty_surface_set_focus(surface, focused)
+    }
+
+    @discardableResult
+    func perform(_ action: String) -> Bool {
+        guard let surface else { return false }
+        return ghostty_surface_binding_action(surface, action, UInt(action.utf8.count))
+    }
+
+    var selection: String? {
+        guard let surface else { return nil }
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_selection(surface, &text) else { return nil }
+        defer { ghostty_surface_free_text(surface, &text) }
+        guard let pointer = text.text else { return nil }
+        return String(decoding: UnsafeRawBufferPointer(start: pointer, count: Int(text.text_len)), as: UTF8.self)
+    }
+
     func paste(_ text: String) {
         guard let surface else { return }
         text.withCString { ghostty_surface_paste_text(surface, $0, UInt(text.utf8.count)) }
@@ -261,6 +326,13 @@ final class TestSurface {
         let size = ghostty_surface_size(surface)
         return SSHTerminalSize(columns: Int(size.columns), rows: Int(size.rows),
                                widthPx: Int(size.width_px), heightPx: Int(size.height_px))
+    }
+
+    /// A cell's size in surface pixels.
+    var cellSize: (width: Int, height: Int)? {
+        guard let surface else { return nil }
+        let size = ghostty_surface_size(surface)
+        return (Int(size.cell_width_px), Int(size.cell_height_px))
     }
 
     // MARK: Reading
@@ -359,6 +431,14 @@ final class TestSurface {
     fileprivate func didWriteClipboard(_ text: String) {
         clipboardWrites.append(text)
     }
+
+    fileprivate func didPerform(_ action: String) {
+        actions.append(action)
+    }
+
+    fileprivate func didAskToConfirmClipboard() {
+        clipboardConfirmations += 1
+    }
 }
 
 // MARK: - Thread-safe logs
@@ -393,7 +473,50 @@ final class Flag: @unchecked Sendable {
 private func testWakeup(_ userdata: UnsafeMutableRawPointer?) {}
 
 private func testAction(_ app: ghostty_app_t?, _ target: ghostty_target_s, _ action: ghostty_action_s) -> Bool {
-    false
+    guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface,
+          let userdata = ghostty_surface_userdata(surface) else { return false }
+    func string(_ pointer: UnsafePointer<CChar>?) -> String { pointer.map { String(cString: $0) } ?? "" }
+    let described: String
+    switch action.tag {
+    case GHOSTTY_ACTION_SET_TITLE: described = "title:" + string(action.action.set_title.title)
+    case GHOSTTY_ACTION_RING_BELL: described = "bell"
+    case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
+        let n = action.action.desktop_notification
+        described = "notify:" + string(n.title) + "|" + string(n.body)
+    case GHOSTTY_ACTION_PWD: described = "pwd:" + string(action.action.pwd.pwd)
+    case GHOSTTY_ACTION_PROGRESS_REPORT:
+        let p = action.action.progress_report
+        described = "progress:\(p.state.rawValue)/\(p.progress)"
+    case GHOSTTY_ACTION_MOUSE_SHAPE: described = "mouse-shape:\(action.action.mouse_shape.rawValue)"
+    default: return false
+    }
+    let deliver = { @Sendable () -> Void in MainActor.assumeIsolated { _ = TestSurface.live[userdata]?.didPerform(described) } }
+    if Thread.isMainThread { deliver() } else { DispatchQueue.main.async(execute: deliver) }
+    return true
+}
+
+/// Completes a clipboard request with text, as an app does.
+@MainActor
+private func completeClipboard(_ surface: ghostty_surface_t, text: String?, list: Bool, state: UnsafeMutableRawPointer?,
+                               confirmed: Bool) {
+    let mime = strdup("text/plain")!
+    defer { free(mime) }
+    let bytes = Array((text ?? "").utf8CString)
+    bytes.withUnsafeBufferPointer { buffer in
+        var contents = [ghostty_clipboard_content_s(mime: mime, data: buffer.baseAddress, len: buffer.count - 1)]
+        var available: [UnsafePointer<CChar>?] = [UnsafePointer(mime)]
+        contents.withUnsafeMutableBufferPointer { contentsBuffer in
+            available.withUnsafeMutableBufferPointer { availableBuffer in
+                var complete = ghostty_clipboard_complete_s(
+                    contents: text == nil ? nil : UnsafePointer(contentsBuffer.baseAddress),
+                    contents_len: text == nil ? 0 : 1,
+                    available: list ? UnsafePointer(availableBuffer.baseAddress) : nil,
+                    available_len: list ? 1 : 0,
+                    confirmed: confirmed, remember: false)
+                ghostty_surface_complete_clipboard_request(surface, &complete, state)
+            }
+        }
+    }
 }
 
 private func testReadClipboard(
@@ -404,7 +527,18 @@ private func testReadClipboard(
     _ mimesLen: Int,
     _ list: Bool
 ) -> ghostty_clipboard_read_result_e {
-    GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
+    guard let userdata else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
+    nonisolated(unsafe) let state = state
+    let read = { MainActor.assumeIsolated { TestSurface.live[userdata]?.clipboardText } }
+    let text: String? = Thread.isMainThread ? read() : DispatchQueue.main.sync(execute: read)
+    guard text != nil || list else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
+    DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+            guard let surface = TestSurface.live[userdata]?.surface else { return }
+            completeClipboard(surface, text: text, list: list, state: state, confirmed: false)
+        }
+    }
+    return GHOSTTY_CLIPBOARD_READ_STARTED
 }
 
 private func testConfirmReadClipboard(
@@ -414,10 +548,21 @@ private func testConfirmReadClipboard(
     _ request: ghostty_clipboard_request_e
 ) {
     guard let userdata, let state else { return }
-    DispatchQueue.main.async {
+    var approved: String?
+    if let c = confirm?.pointee, let items = c.contents {
+        for i in 0..<c.contents_len where items[i].mime.map({ String(cString: $0) }) == "text/plain" {
+            approved = items[i].data.map { String(decoding: UnsafeRawBufferPointer(start: $0, count: items[i].len), as: UTF8.self) }
+        }
+    }
+    DispatchQueue.main.async { [approved] in
         MainActor.assumeIsolated {
-            guard let surface = TestSurface.live[userdata]?.surface else { return }
-            ghostty_surface_deny_clipboard_request(surface, state)
+            guard let test = TestSurface.live[userdata], let surface = test.surface else { return }
+            test.didAskToConfirmClipboard()
+            if test.allowClipboardRead {
+                completeClipboard(surface, text: approved, list: false, state: state, confirmed: true)
+            } else {
+                ghostty_surface_deny_clipboard_request(surface, state)
+            }
         }
     }
 }

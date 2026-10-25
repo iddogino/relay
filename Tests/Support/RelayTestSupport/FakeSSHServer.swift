@@ -30,6 +30,10 @@ public final class FakeSSHServer: @unchecked Sendable {
         public var channelOpenDelay: TimeAmount?
         /// Refuse new channels outright.
         public var refuseChannels = false
+        /// Hold the program's output and send it in writes of at least
+        /// this many bytes (the rest when the program's output ends): each
+        /// fills SSH packets to the most the client accepts.
+        public var coalesceOutput: Int?
 
         public init() {}
     }
@@ -193,6 +197,7 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
     private var outputDrained = false
     private var finished = false
     private var pendingInput: [ByteBuffer] = []
+    private var heldOutput = ByteBuffer()
 
     init(state: FakeSSHServer.State, connection: Channel) {
         self.state = state
@@ -342,6 +347,17 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
     /// Output from the program, to the client.
     fileprivate func ptyOutput(_ buffer: ByteBuffer) {
         guard let context, !finished else { return }
+        var buffer = buffer
+        if let size = faults.coalesceOutput {
+            heldOutput.writeBuffer(&buffer)
+            guard heldOutput.readableBytes >= size else { return }
+            buffer = heldOutput
+            heldOutput.clear()
+        }
+        sendOutput(buffer, context: context)
+    }
+
+    private func sendOutput(_ buffer: ByteBuffer, context: ChannelHandlerContext) {
         outputSent += buffer.readableBytes
         let sent = outputSent
         record { $0.outputBytes = sent }
@@ -354,6 +370,10 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
     fileprivate var clientWritable: Bool { context?.channel.isWritable ?? false }
 
     fileprivate func ptyClosed() {
+        if heldOutput.readableBytes > 0, let context, !finished {
+            sendOutput(heldOutput, context: context)
+            heldOutput.clear()
+        }
         outputDrained = true
         finishIfDone()
     }

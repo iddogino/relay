@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import NIOCore
@@ -151,6 +152,38 @@ struct SSHTerminalSessionFakeServerTests {
         #expect(try await transcript.waitForEnd(timeout: .seconds(60)) == .exited(0))
         #expect(transcript.output.count == blob.count)
         #expect(transcript.output == blob)
+    }
+
+    @Test func fullSizePacketsFromTheServerArrive() async throws {
+        // Servers may fill each packet to the size the client announced (Go's
+        // x/crypto/ssh does; another NIOSSH does): the client must accept
+        // what it announced, headers and padding included.
+        let server = try FakeSSHServer()
+        var faults = FakeSSHServer.Faults()
+        faults.coalesceOutput = 1 << 20
+        server.faults = faults
+        let file = scratch.appendingPathComponent("packets")
+        let blob = try writeRandomFile(at: file, count: 3 << 20)
+        let transcript = TerminalTranscript()
+        try await open(try pool(for: server), server, command: "stty raw -echo; cat '\(file.path)'", transcript: transcript)
+        #expect(try await transcript.waitForEnd(timeout: .seconds(60)) == .exited(0))
+        #expect(transcript.output == blob)
+    }
+
+    @Test func aLargeWriteReachesTheProgramWhole() async throws {
+        // One write far larger than a packet (a big paste): it's split to
+        // what the server accepts.
+        let server = try FakeSSHServer()
+        let input = Data((0..<(2 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ $0 >> 9) })
+        let transcript = TerminalTranscript()
+        let session = try await open(
+            try pool(for: server), server,
+            command: "stty raw -echo; echo ready; head -c \(input.count) | shasum -a 256; echo done",
+            transcript: transcript)
+        try await transcript.waitFor("ready")
+        session.write(input)
+        try await transcript.waitFor("done", timeout: .seconds(60))
+        #expect(transcript.text.contains(SHA256.hash(data: input).map { String(format: "%02x", $0) }.joined()))
     }
 
     // MARK: Flow control

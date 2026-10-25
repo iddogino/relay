@@ -107,6 +107,8 @@ let package = Package(
             name: "RelayGhosttyIOTests",
             dependencies: ["RelayGhosttyIO", "GhosttyKit", "RelaySSH", "RelayTestSupport"],
             path: "Tests/RelayGhosttyIOTests",
+            // The terminal probe the tests run (read from source, not bundled).
+            exclude: ["Fixtures"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
 
