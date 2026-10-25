@@ -72,7 +72,7 @@ struct RealTUITests {
     static func command(_ program: String, extraEnvironment: String = "", path: String? = nil, setup: String = "", cleanup: String = "") -> String {
         let probe = TerminalProtocolTests.probeCommand(["query"] + modes.map { TerminalProtocolTests.hex($0.query) })
         return """
-        trap '' INT; t=$(mktemp -d /tmp/relay-tui.XXXXXX); cd "$t"; \(setup) \\
+        trap '' INT; t=$(mktemp -d /tmp/relay-tui.XXXXXX); trap 'cd /; rm -rf "$t"; exit 129' HUP TERM; cd "$t"; \(setup) \\
         HOME="$t" PATH=\(path ?? "'\(Self.path)'") CI= GITHUB_ACTIONS= DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 \\
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \(extraEnvironment) \(program); \\
         s=$?; \(cleanup) printf '\\033[0m\\033[H\\033[2J'; echo "TUI-EXIT=$s"; PROBE_NOCLEAR=1 \(probe); cd /; rm -rf "$t"

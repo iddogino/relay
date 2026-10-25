@@ -80,6 +80,16 @@ struct TerminalProtocolTests {
                 link?.start()
             }
             try #require(surface.surface != nil)
+            Probe.open[ObjectIdentifier(self)] = self
+        }
+
+        /// Probes not yet closed: a test that failed midway leaves its own,
+        /// closed before the next test starts.
+        @MainActor static var open: [ObjectIdentifier: Probe] = [:]
+
+        @MainActor
+        static func closeLeftovers() async {
+            for probe in open.values { try? await probe.close() }
         }
 
         /// Whether the probe printed `line` as a line of its own.
@@ -102,13 +112,15 @@ struct TerminalProtocolTests {
                 .filter { $0.hasPrefix(tag + ":") }
                 .map { $0.dropFirst(tag.count + 1).trimmingCharacters(in: .whitespaces) }
                 .joined()
-            var data = Data()
-            var index = hex.startIndex
-            while let next = hex.index(index, offsetBy: 2, limitedBy: hex.endIndex), next > index {
-                data.append(UInt8(hex[index..<next], radix: 16) ?? 0)
-                index = next
+            // Anything but whole hex bytes means the report was garbled.
+            let digits = Array(hex.utf8)
+            guard digits.count % 2 == 0, digits.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                Issue.record("\(path): garbled \(tag) report: \(hex)")
+                return Data()
             }
-            return data
+            return Data(stride(from: 0, to: digits.count, by: 2).map {
+                UInt8(String(decoding: digits[$0..<$0 + 2], as: UTF8.self), radix: 16)!
+            })
         }
 
         @MainActor
@@ -119,9 +131,14 @@ struct TerminalProtocolTests {
 
         @MainActor
         func close() async throws {
+            Probe.open[ObjectIdentifier(self)] = nil
             link?.close()
             try await surface.free()
         }
+    }
+
+    init() async {
+        await Probe.closeLeftovers()
     }
 
     /// Runs the probe on every path at once; returns them once all ended.
@@ -543,7 +560,7 @@ struct TerminalProtocolTests {
         // OSC 9 (iTerm2's, which agents use) and OSC 777 (rxvt's). libghostty
         // allows one notification a second per app, so one path at a time.
         for path in Self.paths {
-            let probe = try Probe(path, ["emitseq", "1.2",
+            let probe = try Probe(path, ["emitseq", "2.5",
                                          Self.hex("\u{1B}]9;Agent needs your attention\u{07}"),
                                          Self.hex("\u{1B}]777;notify;Build;finished\u{1B}\\")])
             try await probe.waitFor("END")
@@ -557,8 +574,10 @@ struct TerminalProtocolTests {
 
     // MARK: Synchronized output
 
-    @Test func aSynchronizedFrameIsShownWhole() async throws {
-        // Claude Code and other Ink apps wrap each frame in mode 2026.
+    @Test func aSynchronizedFrameArrivesWhole() async throws {
+        // Claude Code and other Ink apps wrap each frame in mode 2026 (that
+        // it's supported is the DECRQM 2026 reply above); the frame's
+        // content all arrives, across feed chunks and packets.
         let frame = "\u{1B}[?2026h\u{1B}[H\u{1B}[2J" + (1...25).map { "frame row \($0)" }.joined(separator: "\r\n") + "\u{1B}[?2026l"
         let probes = try await runEverywhere(["emit", Self.hex(frame), "1"])
         for (path, probe) in probes {

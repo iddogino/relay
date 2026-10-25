@@ -402,6 +402,10 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
         // Output still buffered in the pty is drained before the status;
         // if something else keeps the pty open, give up after a moment.
         context?.eventLoop.scheduleTask(in: .milliseconds(500)) { [self] in
+            if heldOutput.readableBytes > 0, let context, !finished {
+                sendOutput(heldOutput, context: context)
+                heldOutput.clear()
+            }
             outputDrained = true
             finishIfDone()
         }

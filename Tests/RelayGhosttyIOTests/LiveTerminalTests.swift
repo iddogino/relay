@@ -203,13 +203,14 @@ struct LiveTerminalTests {
                                    cleanup: String = "") -> String {
         let script = """
         export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; c=$(command -v \(tool)) || exit 127
-        trap '' INT; t=$(mktemp -d /tmp/relay-tui.XXXXXX); cd "$t"; \(setup)
+        trap '' INT; t=$(mktemp -d /tmp/relay-tui.XXXXXX); trap 'cd /; rm -rf "$t"; exit 129' HUP TERM; cd "$t"; \(setup)
         HOME="$t" DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \(extraEnvironment) "$c"
         s=$?; \(cleanup)
         printf '\\033[0m\\033[H\\033[2J'; echo "TUI-EXIT=$s"; sleep 2; cd /; rm -rf "$t"
         """
         let encoded = Data(script.utf8).base64EncodedString()
         return "\(path) f=$(mktemp /tmp/relay-tui-run.XXXXXX) && printf %s \(encoded) | base64 -d > \"$f\" && "
+            + "trap 'rm -f \"$f\"' EXIT HUP TERM; "
             + "tmux -L \(socket) -f /dev/null new-session -s tui \"sh $f\" \\; set status off \\; set mouse off; "
             + "rm -f \"$f\" \"${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/\(socket)\""
     }

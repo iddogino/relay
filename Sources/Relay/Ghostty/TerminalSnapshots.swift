@@ -98,9 +98,14 @@ extension TerminalSnapshots {
             results["recorded"] = recorded
             if let json = try? JSONSerialization.data(withJSONObject: results) { try? json.write(to: resultURL) }
         }
-        guard let view, let surface = view.surface else { return finish() }
+        guard let view else { return finish() }
         func run(_ index: Int) {
             guard index < steps.count else { return finish() }
+            // Read each step: the terminal may have closed during a wait.
+            guard let surface = view.surface else {
+                results["closed"] = true
+                return finish()
+            }
             let step = steps[index]
             var delay = 0.05
             switch step["op"] as? String {
