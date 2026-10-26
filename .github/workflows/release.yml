@@ -8,6 +8,12 @@ name: Release
 # drag-to-Applications DMG, optionally notarizes it (when the APPLE_ID /
 # APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD secrets are configured), and
 # publishes a GitHub release with the DMG and checksums attached.
+#
+# The MACOS_PROVISIONING_PROFILE secret (base64 of the Developer ID
+# provisioning profile for com.iddogino.Relay) is embedded in the app and
+# grants its Keychain access group, so SSH keys can sync through iCloud
+# Keychain. Without it the release still builds, with Secure Enclave keys
+# only.
 
 on:
   push:
@@ -42,6 +48,13 @@ jobs:
       - name: GhosttyKit (cached)
         uses: ./.github/actions/ghosttykit
 
+      # The terminal end-to-end tests run tmux over SSH (as in CI).
+      - name: Install tmux
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install tmux
+
       - name: Run tests
         run: swift test
 
@@ -74,12 +87,30 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
           security find-identity -v -p codesigning "$KEYCHAIN"
 
+      - name: Install provisioning profile
+        env:
+          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
+        run: |
+          if [ -z "$MACOS_PROVISIONING_PROFILE" ]; then
+            echo "::warning::MACOS_PROVISIONING_PROFILE is not set: this release can't sync SSH keys through iCloud Keychain."
+            exit 0
+          fi
+          PROFILE="$RUNNER_TEMP/relay.provisionprofile"
+          printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 --decode > "$PROFILE"
+          security cms -D -i "$PROFILE" > /dev/null
+          echo "RELAY_PROVISIONING_PROFILE=$PROFILE" >> "$GITHUB_ENV"
+
       - name: Build & sign Relay.app
         env:
           RELAY_VERSION: ${{ steps.ver.outputs.version }}
           RELAY_BUILD_NUMBER: ${{ github.run_number }}
           CODESIGN_IDENTITY: "Developer ID Application"
-        run: ./Scripts/build-app.sh release
+        run: |
+          ./Scripts/build-app.sh release
+          if [ -n "${RELAY_PROVISIONING_PROFILE:-}" ]; then
+            codesign -d --entitlements - build/Relay.app | grep -q keychain-access-groups
+            /usr/libexec/PlistBuddy -c 'Print :RelayKeychainAccessGroup' build/Relay.app/Contents/Info.plist
+          fi
 
       - name: Package DMG
         run: |
