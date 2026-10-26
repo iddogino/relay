@@ -42,6 +42,8 @@ struct RelayApp: App {
             TabView {
                 HostsSettingsView(model: model)
                     .tabItem { Label("Hosts", systemImage: "server.rack") }
+                NotificationsSettingsView(notifier: model.agentNotifier)
+                    .tabItem { Label("Notifications", systemImage: "bell.badge") }
             }
         }
         .commands {
