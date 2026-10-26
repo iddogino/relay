@@ -10,6 +10,12 @@
 #   RELAY_VARIANT       "dev" builds "Relay Dev.app": separate bundle ID,
 #                       data folder and defaults, no auto-updates — safe to
 #                       run next to an installed Relay.
+#   RELAY_PROVISIONING_PROFILE
+#                       a provisioning profile covering the bundle ID (with
+#                       CODESIGN_IDENTITY its certificate). Embedded, and the
+#                       app gets a Keychain access group: SSH keys can then
+#                       sync through iCloud Keychain. Without it, Relay keys
+#                       are Secure Enclave only.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -122,6 +128,40 @@ sign() {
   fi
 }
 
+# Keychain entitlement from a provisioning profile: the access group is
+# <team>.<bundle ID>, shared by every Relay build of that bundle ID.
+ENTITLEMENTS=""
+PROFILE="${RELAY_PROVISIONING_PROFILE:-}"
+if [ -n "$PROFILE" ]; then
+  if [ "$IDENTITY" = "-" ]; then
+    echo "error: RELAY_PROVISIONING_PROFILE needs CODESIGN_IDENTITY (the profile's certificate)." >&2
+    exit 1
+  fi
+  PROFILE_PLIST="build/profile.plist"
+  security cms -D -i "$PROFILE" > "$PROFILE_PLIST"
+  TEAM="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST")"
+  BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
+  GROUP="$TEAM.$BUNDLE_ID"
+  cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+  /usr/libexec/PlistBuddy -c "Add :RelayKeychainAccessGroup string $GROUP" "$APP/Contents/Info.plist"
+  ENTITLEMENTS="build/Relay.entitlements"
+  cat > "$ENTITLEMENTS" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.application-identifier</key><string>$TEAM.$BUNDLE_ID</string>
+  <key>com.apple.developer.team-identifier</key><string>$TEAM</string>
+  <key>keychain-access-groups</key><array><string>$GROUP</string></array>
+</dict>
+</plist>
+PLIST
+  if /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.get-task-allow' "$PROFILE_PLIST" 2>/dev/null | grep -q true; then
+    /usr/libexec/PlistBuddy -c "Add :com.apple.security.get-task-allow bool true" "$ENTITLEMENTS"
+  fi
+  rm -f "$PROFILE_PLIST"
+fi
+
 # Nested Sparkle executables must be signed inside-out before the framework,
 # and the framework before the app (no --deep).
 FW="$APP/Contents/Frameworks/Sparkle.framework"
@@ -131,7 +171,11 @@ done
 [ -e "$FW/Versions/B/Autoupdate" ] && sign "$FW/Versions/B/Autoupdate"
 [ -e "$FW/Versions/B/Updater.app" ] && sign "$FW/Versions/B/Updater.app"
 sign "$FW"
-sign "$APP"
+if [ -n "$ENTITLEMENTS" ]; then
+  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP"
+else
+  sign "$APP"
+fi
 if [ "$IDENTITY" != "-" ]; then
   codesign --verify --strict --verbose=2 "$APP"
 fi

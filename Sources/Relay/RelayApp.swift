@@ -1,5 +1,6 @@
 import SwiftUI
 import RelayCore
+import RelaySSH
 
 @main
 struct RelayApp: App {
@@ -13,16 +14,27 @@ struct RelayApp: App {
         AppearancePreference.stored().apply()
         let hostRegistry = SSHHostRegistry(
             configFile: AppVariant.dataDirectory.appendingPathComponent("ssh_config"))
+        let keyStore = KeychainSSHKeyStore(
+            accessGroup: AppVariant.keychainAccessGroup, deviceName: AppVariant.computerName)
+        var poolOptions = SSHConnectionPool.Options()
+        poolOptions.keyStore = keyStore
+        poolOptions.knownHostsFiles = KnownHosts.defaultFiles + [AppVariant.knownHostsFile.path]
         let builtInSSH = BuiltInSSHRouter(
             registry: hostRegistry,
+            pool: SSHConnectionPool(options: poolOptions),
+            keyStore: keyStore,
+            trustedHostsFile: AppVariant.knownHostsFile.path,
             isEnabled: { UserDefaults.standard.bool(forKey: BuiltInSSHSetting.defaultsKey) },
             isTerminalEnabled: { UserDefaults.standard.bool(forKey: BuiltInSSHSetting.terminalsDefaultsKey) },
             passwordLookup: { SSHPasswordStore.load(alias: $0) })
         hostRegistry.onHostsChanged = { builtInSSH.hostsChanged() }
-        _model = State(initialValue: AppModel(
+        let model = AppModel(
             provider: SSHTmuxRuntimeProvider(hostRegistry: hostRegistry, builtInSSH: builtInSSH),
             store: ProjectStore(fileURL: AppVariant.dataDirectory.appendingPathComponent("state.json")),
-            hostRegistry: hostRegistry))
+            hostRegistry: hostRegistry,
+            builtInSSH: builtInSSH)
+        HostKeyDevHook.installIfDevBuild(model: model)
+        _model = State(initialValue: model)
     }
 
     /// Standard cap choices, plus the current value if it was set to

@@ -116,6 +116,10 @@ public final class SSHHostRegistry: @unchecked Sendable {
         case .password:
             lines.append("  PreferredAuthentications keyboard-interactive,password")
             lines.append("  PubkeyAuthentication no")
+        case .storedKey:
+            // Signs in with a key only Relay's built-in client holds; the
+            // system ssh never connects to this host.
+            lines.append("  # Relay key: built-in SSH client only")
         }
         return lines
     }

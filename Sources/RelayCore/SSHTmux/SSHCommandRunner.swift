@@ -46,6 +46,10 @@ public struct SSHCommandRunner: Sendable {
 
     public static let sshPath = "/usr/bin/ssh"
 
+    /// Starts the stderr of a run that failed because the host needs
+    /// setting up in Relay (`RuntimeProviderError.hostNeedsSetup`).
+    public static let needsSetupPrefix = "relay-needs-setup: "
+
     public var connectTimeoutSeconds: Int = 10
     /// Relay's generated ssh config (`SSHHostRegistry`), passed as `-F`.
     /// nil = OpenSSH's own config lookup.
@@ -79,8 +83,12 @@ public struct SSHCommandRunner: Sendable {
         keepAlive: Bool = false,
         onStdout: (@Sendable (Data) -> Void)? = nil
     ) async throws -> CommandResult {
-        if let builtIn, let target = builtIn.target(for: alias) {
-            if let result = try await runBuiltIn(
+        if let builtIn {
+            if let problem = builtIn.setupProblem(for: alias) {
+                return CommandResult(exitCode: 255, stdout: "", stderr: Self.needsSetupPrefix + problem)
+            }
+            if let target = builtIn.target(for: alias),
+               let result = try await runBuiltIn(
                 builtIn, target: target, alias: alias, script: script, timeout: timeout, onStdout: onStdout) {
                 return result
             }
@@ -135,6 +143,13 @@ public struct SSHCommandRunner: Sendable {
             case .connectionLost:
                 return CommandResult(exitCode: 255, stdout: "", stderr: "Connection to \(target.host) closed.")
             case .hostKeyNotTrusted, .authenticationFailed, .handshakeFailed, .channelFailed:
+                if builtIn.isRequired(alias) {
+                    // No system ssh to fall back to for a Relay-key host.
+                    if let reason = BuiltInSSHRouter.setupReason(for: error) {
+                        return CommandResult(exitCode: 255, stdout: "", stderr: Self.needsSetupPrefix + reason)
+                    }
+                    return CommandResult(exitCode: 255, stdout: "", stderr: "ssh: \(error.description)")
+                }
                 builtIn.noteFallback(alias: alias, error: error)
                 return nil
             }

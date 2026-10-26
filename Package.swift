@@ -66,6 +66,7 @@ let package = Package(
             name: "Relay",
             dependencies: [
                 "RelayCore",
+                "RelaySSH",
                 "GhosttyKit",
                 "RelayGhosttyIO",
                 .product(name: "Sparkle", package: "Sparkle"),
@@ -87,7 +88,7 @@ let package = Package(
 
         .testTarget(
             name: "RelayCoreTests",
-            dependencies: ["RelayCore"],
+            dependencies: ["RelayCore", "RelaySSH", "RelayTestSupport"],
             path: "Tests/RelayCoreTests"
         ),
 

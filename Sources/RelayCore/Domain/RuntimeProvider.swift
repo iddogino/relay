@@ -255,6 +255,9 @@ public enum RuntimeProviderError: Error, Sendable, LocalizedError, Equatable {
     case invalidInput(String)
     case workspaceUnreachable(workspace: String, detail: String)
     case authenticationRequired(workspace: String)
+    /// The host must be set up again in Relay (Settings ▸ Hosts) — its
+    /// Relay key isn't on this device, or its identity isn't trusted.
+    case hostNeedsSetup(workspace: String, reason: String)
     case prerequisiteMissing(workspace: String, what: String, remedy: String)
     case pathInvalid(workspace: String, path: String)
     case sessionNotFound(workspace: String)
@@ -270,6 +273,8 @@ public enum RuntimeProviderError: Error, Sendable, LocalizedError, Equatable {
             return "Can't reach \(workspace).\n\(detail)"
         case .authenticationRequired(let workspace):
             return "SSH needs interactive authentication or host verification. Verify `ssh \(workspace)` works in Terminal, then retry."
+        case .hostNeedsSetup(let workspace, let reason):
+            return "\(workspace) needs connecting on this device. \(reason) Set it up in Settings ▸ Hosts."
         case .prerequisiteMissing(let workspace, let what, let remedy):
             return "\(what) is not available on \(workspace). \(remedy)"
         case .pathInvalid(let workspace, let path):

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import RelaySSH
 
 /// v1 runtime provider: existing SSH hosts + vanilla remote tmux.
 ///
@@ -304,6 +305,9 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
 
     public func makeTerminalLaunch(for session: RemoteSession, project: Project) async throws -> TerminalLaunchSpec {
         let alias = try self.alias(for: project)
+        if let problem = runner.builtIn?.setupProblem(for: alias) {
+            throw RuntimeProviderError.hostNeedsSetup(workspace: alias, reason: problem)
+        }
         guard TmuxNaming.isSafeSessionName(session.backendID) else {
             throw RuntimeProviderError.invalidInput("Unsafe session identifier.")
         }
@@ -626,6 +630,18 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
 
         // Always fetch fresh: sessions rewrite files constantly and staleness
         // is worse than an extra transfer.
+        if let (router, target) = try builtInTransferTarget(alias: alias) {
+            do {
+                try await fetchBuiltIn(remotePath: remotePath, to: partial, router: router, target: target)
+            } catch {
+                try? FileManager.default.removeItem(at: partial)
+                throw RuntimeProviderError.operationFailed(
+                    "Couldn't fetch \u{201C}\(name)\u{201D} from \(alias).\n\(Self.describeTransferError(error))")
+            }
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: partial, to: destination)
+            return destination
+        }
         let scpResult = try await SSHCommandRunner.runProcess(
             executable: "/usr/bin/scp",
             arguments: configArguments + ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--",
@@ -741,7 +757,26 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             )
         }
 
-        // 2. Transfer. -r covers directories; -- protects dash-leading
+        // 2. Transfer — over the built-in client when it takes this host.
+        if let (router, target) = try builtInTransferTarget(alias: alias) {
+            do {
+                try await uploadBuiltIn(
+                    localPaths: localPaths, names: basenames, dropDir: dropDir, alias: alias,
+                    router: router, target: target, progress: progress)
+            } catch is CancellationError {
+                bestEffortRemoveDropDirectory(dropDir, alias: alias)
+                throw CancellationError()
+            } catch let error as RuntimeProviderError {
+                bestEffortRemoveDropDirectory(dropDir, alias: alias)
+                throw error
+            } catch {
+                bestEffortRemoveDropDirectory(dropDir, alias: alias)
+                throw RuntimeProviderError.uploadFailed(Self.describeTransferError(error))
+            }
+            return basenames.map { dropDir + "/" + $0 }
+        }
+
+        // -r covers directories; -- protects dash-leading
         // names; modern OpenSSH scp speaks SFTP, so remote names are taken
         // literally (no remote shell expansion). With a progress callback,
         // scp runs under a terminal (no -q) and its meter is parsed live.
@@ -794,6 +829,158 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         }
 
         return basenames.map { dropDir + "/" + $0 }
+    }
+
+    // MARK: authorized_keys
+
+    /// The keys in the host's `~/.ssh/authorized_keys`.
+    public func authorizedKeys(alias: String) async throws -> [SSHKeyInstaller.AuthorizedKey] {
+        let result = try await run(alias: alias, script: SSHKeyInstaller.listScript)
+        guard result.exitCode == 0 else { throw mapFailure(alias: alias, result: result) }
+        return SSHKeyInstaller.parseList(result.stdout)
+    }
+
+    public func removeAuthorizedKey(alias: String, publicKeyBlob: String) async throws {
+        let result = try await run(alias: alias, script: SSHKeyInstaller.removeScript(publicKeyBlob: publicKeyBlob))
+        guard result.exitCode == 0, result.markers()[SSHTmuxScripts.Marker.status] == "ok" else {
+            throw mapFailure(alias: alias, result: result)
+        }
+    }
+
+    // MARK: Transfers over the built-in client
+
+    /// The built-in client's target for file transfers to `alias`, or nil to
+    /// use scp. Throws for a Relay-key host that can't be used here.
+    private func builtInTransferTarget(alias: String) throws -> (BuiltInSSHRouter, SSHTarget)? {
+        guard let router = runner.builtIn else { return nil }
+        if let problem = router.setupProblem(for: alias) {
+            throw RuntimeProviderError.hostNeedsSetup(workspace: alias, reason: problem)
+        }
+        guard let target = router.target(for: alias) else { return nil }
+        return (router, target)
+    }
+
+    /// A command line running `script` under `/bin/sh` with the remote
+    /// `path` in `$p`. The remote login shell parses the line, so the path
+    /// travels base64-encoded (its alphabet reads the same in every shell)
+    /// and sh decodes it. Pure; unit-tested.
+    static func pathCommand(_ script: String, path: String) -> String {
+        let encoded = Data(path.utf8).base64EncodedString()
+        let body = #"p=$(printf '%s' "$0" | base64 -d) && [ -n "$p" ] || exit 97; "# + script
+        return "/bin/sh -c \(POSIXShellQuote.quote(body)) \(encoded)"
+    }
+
+    /// What a dropped item set turns into on the remote: directories to
+    /// create (parents first) and files to copy, by path relative to the
+    /// drop directory. Symlinks to files are followed; inside folders,
+    /// symlinked folders are skipped (no cycles); other special files too.
+    static func uploadPlan(localPaths: [String], names: [String]) throws -> (directories: [String], files: [(local: URL, remote: String, size: Int64)]) {
+        var directories: [String] = []
+        var files: [(local: URL, remote: String, size: Int64)] = []
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+
+        func add(_ url: URL, remote: String, topLevel: Bool) throws {
+            let link = (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink ?? false
+            let resolved = link ? url.resolvingSymlinksInPath() : url
+            let values = try resolved.resourceValues(forKeys: keys)
+            if values.isDirectory == true {
+                if link && !topLevel { return }
+                directories.append(remote)
+                let children = try FileManager.default.contentsOfDirectory(
+                    at: resolved, includingPropertiesForKeys: Array(keys), options: [])
+                for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                    let name = child.lastPathComponent
+                    guard !POSIXShellQuote.containsControlCharacters(name) else {
+                        throw RuntimeProviderError.invalidInput("Can't upload \"\(remote)/…\": a name inside contains control characters.")
+                    }
+                    try add(child, remote: remote + "/" + name, topLevel: false)
+                }
+            } else if values.isRegularFile == true {
+                files.append((resolved, remote, Int64(values.fileSize ?? 0)))
+            }
+        }
+        for (path, name) in zip(localPaths, names) {
+            try add(URL(fileURLWithPath: path), remote: name, topLevel: true)
+        }
+        return (directories, files)
+    }
+
+    private func uploadBuiltIn(
+        localPaths: [String],
+        names: [String],
+        dropDir: String,
+        alias: String,
+        router: BuiltInSSHRouter,
+        target: SSHTarget,
+        progress: (@Sendable (UploadProgress) -> Void)?
+    ) async throws {
+        let plan = try Self.uploadPlan(localPaths: localPaths, names: names)
+        if !plan.directories.isEmpty {
+            let script = "set -e\n" + plan.directories
+                .map { "mkdir -p -- \(POSIXShellQuote.quote(dropDir + "/" + $0))" }
+                .joined(separator: "\n")
+            let result = try await run(alias: alias, script: script)
+            guard result.exitCode == 0 else {
+                throw RuntimeProviderError.uploadFailed(
+                    "Couldn't create folders on \(alias).\n\(Self.sanitizedStderr(result.stderr))")
+            }
+        }
+        var sent: Int64 = 0
+        for (index, file) in plan.files.enumerated() {
+            let base = sent
+            let size = file.size
+            progress?(UploadProgress(bytesTransferred: base, currentFileFraction: 0, filesStarted: index + 1))
+            let result = try await router.pool.exec(
+                target: target,
+                command: Self.pathCommand(#"exec cat > "$p""#, path: dropDir + "/" + file.remote),
+                input: .file(file.local, onProgress: { bytes in
+                    progress?(UploadProgress(
+                        bytesTransferred: base + bytes,
+                        currentFileFraction: size > 0 ? min(1, Double(bytes) / Double(size)) : 1,
+                        filesStarted: index + 1))
+                }),
+                timeout: .seconds(1800))
+            guard result.exitCode == 0 else {
+                throw RuntimeProviderError.uploadFailed(
+                    "Copying \u{201C}\(file.remote)\u{201D} failed with status \(result.exitCode).\n"
+                        + Self.sanitizedStderr(String(decoding: result.stderr, as: UTF8.self)))
+            }
+            sent += size
+            progress?(UploadProgress(bytesTransferred: sent, currentFileFraction: 1, filesStarted: index + 1))
+        }
+    }
+
+    /// Streams a remote file into `destination` (never held in memory).
+    private func fetchBuiltIn(remotePath: String, to destination: URL, router: BuiltInSSHRouter, target: SSHTarget) async throws {
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let handle = try FileHandle(forWritingTo: destination)
+        defer { try? handle.close() }
+        let result = try await router.pool.exec(
+            target: target,
+            command: Self.pathCommand(#"exec cat -- "$p""#, path: remotePath),
+            input: .data(Data()),
+            timeout: .seconds(600),
+            retainStdout: false,
+            onStdout: { chunk in try? handle.write(contentsOf: chunk) })
+        guard result.exitCode == 0 else {
+            throw RuntimeProviderError.operationFailed(
+                "cat exited with status \(result.exitCode).\n" + Self.sanitizedStderr(String(decoding: result.stderr, as: UTF8.self)))
+        }
+    }
+
+    static func describeTransferError(_ error: Error) -> String {
+        switch error {
+        case let error as RuntimeProviderError:
+            return error.localizedDescription
+        case SSHConnectionPool.ExecError.timedOut:
+            return "The transfer timed out."
+        case let error as SSHClientError:
+            return BuiltInSSHRouter.setupReason(for: error) ?? error.description
+        default:
+            return error.localizedDescription
+        }
     }
 
     /// Wraps a command in script(1) so it runs on a pseudo-terminal that is
@@ -1001,6 +1188,10 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
     }
 
     private func mapFailure(alias: String, result: SSHCommandRunner.CommandResult) -> RuntimeProviderError {
+        if result.exitCode == 255, result.stderr.hasPrefix(SSHCommandRunner.needsSetupPrefix) {
+            return .hostNeedsSetup(
+                workspace: alias, reason: String(result.stderr.dropFirst(SSHCommandRunner.needsSetupPrefix.count)))
+        }
         let stderr = Self.sanitizedStderr(result.stderr)
         if result.exitCode == 255 {
             let lowered = stderr.lowercased()
