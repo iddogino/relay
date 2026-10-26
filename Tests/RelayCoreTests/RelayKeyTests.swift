@@ -141,6 +141,13 @@ struct RelayKeyTests {
         #expect(outcome.key.origin == .imported && outcome.key.name == "id_ed25519")
         #expect(outcome.key.publicKey == filePublicKey)
         #expect(authorizedKeys.contains(filePublicKey))
+
+        // Another host with the same key file: the imported copy, no
+        // passphrase asked.
+        request.passphrase = nil
+        let again = try await setup.run(request)
+        #expect(again.key == outcome.key && !again.added)
+        #expect(store.keys().count == 1)
     }
 
     @Test func proxiedHostsCantUseRelayKeys() async throws {

@@ -127,6 +127,12 @@ public final class RelayKeySetup: Sendable {
                 return try store.deviceKey()
             case .iCloudKeychain:
                 guard let path = request.importKeyFile else { return try store.syncedKey() }
+                // Already imported (say, for another host): the copy in
+                // iCloud Keychain, found by the file's .pub — no passphrase.
+                if let blob = OpenSSHKeyFile.publicKeyBlob(forPrivateKeyAt: path)?.base64EncodedString(),
+                   let existing = store.keys().first(where: { $0.storage == .iCloudKeychain && $0.publicKeyBlob == blob }) {
+                    return existing
+                }
                 let text: String
                 do { text = try OpenSSHKeyFile.contents(ofFileAt: path) } catch {
                     throw Failure.keyFile("it isn't readable.")

@@ -257,7 +257,7 @@ struct HostEditorSheet: View {
                 LabeledContent("Private key") {
                     PathField(path: $bootstrapKeyPath, prompt: "~/.ssh/id_ed25519", title: "Choose a private key")
                 }
-                if importsKeyFile && keyFileIsEncrypted {
+                if importsKeyFile && keyFileIsEncrypted && !keyFileAlreadyImported {
                     SecureField("Passphrase", text: $passphrase, prompt: Text("unlocks the key to copy it"))
                 }
             }
@@ -281,6 +281,8 @@ struct HostEditorSheet: View {
 
     private var setupExplanation: String {
         switch keyStorage {
+        case .iCloudKeychain where importsKeyFile && keyFileAlreadyImported:
+            return "This key is already in iCloud Keychain; Relay signs in with that copy from now on."
         case .iCloudKeychain where importsKeyFile:
             return "Relay copies this key into iCloud Keychain and signs in with it from now on."
         case .iCloudKeychain:
@@ -362,6 +364,16 @@ struct HostEditorSheet: View {
         let path = bootstrapKeyPath.trimmingCharacters(in: .whitespaces)
         guard !path.isEmpty, let text = try? OpenSSHKeyFile.contents(ofFileAt: path) else { return false }
         return OpenSSHKeyFile.isEncrypted(text)
+    }
+
+    /// The chosen key file's key is in iCloud Keychain already (found by
+    /// its .pub), so importing it needs no passphrase.
+    private var keyFileAlreadyImported: Bool {
+        let path = bootstrapKeyPath.trimmingCharacters(in: .whitespaces)
+        guard !path.isEmpty, let blob = OpenSSHKeyFile.publicKeyBlob(forPrivateKeyAt: path)?.base64EncodedString() else {
+            return false
+        }
+        return model.keyStore?.keys().contains { $0.storage == .iCloudKeychain && $0.publicKeyBlob == blob } ?? false
     }
 
     /// A Relay key can't be set up here at all.
