@@ -152,6 +152,11 @@ final class AppModel {
         Task { await self.bootstrap() }
         Task { await self.recheckGitHubAuth() }
 
+        agentNotifier.onOpen = { [weak self] id in
+            guard let self, self.sessions.values.contains(where: { $0.contains { $0.id == id } }) else { return }
+            self.selectedSessionID = id
+        }
+
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
@@ -336,6 +341,8 @@ final class AppModel {
 
     private func applicationDidActivate() {
         isAppActive = true
+        // Back on the session: its notification has been seen.
+        if let id = selectedSessionID { agentNotifier.clear(id) }
         Task { await refreshRemotes() }
         // Only refresh the project that's currently in use — no polling sweep.
         if let project = selectedProject {
@@ -465,7 +472,10 @@ final class AppModel {
                 previous.setPresented(false)
             }
             self.syncLoadMonitor()
-            if let selected = self.selectedSessionID { self.markedUnread.remove(selected) }
+            if let selected = self.selectedSessionID {
+                self.markedUnread.remove(selected)
+                self.agentNotifier.clear(selected)
+            }
             self.markSelectedAgentSeen()
             guard let session = self.selectedSession,
                   let project = self.projects.first(where: { $0.id == session.projectID }) else {
@@ -951,6 +961,9 @@ final class AppModel {
     private static let agentStallTimeout: TimeInterval = 60
     /// Bumped on every applied snapshot, so views can cheaply re-derive.
     private(set) var agentStatusRevision = 0
+    /// Turns each machine's reports into "needs you" / "finished" alerts.
+    private var agentAlerts: [WorkspaceRef: AgentAlertTracker] = [:]
+    let agentNotifier = AgentNotifier()
 
     /// What the agent in this session is doing, or nil (no agent, no
     /// reporter, or no current data).
@@ -1024,6 +1037,7 @@ final class AppModel {
             agentMonitorTasks[workspace] = nil
             agentReports[workspace] = nil
             agentReportsReceived[workspace] = nil
+            agentAlerts[workspace] = nil
         }
         for workspace in desired where agentMonitorTasks[workspace] == nil {
             agentMonitorTasks[workspace] = Task { await self.runAgentMonitor(workspace) }
@@ -1087,6 +1101,7 @@ final class AppModel {
         guard byID != agentReports[workspace] else { return }
         agentReports[workspace] = byID
         agentStatusRevision &+= 1
+        postAgentAlerts(byID, for: workspace)
         // The stream carries pane titles too: fresher than the 30s sweep.
         for project in projects where project.workspace == workspace {
             guard var list = sessions[project.id] else { continue }
@@ -1104,6 +1119,23 @@ final class AppModel {
             if changed { sessions[project.id] = list }
         }
         markSelectedAgentSeen()
+    }
+
+    /// Notifies about agents that need the user or finished a turn, except
+    /// in the session the user is looking at.
+    private func postAgentAlerts(_ reports: [String: AgentStatusReport], for workspace: WorkspaceRef) {
+        let alerts = agentAlerts[workspace, default: AgentAlertTracker()]
+            .observe(reports.mapValues { $0.effectiveActivity() })
+        guard !alerts.isEmpty else { return }
+        for project in projects where project.workspace == workspace {
+            for session in sessions[project.id] ?? [] {
+                guard let alert = alerts[session.backendID],
+                      !(isAppActive && selectedSessionID == session.id)
+                else { continue }
+                agentNotifier.post(alert, session: session, project: project,
+                                   task: reports[session.backendID]?.agentTaskTitle)
+            }
+        }
     }
 
     // Reporter installation
