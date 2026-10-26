@@ -29,6 +29,12 @@
 #                                  line "quit" or <seconds> pass
 #   flood <bytes>                  write <bytes> of numbered lines as fast as
 #                                  the terminal takes them, then FLOOD-DONE
+#   steps <hex>...                 write each step (where "@IMG:rrggbb:w:h@"
+#                                  becomes a solid w×h RGBA image, base64),
+#                                  collect its replies, show STEP <n> on the
+#                                  status row (PROBE_ROW, default 26) and
+#                                  wait for a key before the next; report
+#                                  each step's replies (R<n>) at the end
 import base64, hashlib, os, select, signal, struct, sys, termios, time, tty, zlib, fcntl
 
 fd = sys.stdin.fileno()
@@ -178,6 +184,30 @@ def main(args):
             text = "\n".join("line %d of a large copy" % i for i in range(int(args[1])))
             write(b"\x1b]52;c;" + base64.b64encode(text.encode()) + b"\x1b\\")
             time.sleep(0.5)
+        elif mode == "steps":
+            row = int(os.environ.get("PROBE_ROW", "26"))
+            def expand(data):
+                out = b""
+                while b"@IMG:" in data:
+                    head, rest = data.split(b"@IMG:", 1)
+                    spec, data = rest.split(b"@", 1)
+                    rgb, w, h = spec.split(b":")
+                    out += head + base64.b64encode((bytes.fromhex(rgb.decode()) + b"\xff") * (int(w) * int(h)))
+                return out + data
+            time.sleep(0.3)
+            termios.tcflush(fd, termios.TCIFLUSH)
+            write(b"\x1b[H\x1b[2J")
+            replies = []
+            for i, step in enumerate(args[1:]):
+                write(expand(bytes.fromhex(step)))
+                replies.append(collect(0.6, 0.3, 5))
+                # The marker leaves the cursor where the step left it.
+                write(b"\x1b7\x1b[%d;1H\x1b[2KSTEP %d\x1b8" % (row, i))
+                select.select([fd], [], [], 120)
+                os.read(fd, 1024)
+            write(b"\x1b[0m\x1b[%d;1H\x1b[J\r\n" % row)
+            for i, reply in enumerate(replies):
+                dump("R%d" % i, reply)
         elif mode == "termios":
             iflag, oflag, cflag, lflag, _, _, cc = saved
             write(("TIOS:i=%x o=%x c=%x l=%x\r\n" % (iflag, oflag, cflag, lflag)).encode())
