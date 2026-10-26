@@ -39,6 +39,10 @@ struct ScriptSafetyTests {
         for a in "$@"; do out="$out$a\u{1F}"; done
         printf '%s\\n' "$out" >> \(POSIXShellQuote.quote(log.path))
         [ "$1" = "has-session" ] && exit 1
+        [ "$1" = "show-option" ] && [ "$3" = "set-clipboard" ] && echo external
+        # With FAKE_TMUX_FRESH set there is no server yet.
+        [ "$1" = "list-sessions" ] && [ -n "${FAKE_TMUX_FRESH:-}" ] && exit 1
+        [ "$1" = "start-server" ] && [ "$5" = "exit-empty" ] && echo on
         exit 0
         """
         try script.write(to: fakeTmux, atomically: true, encoding: .utf8)
@@ -134,6 +138,67 @@ struct ScriptSafetyTests {
             // Relay-only servers keep attach clients out of the alternate
             // screen so scrollback is native.
             #expect(calls.contains { $0.first == "set-option" && $0.contains("terminal-overrides") && $0.contains(",xterm-256color:smcup@:rmcup@") })
+            // ... and pass programs' OSC 52 copies on to the clipboard.
+            #expect(calls.contains { $0.first == "set-option" && $0.contains("set-clipboard") && $0.contains("on") })
+        }
+    }
+
+    /// A new server would exit before the session exists, taking the
+    /// server options with it: it's kept up until then, and its exit-empty
+    /// put back after.
+    @Test func aFreshServerKeepsItsOptions() async throws {
+        try await withSandbox { sandbox in
+            let script = SSHTmuxScripts.createSession(.init(
+                tmuxName: "rterm-feedbeefccddeeff",
+                windowName: "plain",
+                pathInput: sandbox.projectDir.path,
+                knownTmuxPath: sandbox.fakeTmux.path,
+                launchCommand: nil,
+                environment: [],
+                metadata: [("@rterm_schema", "1")]
+            ))
+            let result = try await runScript("FAKE_TMUX_FRESH=1; export FAKE_TMUX_FRESH\n" + script)
+            #expect(result.exitCode == 0, "stderr: \(result.stderr)")
+            let calls = try sandbox.invocations()
+            let keepUp = try #require(calls.firstIndex {
+                $0.first == "start-server" && $0.contains("exit-empty") && $0.contains("off")
+            })
+            let newSession = try #require(calls.firstIndex { $0.first == "new-session" })
+            let restore = try #require(calls.firstIndex {
+                $0.first == "set-option" && $0.contains("exit-empty") && $0.contains("on")
+            })
+            #expect(keepUp < newSession && newSession < restore)
+        }
+    }
+
+    /// less takes the mouse (so the wheel scrolls man and git log) only
+    /// when the user hasn't set LESS and less is new enough for --mouse.
+    @Test(arguments: [
+        ("unset LESS", "590", true),
+        ("unset LESS", "487", false),
+        ("LESS=-R; export LESS", "590", false),
+        ("LESS=; export LESS", "590", false),
+    ])
+    func pagersTakeTheWheelUnlessConfigured(environment: String, lessVersion: String, expected: Bool) async throws {
+        try await withSandbox { sandbox in
+            let less = sandbox.dir.appendingPathComponent("less")
+            try "#!/bin/sh\nprintf 'less \(lessVersion) (POSIX regular expressions)\\nCopyright\\n'\n"
+                .write(to: less, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: less.path)
+            let script = SSHTmuxScripts.createSession(.init(
+                tmuxName: "rterm-feedbeef8899aabb",
+                windowName: "plain",
+                pathInput: sandbox.projectDir.path,
+                knownTmuxPath: sandbox.fakeTmux.path,
+                launchCommand: nil,
+                environment: [],
+                metadata: [("@rterm_schema", "1")]
+            ))
+            let path = "PATH=\(POSIXShellQuote.quote(sandbox.dir.path)):$PATH; export PATH\n"
+            let result = try await runScript(path + environment + "\n" + script)
+            #expect(result.exitCode == 0, "stderr: \(result.stderr)")
+            let newSession = try #require(try sandbox.invocations().first { $0.first == "new-session" })
+            #expect(newSession.contains("LESS=-FRX --mouse --wheel-lines=1") == expected)
         }
     }
 

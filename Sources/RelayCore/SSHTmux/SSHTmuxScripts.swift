@@ -180,6 +180,13 @@ enum SSHTmuxScripts {
         # session on the server is app-owned (or the server is fresh), so a
         # server shared with the user's own tmux sessions keeps their setup.
         # Values the user configured away from defaults are respected.
+        # A new server exits as soon as it has no sessions, so the options
+        # below would be lost before the session exists: keep it up until
+        # then, remembering its exit-empty to restore.
+        fresh_server=
+        if ! "$tmux_path" list-sessions >/dev/null 2>&1; then
+          fresh_server=$("$tmux_path" start-server ';' show-option -sv exit-empty ';' set-option -s exit-empty off 2>/dev/null)
+        fi
         "$tmux_path" start-server 2>/dev/null || true
         if ! "$tmux_path" list-sessions -F '#{session_name}' 2>/dev/null | grep -qv '^rterm-'; then
           [ "$("$tmux_path" show-option -gv history-limit 2>/dev/null)" = "2000" ] \\
@@ -187,6 +194,10 @@ enum SSHTmuxScripts {
           [ "$("$tmux_path" show-option -sv escape-time 2>/dev/null)" = "500" ] \\
             && "$tmux_path" set-option -s escape-time 10 2>/dev/null || true
           "$tmux_path" set-option -s focus-events on 2>/dev/null || true
+          # Programs' OSC 52 copies reach the local clipboard (the default,
+          # "external", drops them).
+          [ "$("$tmux_path" show-option -sv set-clipboard 2>/dev/null)" = "external" ] \\
+            && "$tmux_path" set-option -s set-clipboard on 2>/dev/null || true
           "$tmux_path" set-option -sa terminal-features ',xterm-256color:RGB' 2>/dev/null || true
           # Keep attach clients out of the alternate screen so scrolled lines
           # land in the local terminal's native scrollback (and history can
@@ -196,7 +207,20 @@ enum SSHTmuxScripts {
             *) "$tmux_path" set-option -sa terminal-overrides ',xterm-256color:smcup@:rmcup@' 2>/dev/null || true ;;
           esac
         fi
-        "$tmux_path" new-session -d -s \(ctx.tmuxName) -n \(POSIXShellQuote.quote(ctx.windowName)) -c "$rp"\(envFlags)\(paneCommand) || { printf 'RTERM_STATUS=create_failed\\n'; exit 23; }
+        # Pager polish, when the user hasn't set LESS: less (so man and git
+        # log) takes the mouse, so the wheel scrolls it — attach clients stay
+        # in the main screen (above), where the wheel would scroll the
+        # terminal's own scrollback instead. FRX is git's own default; tmux
+        # sends three events per wheel step. --mouse needs less 551+.
+        set --
+        lv=$(less -V 2>/dev/null | awk 'NR == 1 && $1 == "less" { print int($2) }')
+        if [ -z "${LESS+x}" ] && [ "${lv:-0}" -ge 551 ]; then
+          set -- -e 'LESS=-FRX --mouse --wheel-lines=1'
+        fi
+        "$tmux_path" new-session -d -s \(ctx.tmuxName) -n \(POSIXShellQuote.quote(ctx.windowName)) -c "$rp"\(envFlags) "$@"\(paneCommand)
+        created=$?
+        [ -n "$fresh_server" ] && "$tmux_path" set-option -s exit-empty "$fresh_server" 2>/dev/null
+        [ "$created" -eq 0 ] || { printf 'RTERM_STATUS=create_failed\\n'; exit 23; }
         # Native-terminal polish, session-scoped half (never affects the
         # user's own sessions): no status strip, mouse left entirely to the
         # terminal (native selection and scrolling — tmux never intercepts),
