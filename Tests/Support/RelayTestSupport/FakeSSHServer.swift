@@ -164,7 +164,12 @@ public final class FakeSSHServer: @unchecked Sendable {
         guard first else { return }
         dropAllConnections()
         try? serverChannel.close().wait()
-        try? group.syncShutdownGracefully()
+        // Not syncShutdownGracefully: it completes on the global queue,
+        // which a test run full of blocking waits can exhaust — then it
+        // never returns. A queue of its own always gets a thread.
+        let done = DispatchSemaphore(value: 0)
+        group.shutdownGracefully(queue: DispatchQueue(label: "FakeSSHServer.shutdown")) { _ in done.signal() }
+        done.wait()
     }
 
     deinit {
