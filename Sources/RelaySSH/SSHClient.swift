@@ -380,6 +380,9 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
     private let onStdout: (@Sendable (Data) -> Void)?
     private var file: FileHandle?
     private var fileOffset: Int64 = 0
+    /// The last file chunk written: EOF waits for it (a half-close fails
+    /// writes still queued behind the window).
+    private var lastWrite: EventLoopFuture<Void>?
     private var inputDone = false
     static let fileChunkSize = 64 * 1024
     private var done: EventLoopPromise<SSHExecResult>?
@@ -484,16 +487,20 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
                 try? file.close()
                 self.file = nil
                 context.flush()
-                context.close(mode: .output, promise: nil)
+                if let lastWrite {
+                    lastWrite.whenComplete { _ in context.close(mode: .output, promise: nil) }
+                } else {
+                    context.close(mode: .output, promise: nil)
+                }
                 return
             }
             fileOffset += Int64(chunk.count)
             var buffer = context.channel.allocator.buffer(capacity: chunk.count)
             buffer.writeBytes(chunk)
             let sent = fileOffset
-            context.write(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(buffer)))).whenSuccess { _ in
-                onProgress?(sent)
-            }
+            let write = context.write(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(buffer))))
+            write.whenSuccess { _ in onProgress?(sent) }
+            lastWrite = write
         }
         context.flush()
     }

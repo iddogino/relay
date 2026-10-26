@@ -235,6 +235,7 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
     /// a real EOF and bytes pass untouched. Its stderr has its own reader.
     private var piped = false
     private var pendingInputClose = false
+    private var lastInputWrite: EventLoopFuture<Void>?
     private var stderrDrained = true
 
     init(state: FakeSSHServer.State, connection: Channel) {
@@ -312,7 +313,13 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
         case ChannelEvent.inputClosed:
             if piped {
                 // Client EOF: close the program's stdin.
-                if let masterChannel { masterChannel.close(mode: .output, promise: nil) } else { pendingInputClose = true }
+                // After what's queued: a half-close fails pending writes.
+                if let masterChannel {
+                    let close = { masterChannel.close(mode: .output, promise: nil) }
+                    if let lastInputWrite { lastInputWrite.whenComplete { _ in close() } } else { close() }
+                } else {
+                    pendingInputClose = true
+                }
             } else {
                 // Client EOF: like OpenSSH, send ^D to the pty.
                 writeToPTY(context.channel.allocator.buffer(bytes: [4]))
@@ -422,9 +429,12 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
                 switch result {
                 case .success(let channel):
                     masterChannel = channel
-                    for buffer in pendingInput { channel.writeAndFlush(buffer, promise: nil) }
+                    for buffer in pendingInput { lastInputWrite = channel.writeAndFlush(buffer) }
                     pendingInput = []
-                    if pendingInputClose { channel.close(mode: .output, promise: nil) }
+                    if pendingInputClose {
+                        let close = { channel.close(mode: .output, promise: nil) }
+                        if let lastInputWrite { lastInputWrite.whenComplete { _ in close() } } else { close() }
+                    }
                 case .failure:
                     Darwin.close(spawned.stdout)
                     Darwin.close(spawned.stdin)
@@ -510,7 +520,7 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
 
     private func writeToPTY(_ buffer: ByteBuffer) {
         if let masterChannel {
-            masterChannel.writeAndFlush(buffer, promise: nil)
+            lastInputWrite = masterChannel.writeAndFlush(buffer)
         } else {
             pendingInput.append(buffer)
         }
@@ -520,6 +530,8 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
         exited = termination
         // Output still buffered in the pty is drained before the status;
         // if something else keeps the pty open, give up after a moment.
+        // (Pipes always end in EOF, however slowly the client reads.)
+        if piped { return finishIfDone() }
         context?.eventLoop.scheduleTask(in: .milliseconds(500)) { [self] in
             if heldOutput.readableBytes > 0, let context, !finished {
                 sendOutput(heldOutput, context: context)
