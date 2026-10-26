@@ -48,6 +48,13 @@ jobs:
       - name: GhosttyKit (cached)
         uses: ./.github/actions/ghosttykit
 
+      # The terminal end-to-end tests run tmux over SSH (as in CI).
+      - name: Install tmux
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install tmux
+
       - name: Run tests
         run: swift test
 
