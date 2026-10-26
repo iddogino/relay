@@ -1,4 +1,5 @@
 import Foundation
+import SystemConfiguration
 
 /// Which build this is. The dev variant ("Relay Dev", built with
 /// `RELAY_VARIANT=dev Scripts/build-app.sh`) installs alongside the real
@@ -20,4 +21,22 @@ enum AppVariant {
         Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil
 
     static let bundleIdentifier: String = Bundle.main.bundleIdentifier ?? "com.iddogino.Relay"
+
+    /// The Keychain access group Relay's SSH keys live in — set by the
+    /// build script only when the app is signed with an entitlement for
+    /// it. nil (ad-hoc builds): no iCloud Keychain, Secure Enclave keys
+    /// only.
+    static let keychainAccessGroup: String? = {
+        let group = Bundle.main.object(forInfoDictionaryKey: "RelayKeychainAccessGroup") as? String
+        return group?.isEmpty == false ? group : nil
+    }()
+
+    /// This Mac's name, as in System Settings ▸ General ▸ Sharing.
+    static var computerName: String {
+        SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
+    }
+
+    /// Relay's own known_hosts: host keys trusted in Relay (the user's
+    /// ~/.ssh/known_hosts is read but never written by the built-in client).
+    static let knownHostsFile: URL = dataDirectory.appendingPathComponent("known_hosts")
 }

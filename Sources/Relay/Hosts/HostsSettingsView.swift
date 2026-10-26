@@ -1,5 +1,6 @@
 import SwiftUI
 import RelayCore
+import RelaySSH
 
 /// The "built-in SSH client" switch (read by `BuiltInSSHRouter` per
 /// command, so flipping it applies to the next command).
@@ -27,7 +28,9 @@ struct HostsSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             List(model.hosts, selection: $selection) { host in
-                HostRow(host: host, projectCount: model.projects(on: host).count)
+                HostRow(
+                    host: host, projectCount: model.projects(on: host).count,
+                    key: model.relayKey(for: host), needsConnection: model.needsConnection(host))
                     .tag(host.alias)
                     .contextMenu {
                         Button("Edit…") { edit(host) }
@@ -136,6 +139,8 @@ struct HostsSettingsView: View {
 private struct HostRow: View {
     let host: SSHHost
     let projectCount: Int
+    let key: SSHKeyInfo?
+    let needsConnection: Bool
 
     var body: some View {
         HStack {
@@ -148,6 +153,12 @@ private struct HostRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if needsConnection {
+                Label("Needs connection", systemImage: "link.badge.plus")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .help("This host signs in with a Relay key that isn't on this Mac. Edit it to sign in once and connect it here.")
+            }
             if projectCount > 0 {
                 Text("\(projectCount) project\(projectCount == 1 ? "" : "s")")
                     .font(.caption)
@@ -162,6 +173,12 @@ private struct HostRow: View {
         case .automatic: return ""
         case .keyFile(let path, _): return " · \((path as NSString).lastPathComponent)"
         case .password: return " · password"
+        case .storedKey:
+            switch key?.storage {
+            case .iCloudKeychain: return " · Relay key (iCloud Keychain)"
+            case .secureEnclave: return " · Relay key (this Mac)"
+            case nil: return " · Relay key"
+            }
         }
     }
 }

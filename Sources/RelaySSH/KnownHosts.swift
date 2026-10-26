@@ -3,7 +3,8 @@ import Foundation
 
 /// Host key verification against OpenSSH `known_hosts` files — the same
 /// trust store the system ssh uses, so a host trusted there is trusted
-/// here (and vice versa: nothing is ever written by this type).
+/// here. The only file ever written is Relay's own (`trust(…)`), for hosts
+/// the user trusts in Relay.
 public struct KnownHosts: Sendable {
     public enum Verdict: Sendable, Equatable {
         case trusted
@@ -39,6 +40,38 @@ public struct KnownHosts: Sendable {
             entries += parse(text)
         }
         return KnownHosts(entries: entries)
+    }
+
+    /// Records `presentedKey` (`<type> <base64>`, as a refused handshake
+    /// reports it) as trusted for host:port in `file` — Relay's own
+    /// known_hosts, never the user's.
+    public static func trust(host: String, port: Int, presentedKey: String, in file: String) throws {
+        let fields = presentedKey.split(separator: " ")
+        guard fields.count >= 2, Data(base64Encoded: String(fields[1])) != nil,
+              !host.contains(where: { $0.isWhitespace || $0 == "," }) else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        let path = (file as NSString).expandingTildeInPath
+        let line = "\(lookupName(host: host, port: port)) \(fields[0]) \(fields[1])\n"
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        if let handle = FileHandle(forWritingAtPath: path) {
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(line.utf8))
+        } else {
+            try Data(line.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        }
+    }
+
+    /// `SHA256:<base64, unpadded>` of a `<type> <base64>` key, as
+    /// `ssh-keygen -l` prints it.
+    public static func fingerprint(ofPublicKey publicKey: String) -> String? {
+        let fields = publicKey.split(separator: " ")
+        guard fields.count >= 2, let blob = Data(base64Encoded: String(fields[1])) else { return nil }
+        let digest = Data(SHA256.hash(data: blob)).base64EncodedString()
+        return "SHA256:" + digest.replacingOccurrences(of: "=", with: "")
     }
 
     static func parse(_ text: String) -> [Entry] {

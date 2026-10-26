@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import RelayCore
+import RelaySSH
 
 struct AppAlert: Identifiable {
     let id = UUID()
@@ -92,6 +93,8 @@ final class AppModel {
     /// uses. `hosts` mirrors it for the UI and persistence.
     let hostRegistry: SSHHostRegistry?
     private(set) var hosts: [SSHHost] = []
+    /// Relay's SSH client, with its keys and trusted host keys.
+    let builtInSSH: BuiltInSSHRouter?
 
     // Remotes: the provider's view of the host list.
     private(set) var remotes: [WorkspaceDescriptor] = []
@@ -132,10 +135,16 @@ final class AppModel {
 
     private var restoredSelection: SessionID?
 
-    init(provider: any RuntimeProvider, store: ProjectStore = ProjectStore(), hostRegistry: SSHHostRegistry? = nil) {
+    init(
+        provider: any RuntimeProvider,
+        store: ProjectStore = ProjectStore(),
+        hostRegistry: SSHHostRegistry? = nil,
+        builtInSSH: BuiltInSSHRouter? = nil
+    ) {
         self.provider = provider
         self.store = store
         self.hostRegistry = hostRegistry
+        self.builtInSSH = builtInSSH
         self.idleAttachment = TerminalAttachmentController(provider: provider)
         // Clamped on read so a hand-edited default can't disable attachment
         // (0/missing means unset) or leak connections without bound.
@@ -405,6 +414,64 @@ final class AppModel {
         resolvedLinkHosts[host.alias] = nil
         persist()
         await refreshRemotes()
+    }
+
+    // MARK: Relay keys
+
+    var keyStore: (any SSHKeyStore)? { builtInSSH?.keyStore }
+
+    /// The flow that puts a Relay key on a host (nil without the built-in
+    /// client).
+    func relayKeySetup() -> RelayKeySetup? {
+        guard let builtInSSH, let store = builtInSSH.keyStore else { return nil }
+        return RelayKeySetup(
+            store: store, pool: builtInSSH.pool, trustedHostsFile: builtInSSH.trustedHostsFile,
+            systemSSH: RelayKeySetup.systemSSHRunner())
+    }
+
+    /// The Relay key `host` signs in with on this device, if it has it.
+    func relayKey(for host: SSHHost) -> SSHKeyInfo? {
+        guard let id = host.auth.storedKeyID else { return nil }
+        return keyStore?.key(id: id)
+    }
+
+    /// A Relay-key host whose key isn't on this device: it needs
+    /// connecting here before it can be used.
+    func needsConnection(_ host: SSHHost) -> Bool {
+        host.auth.storedKeyID != nil && relayKey(for: host) == nil
+    }
+
+    /// Test Connection: over the built-in client for hosts only it can sign
+    /// in to (Relay keys, passwords), else the system ssh.
+    func testConnection(_ host: SSHHost, password: String?, trustNewHostKey: Bool = false) async -> SSHConnectionTest.Outcome {
+        let builtInOnly: Bool
+        switch host.auth {
+        case .storedKey, .password: builtInOnly = true
+        case .automatic, .keyFile: builtInOnly = false
+        }
+        if builtInOnly, let builtInSSH {
+            return await SSHConnectionTest.runBuiltIn(
+                host: host, password: password, pool: builtInSSH.pool, keyStore: builtInSSH.keyStore)
+        }
+        return await SSHConnectionTest.run(host: host, trustNewHostKey: trustNewHostKey)
+    }
+
+    /// Trusts the host key the built-in client was shown for `host`.
+    func trustHostKey(_ presentedKey: String, for host: SSHHost) throws {
+        guard let file = builtInSSH?.trustedHostsFile else { return }
+        try KnownHosts.trust(host: host.hostname, port: host.port ?? 22, presentedKey: presentedKey, in: file)
+        builtInSSH?.hostsChanged()
+    }
+
+    /// The keys in a saved host's authorized_keys.
+    func authorizedKeys(on host: SSHHost) async throws -> [SSHKeyInstaller.AuthorizedKey] {
+        guard let provider = provider as? SSHTmuxRuntimeProvider else { return [] }
+        return try await provider.authorizedKeys(alias: host.alias)
+    }
+
+    func removeAuthorizedKey(_ key: SSHKeyInstaller.AuthorizedKey, from host: SSHHost) async throws {
+        guard let provider = provider as? SSHTmuxRuntimeProvider else { return }
+        try await provider.removeAuthorizedKey(alias: host.alias, publicKeyBlob: key.publicKeyBlob)
     }
 
     func removeHost(_ host: SSHHost) async {

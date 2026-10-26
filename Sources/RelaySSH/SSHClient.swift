@@ -14,6 +14,8 @@ public struct SSHTarget: Sendable, Hashable {
         /// when it isn't passphrase-protected; then other agent keys.
         case keyFile(path: String)
         case password(String)
+        /// One of Relay's own keys (`SSHKeyStore`), and nothing else.
+        case storedKey(id: String)
     }
 
     public var host: String
@@ -27,6 +29,15 @@ public struct SSHTarget: Sendable, Hashable {
         self.username = username
         self.credentials = credentials
     }
+}
+
+/// What a command reads on stdin.
+public enum SSHExecInput: Sendable {
+    case data(Data)
+    /// A local file's contents, streamed as the channel's window allows
+    /// (never read into memory whole). `onProgress` gets the running total
+    /// of bytes sent.
+    case file(URL, onProgress: (@Sendable (Int64) -> Void)?)
 }
 
 public struct SSHExecResult: Sendable {
@@ -160,12 +171,15 @@ final class SSHConnection: @unchecked Sendable {
     /// the calling task closes the channel.
     func exec(
         command: String,
-        stdin: Data,
+        input: SSHExecInput,
         environment: [(String, String)],
+        retainStdout: Bool = true,
         onStdout: (@Sendable (Data) -> Void)?
     ) async throws -> SSHExecResult {
         let done = channel.eventLoop.makePromise(of: SSHExecResult.self)
-        let handler = ExecHandler(command: command, stdin: stdin, environment: environment, onStdout: onStdout, done: done)
+        let handler = ExecHandler(
+            command: command, input: input, environment: environment, retainStdout: retainStdout,
+            onStdout: onStdout, done: done)
         let child: Channel
         do {
             child = try await openChannel(timeout: .seconds(10)) { $0.pipeline.addHandler(handler) }
@@ -351,7 +365,8 @@ final class HandshakeWatcher: ChannelInboundHandler, @unchecked Sendable {
 }
 
 /// One exec channel: sends env + exec, then stdin and EOF once the exec is
-/// accepted; collects stdout/stderr and the exit status.
+/// accepted (a file streamed as the window opens); collects stdout/stderr
+/// and the exit status.
 final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
     typealias InboundIn = SSHChannelData
     typealias InboundOut = ByteBuffer
@@ -359,9 +374,14 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
     typealias OutboundOut = SSHChannelData
 
     private let command: String
-    private let stdin: Data
+    private let input: SSHExecInput
     private let environment: [(String, String)]
+    private let retainStdout: Bool
     private let onStdout: (@Sendable (Data) -> Void)?
+    private var file: FileHandle?
+    private var fileOffset: Int64 = 0
+    private var inputDone = false
+    static let fileChunkSize = 64 * 1024
     private var done: EventLoopPromise<SSHExecResult>?
 
     private var stdout = Data()
@@ -370,16 +390,28 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
     private var execAccepted = false
     private var failure: Error?
 
-    init(
+    convenience init(
         command: String,
         stdin: Data,
         environment: [(String, String)],
         onStdout: (@Sendable (Data) -> Void)?,
         done: EventLoopPromise<SSHExecResult>
     ) {
+        self.init(command: command, input: .data(stdin), environment: environment, onStdout: onStdout, done: done)
+    }
+
+    init(
+        command: String,
+        input: SSHExecInput,
+        environment: [(String, String)],
+        retainStdout: Bool = true,
+        onStdout: (@Sendable (Data) -> Void)?,
+        done: EventLoopPromise<SSHExecResult>
+    ) {
         self.command = command
-        self.stdin = stdin
+        self.input = input
         self.environment = environment
+        self.retainStdout = retainStdout
         self.onStdout = onStdout
         self.done = done
     }
@@ -404,10 +436,23 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
         case is ChannelSuccessEvent:
             guard !execAccepted else { return }
             execAccepted = true
-            var buffer = context.channel.allocator.buffer(capacity: stdin.count)
-            buffer.writeBytes(stdin)
-            context.writeAndFlush(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(buffer)))).whenComplete { _ in
-                context.close(mode: .output, promise: nil)
+            switch input {
+            case .data(let stdin):
+                inputDone = true
+                var buffer = context.channel.allocator.buffer(capacity: stdin.count)
+                buffer.writeBytes(stdin)
+                context.writeAndFlush(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(buffer)))).whenComplete { _ in
+                    context.close(mode: .output, promise: nil)
+                }
+            case .file(let url, _):
+                do {
+                    file = try FileHandle(forReadingFrom: url)
+                } catch {
+                    failure = failure ?? SSHClientError.channelFailed("couldn't read \(url.lastPathComponent): \(error.localizedDescription)")
+                    context.close(promise: nil)
+                    return
+                }
+                pumpFile(context: context)
             }
         case is ChannelFailureEvent:
             failure = failure ?? SSHClientError.channelFailed("the server refused the command")
@@ -421,13 +466,50 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
         }
     }
 
+    /// Sends file chunks while the channel can take them; resumes when it
+    /// becomes writable again; EOF after the last.
+    private func pumpFile(context: ChannelHandlerContext) {
+        guard !inputDone, let file, case .file(_, let onProgress) = input else { return }
+        while context.channel.isWritable {
+            let chunk: Data
+            do {
+                chunk = try file.read(upToCount: Self.fileChunkSize) ?? Data()
+            } catch {
+                failure = failure ?? SSHClientError.channelFailed("couldn't read the file: \(error.localizedDescription)")
+                context.close(promise: nil)
+                return
+            }
+            if chunk.isEmpty {
+                inputDone = true
+                try? file.close()
+                self.file = nil
+                context.flush()
+                context.close(mode: .output, promise: nil)
+                return
+            }
+            fileOffset += Int64(chunk.count)
+            var buffer = context.channel.allocator.buffer(capacity: chunk.count)
+            buffer.writeBytes(chunk)
+            let sent = fileOffset
+            context.write(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(buffer)))).whenSuccess { _ in
+                onProgress?(sent)
+            }
+        }
+        context.flush()
+    }
+
+    func channelWritabilityChanged(context: ChannelHandlerContext) {
+        if context.channel.isWritable { pumpFile(context: context) }
+        context.fireChannelWritabilityChanged()
+    }
+
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let message = unwrapInboundIn(data)
         guard case .byteBuffer(let buffer) = message.data else { return }
         let bytes = Data(buffer.readableBytesView)
         // Other extended streams carry nothing a command's caller wants.
         if message.type == .channel {
-            stdout.append(bytes)
+            if retainStdout { stdout.append(bytes) }
             onStdout?(bytes)
         } else if message.type == .stdErr {
             stderr.append(bytes)
@@ -451,6 +533,8 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
     private func finish() {
         guard let done else { return }
         self.done = nil
+        try? file?.close()
+        file = nil
         if let exitCode {
             done.succeed(SSHExecResult(exitCode: exitCode, stdout: stdout, stderr: stderr))
         } else if !execAccepted {

@@ -24,6 +24,8 @@ public actor SSHConnectionPool {
         public var knownHostsFiles = KnownHosts.defaultFiles
         public var agent: SSHAgent? = SSHAgent.fromEnvironment()
         public var defaultKeyFiles = ["~/.ssh/id_ed25519", "~/.ssh/id_ecdsa"]
+        /// Relay's own keys, for `.storedKey` credentials.
+        public var keyStore: (any SSHKeyStore)?
 
         public init() {}
     }
@@ -66,10 +68,28 @@ public actor SSHConnectionPool {
         timeout: Duration,
         onStdout: (@Sendable (Data) -> Void)? = nil
     ) async throws -> SSHExecResult {
+        try await exec(
+            target: target, command: command, input: .data(stdin), environment: environment, timeout: timeout,
+            onStdout: onStdout)
+    }
+
+    /// `exec` with stdin from `input`; with `retainStdout` false, output
+    /// only goes to `onStdout` (the result's stdout stays empty) — for
+    /// output too big to hold, like a downloaded file.
+    public func exec(
+        target: SSHTarget,
+        command: String,
+        input: SSHExecInput,
+        environment: [(String, String)] = [],
+        timeout: Duration,
+        retainStdout: Bool = true,
+        onStdout: (@Sendable (Data) -> Void)? = nil
+    ) async throws -> SSHExecResult {
         try await withThrowingTaskGroup(of: SSHExecResult.self) { group in
             group.addTask {
                 try await self.execWithRetry(
-                    target: target, command: command, stdin: stdin, environment: environment, onStdout: onStdout)
+                    target: target, command: command, input: input, environment: environment,
+                    retainStdout: retainStdout, onStdout: onStdout)
             }
             group.addTask {
                 try await Task.sleep(for: timeout)
@@ -84,15 +104,17 @@ public actor SSHConnectionPool {
     private func execWithRetry(
         target: SSHTarget,
         command: String,
-        stdin: Data,
+        input: SSHExecInput,
         environment: [(String, String)],
+        retainStdout: Bool,
         onStdout: (@Sendable (Data) -> Void)?,
         isRetry: Bool = false
     ) async throws -> SSHExecResult {
         let (slot, reused) = try await acquire(target)
         do {
             let result = try await slot.connection.exec(
-                command: command, stdin: stdin, environment: environment, onStdout: onStdout)
+                command: command, input: input, environment: environment, retainStdout: retainStdout,
+                onStdout: onStdout)
             release(slot, target: target)
             return result
         } catch {
@@ -105,8 +127,8 @@ public actor SSHConnectionPool {
             release(slot, target: target)
             guard stale, reused, !isRetry else { throw error }
             return try await execWithRetry(
-                target: target, command: command, stdin: stdin, environment: environment,
-                onStdout: onStdout, isRetry: true)
+                target: target, command: command, input: input, environment: environment,
+                retainStdout: retainStdout, onStdout: onStdout, isRetry: true)
         }
     }
 
@@ -297,8 +319,18 @@ public actor SSHConnectionPool {
         slots = [:]
     }
 
+    /// Signs in to `target` on a connection of its own (never pooled), then
+    /// hangs up: proof that its credentials and host key work. Throws like
+    /// `exec`.
+    public func verifyLogin(target: SSHTarget) async throws {
+        let connection = try await connect(target)
+        connection.close()
+    }
+
     private func connect(_ target: SSHTarget) async throws -> SSHConnection {
-        let offers = Self.authOffers(for: target.credentials, agent: options.agent, defaultKeyFiles: options.defaultKeyFiles)
+        let offers = Self.authOffers(
+            for: target.credentials, agent: options.agent, defaultKeyFiles: options.defaultKeyFiles,
+            keyStore: options.keyStore)
         let knownHosts = KnownHosts.load(files: options.knownHostsFiles)
         return try await SSHConnection.connect(
             target: target, offers: offers, knownHosts: knownHosts, group: group,
@@ -311,7 +343,8 @@ public actor SSHConnectionPool {
     static func authOffers(
         for credentials: SSHTarget.Credentials,
         agent: SSHAgent?,
-        defaultKeyFiles: [String]
+        defaultKeyFiles: [String],
+        keyStore: (any SSHKeyStore)? = nil
     ) -> [NIOSSHUserAuthenticationOffer.Offer] {
         // Asked only when a key may be offered (not for password auth).
         func agentIdentities() -> [SSHAgent.Identity] { (try? agent?.identities()) ?? [] }
@@ -337,6 +370,9 @@ public actor SSHConnectionPool {
         switch credentials {
         case .password(let password):
             return [.password(.init(password: password))]
+        case .storedKey(let id):
+            guard let key = keyStore?.signingKey(id: id) else { return [] }
+            return [.privateKey(.init(privateKey: key))]
         case .keyFile(let path):
             let identities = agentIdentities()
             if let blob = OpenSSHKeyFile.publicKeyBlob(forPrivateKeyAt: path),

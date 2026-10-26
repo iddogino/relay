@@ -62,6 +62,52 @@ public final class PTYProcess: @unchecked Sendable {
         return PTYProcess(pid: pid, master: master)
     }
 
+    /// Starts `argv` with pipes for stdin, stdout and stderr (what sshd
+    /// does for a command without a pty), in a process group of its own.
+    /// The returned descriptors are the parent's ends: write `stdin`, read
+    /// `stdout`/`stderr`; the caller owns them.
+    public static func spawnPiped(
+        _ argv: [String],
+        environment: [String: String]
+    ) throws -> (process: PTYProcess, stdin: Int32, stdout: Int32, stderr: Int32) {
+        var input: [Int32] = [-1, -1], output: [Int32] = [-1, -1], error: [Int32] = [-1, -1]
+        guard pipe(&input) == 0, pipe(&output) == 0, pipe(&error) == 0 else { throw SpawnError.spawn(errno) }
+        for fd in [input[1], output[0], error[0]] { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        posix_spawn_file_actions_adddup2(&actions, input[0], 0)
+        posix_spawn_file_actions_adddup2(&actions, output[1], 1)
+        posix_spawn_file_actions_adddup2(&actions, error[1], 2)
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        // Default signal handling, nothing blocked (as sshd starts
+        // programs), so a hangup ends it.
+        var all = sigset_t()
+        sigfillset(&all)
+        var none = sigset_t()
+        sigemptyset(&none)
+        posix_spawnattr_setsigdefault(&attributes, &all)
+        posix_spawnattr_setsigmask(&attributes, &none)
+        posix_spawnattr_setflags(&attributes, Int16(
+            POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+        posix_spawnattr_setpgroup(&attributes, 0)
+        var pid: pid_t = 0
+        let env = environment.map { "\($0.key)=\($0.value)" }
+        let rc = withCStrings(argv) { cArgv in
+            withCStrings(env) { cEnv in
+                posix_spawn(&pid, argv[0], &actions, &attributes, UnsafeMutablePointer(mutating: cArgv), UnsafeMutablePointer(mutating: cEnv))
+            }
+        }
+        for fd in [input[0], output[1], error[1]] { close(fd) }
+        guard rc == 0 else {
+            for fd in [input[1], output[0], error[0]] { close(fd) }
+            throw SpawnError.spawn(rc)
+        }
+        return (PTYProcess(pid: pid, master: -1), input[1], output[0], error[0])
+    }
+
     /// Hands the master descriptor to a new owner (which closes it).
     public func takeMaster() -> Int32 {
         let fd = master

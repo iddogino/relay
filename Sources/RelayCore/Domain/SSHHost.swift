@@ -8,6 +8,15 @@ public enum SSHHostAuth: Codable, Sendable, Hashable {
     case keyFile(path: String, certificatePath: String?)
     /// A password kept in the Keychain (never in the host record).
     case password
+    /// One of Relay's own keys (`SSHKeyStore`, by ID): synced through
+    /// iCloud Keychain, or a Secure Enclave key on one device. Only Relay's
+    /// built-in SSH client can sign with it.
+    case storedKey(id: String)
+
+    public var storedKeyID: String? {
+        if case .storedKey(let id) = self { return id }
+        return nil
+    }
 }
 
 /// A machine Relay connects to — Relay's own record, independent of
@@ -67,7 +76,7 @@ public struct SSHHost: Codable, Sendable, Hashable, Identifiable {
     // MARK: Validation
 
     public enum ValidationError: Error, Equatable, LocalizedError {
-        case alias, hostname, port, user, keyPath
+        case alias, hostname, port, user, keyPath, storedKey
 
         public var errorDescription: String? {
             switch self {
@@ -76,6 +85,7 @@ public struct SSHHost: Codable, Sendable, Hashable, Identifiable {
             case .port: return "The port must be between 1 and 65535."
             case .user: return "The username can't contain spaces or quotes."
             case .keyPath: return "Choose a key file."
+            case .storedKey: return "Set up a Relay key for this host."
             }
         }
     }
@@ -92,6 +102,11 @@ public struct SSHHost: Codable, Sendable, Hashable, Identifiable {
         if case .keyFile(let path, let certificate) = auth {
             guard Self.isValidPath(path) else { throw ValidationError.keyPath }
             if let certificate, !certificate.isEmpty, !Self.isValidPath(certificate) { throw ValidationError.keyPath }
+        }
+        if case .storedKey(let id) = auth {
+            guard !id.isEmpty, id.count <= 64, id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else {
+                throw ValidationError.storedKey
+            }
         }
     }
 

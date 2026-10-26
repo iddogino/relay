@@ -10,7 +10,8 @@ import RelaySSH
 /// a real pty (a shell, or `/bin/sh -c command`), so programs see a genuine
 /// terminal: its size, SIGWINCH on window-change, job-control signals,
 /// line discipline. Faults can be injected to exercise the client's
-/// failure paths. Accepts one password, `FakeSSHServer.password`.
+/// failure paths. Accepts one password, `FakeSSHServer.password` (and, given
+/// a HOME, keys in its `.ssh/authorized_keys`).
 public final class FakeSSHServer: @unchecked Sendable {
     public static let password = "relay-test-password"
 
@@ -84,7 +85,8 @@ public final class FakeSSHServer: @unchecked Sendable {
     public init(
         faults: Faults = Faults(),
         shell: [String] = ["/bin/sh"],
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        acceptsKeys: Bool = true
     ) throws {
         let hostKey = NIOSSHPrivateKey(ed25519Key: .init())
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -101,7 +103,7 @@ public final class FakeSSHServer: @unchecked Sendable {
                 state.lock.withLock { state.connections.append(channel) }
                 return channel.eventLoop.makeCompletedFuture {
                     try channel.pipeline.syncOperations.addHandler(NIOSSHHandler(
-                        role: .server(.init(hostKeys: [hostKey], userAuthDelegate: PasswordDelegate())),
+                        role: .server(.init(hostKeys: [hostKey], userAuthDelegate: PasswordDelegate(home: acceptsKeys ? environment["HOME"] : nil))),
                         allocator: channel.allocator,
                         inboundChildChannelInitializer: { child, _ in
                             let add = { child.pipeline.addHandler(FakeSessionHandler(state: state, connection: channel)) }
@@ -170,16 +172,34 @@ public final class FakeSSHServer: @unchecked Sendable {
     }
 }
 
+/// Accepts `FakeSSHServer.password` — and, for a server started with its own
+/// HOME, a public key listed in `$HOME/.ssh/authorized_keys`, so a key
+/// installed by a command run over the server signs in next time. (NIOSSH
+/// checks the signature before asking.)
 private final class PasswordDelegate: NIOSSHServerUserAuthenticationDelegate {
-    let supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods = .password
+    let supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods = [.password, .publicKey]
+    let home: String?
+
+    init(home: String?) {
+        self.home = home
+    }
 
     func requestReceived(
         request: NIOSSHUserAuthenticationRequest,
         responsePromise: EventLoopPromise<NIOSSHUserAuthenticationOutcome>
     ) {
-        if case .password(let password) = request.request, password.password == FakeSSHServer.password {
+        switch request.request {
+        case .password(let password) where password.password == FakeSSHServer.password:
             responsePromise.succeed(.success)
-        } else {
+        case .publicKey(let offer):
+            guard let home else { return responsePromise.succeed(.failure) }
+            let blob = String(openSSHPublicKey: offer.publicKey).split(separator: " ").dropFirst().first.map(String.init) ?? "-"
+            let file = (try? String(contentsOfFile: home + "/.ssh/authorized_keys", encoding: .utf8)) ?? ""
+            let listed = file.split(whereSeparator: \.isNewline).contains { line in
+                line.split(separator: " ").contains { $0 == blob }
+            }
+            responsePromise.succeed(listed ? .success : .failure)
+        default:
             responsePromise.succeed(.failure)
         }
     }
@@ -211,6 +231,11 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
     private var finished = false
     private var pendingInput: [ByteBuffer] = []
     private var heldOutput = ByteBuffer()
+    /// A command without a pty runs on pipes, as with sshd: stdin EOF is
+    /// a real EOF and bytes pass untouched. Its stderr has its own reader.
+    private var piped = false
+    private var pendingInputClose = false
+    private var stderrDrained = true
 
     init(state: FakeSSHServer.State, connection: Channel) {
         self.state = state
@@ -285,8 +310,13 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
             }
 
         case ChannelEvent.inputClosed:
-            // Client EOF: like OpenSSH, send ^D to the pty.
-            writeToPTY(context.channel.allocator.buffer(bytes: [4]))
+            if piped {
+                // Client EOF: close the program's stdin.
+                if let masterChannel { masterChannel.close(mode: .output, promise: nil) } else { pendingInputClose = true }
+            } else {
+                // Client EOF: like OpenSSH, send ^D to the pty.
+                writeToPTY(context.channel.allocator.buffer(bytes: [4]))
+            }
 
         default:
             context.fireUserInboundEventTriggered(event)
@@ -303,14 +333,16 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
     }
 
     private func start(_ context: ChannelHandlerContext, argv: [String], wantReply: Bool, refuse: Bool) {
-        // Commands without a pty (the pool's exec channels) get one too;
-        // only their output and exit status matter to those callers.
         guard !refuse, process == nil else {
             reply(context, wantReply, success: false)
             return
         }
         var env = state.baseEnvironment
         env.merge(environment) { $1 }
+        if !hasPTY {
+            startPiped(context, argv: argv, environment: env, wantReply: wantReply)
+            return
+        }
         env["TERM"] = term
         let spawned: PTYProcess
         do {
@@ -359,6 +391,68 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
                     finishIfDone()
                 }
             }
+    }
+
+    private func startPiped(_ context: ChannelHandlerContext, argv: [String], environment: [String: String], wantReply: Bool) {
+        let spawned: (process: PTYProcess, stdin: Int32, stdout: Int32, stderr: Int32)
+        do {
+            spawned = try PTYProcess.spawnPiped(argv, environment: environment)
+        } catch {
+            reply(context, wantReply, success: false)
+            return
+        }
+        piped = true
+        stderrDrained = false
+        process = spawned.process
+        record { $0.pid = spawned.process.pid }
+        reply(context, wantReply, success: true)
+
+        let loop = context.eventLoop
+        let state = state
+        spawned.process.onExit { [self] termination in
+            guard !state.lock.withLock({ state.isShutDown }) else { return }
+            loop.execute { self.processExited(termination) }
+        }
+        NIOPipeBootstrap(group: loop)
+            .channelOption(ChannelOptions.autoRead, value: true)
+            .channelOption(ChannelOptions.allowRemoteHalfClosure, value: true)
+            .channelInitializer { $0.pipeline.addHandler(MasterRelay(session: self)) }
+            .takingOwnershipOfDescriptors(input: spawned.stdout, output: spawned.stdin)
+            .whenComplete { [self] result in
+                switch result {
+                case .success(let channel):
+                    masterChannel = channel
+                    for buffer in pendingInput { channel.writeAndFlush(buffer, promise: nil) }
+                    pendingInput = []
+                    if pendingInputClose { channel.close(mode: .output, promise: nil) }
+                case .failure:
+                    Darwin.close(spawned.stdout)
+                    Darwin.close(spawned.stdin)
+                    outputDrained = true
+                    finishIfDone()
+                }
+            }
+        NIOPipeBootstrap(group: loop)
+            .channelOption(ChannelOptions.autoRead, value: true)
+            .channelInitializer { $0.pipeline.addHandler(StderrRelay(session: self)) }
+            .takingOwnershipOfDescriptor(input: spawned.stderr)
+            .whenComplete { [self] result in
+                if case .failure = result {
+                    Darwin.close(spawned.stderr)
+                    stderrDrained = true
+                    finishIfDone()
+                }
+            }
+    }
+
+    fileprivate func stderrOutput(_ buffer: ByteBuffer) {
+        guard let context, !finished else { return }
+        context.writeAndFlush(wrapOutboundOut(SSHChannelData(type: .stdErr, data: .byteBuffer(buffer))), promise: nil)
+    }
+
+    fileprivate func stderrClosed() {
+        stderrDrained = true
+        finishIfDone()
     }
 
     // MARK: Relay
@@ -432,13 +526,14 @@ private final class FakeSessionHandler: ChannelDuplexHandler, @unchecked Sendabl
                 heldOutput.clear()
             }
             outputDrained = true
+            stderrDrained = true
             finishIfDone()
         }
         finishIfDone()
     }
 
     private func finishIfDone() {
-        guard !finished, let exited, outputDrained, let context else { return }
+        guard !finished, let exited, outputDrained, stderrDrained, let context else { return }
         finished = true
         if !faults.omitExitStatus {
             switch exited {
@@ -521,6 +616,39 @@ private final class MasterRelay: ChannelDuplexHandler, @unchecked Sendable {
 
     func channelInactive(context: ChannelHandlerContext) {
         session.ptyClosed()
+        context.fireChannelInactive()
+    }
+
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        // A piped program's stdout ended (its stdin may still be open).
+        if case ChannelEvent.inputClosed = event {
+            session.ptyClosed()
+            return
+        }
+        context.fireUserInboundEventTriggered(event)
+    }
+}
+
+/// Reads a piped program's stderr.
+private final class StderrRelay: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = ByteBuffer
+
+    private let session: FakeSessionHandler
+
+    init(session: FakeSessionHandler) {
+        self.session = session
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        session.stderrOutput(unwrapInboundIn(data))
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        context.close(promise: nil)
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        session.stderrClosed()
         context.fireChannelInactive()
     }
 }
