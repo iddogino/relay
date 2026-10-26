@@ -30,6 +30,7 @@ enum Key {
     static let u: UInt32 = 32
     static let w: UInt32 = 13
     static let z: UInt32 = 6
+    static let f10: UInt32 = 109
 }
 
 extension GhosttyIOSuites {

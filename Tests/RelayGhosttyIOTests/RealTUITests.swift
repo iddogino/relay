@@ -263,6 +263,80 @@ struct RealTUITests {
         }
     }
 
+    /// The background behind a cell (its top-left corner, clear of the
+    /// glyph).
+    static func background(_ surface: TestSurface, column: Int, row: Int) -> (r: UInt8, g: UInt8, b: UInt8)? {
+        guard let cell = surface.cellSize else { return nil }
+        return surface.renderedPixel(x: column * cell.width + 1, y: row * cell.height + 1)
+    }
+
+    /// htop: it draws; a click on a column header sorts by it (the header
+    /// highlight moves); a click on F1 in the function bar opens help;
+    /// a resize redraws it; F10 quits.
+    static func driveHtop(_ surface: TestSurface) async throws {
+        let host = GhosttyTestHost.shared
+        try await host.waitUntil("htop to draw", timeout: .seconds(30), screen: { surface.screen }) {
+            surface.screen.contains("PID") && surface.screen.contains("F10Quit")
+        }
+        let lines = surface.screenLines
+        let header = try #require(lines.firstIndex { $0.contains("PID") && $0.contains("MEM%") })
+        let mem = try #require(lines[header].range(of: "MEM%")).lowerBound.utf16Offset(in: lines[header])
+        let before = background(surface, column: mem + 1, row: header)
+        surface.click(column: mem + 1, row: header)
+        try await host.waitUntil("the sort column to move", screen: { "\(String(describing: before))" }) {
+            guard let now = background(surface, column: mem + 1, row: header), let before else { return false }
+            return now != before
+        }
+        let bar = try #require(surface.screenLines.lastIndex { $0.contains("F1Help") })
+        let help = try #require(surface.screenLines[bar].range(of: "F1Help")).lowerBound.utf16Offset(in: surface.screenLines[bar])
+        surface.click(column: help + 2, row: bar)
+        try await host.waitUntil("htop's help", screen: { surface.screen }) { surface.screen.contains("CPU usage bar:") }
+        // Any key leaves help (Enter: harmless in the main screen; a lone
+        // Escape waits on htop's escape delay).
+        for attempt in 0..<6 where !surface.screen.contains("F10Quit") {
+            surface.press(keycode: attempt % 2 == 0 ? Key.returnKey : Key.escape)
+            try? await host.waitUntil("back from help", timeout: .seconds(2)) { surface.screen.contains("F10Quit") }
+        }
+        try await host.waitUntil("back from help", screen: { surface.screen }) { surface.screen.contains("F10Quit") }
+        let grid = surface.gridSize
+        surface.setSize(width: 600, height: 400)
+        try await host.waitUntil("a new grid") { surface.gridSize != grid }
+        try await host.waitUntil("a redraw at the new size", timeout: .seconds(15), screen: { surface.screen }) {
+            surface.screen.contains("PID") && surface.screenLines.allSatisfy { $0.count <= (surface.gridSize?.columns ?? 0) }
+        }
+        for attempt in 0..<5 where !surface.allText.contains("TUI-EXIT=") {
+            surface.press(keycode: Key.f10)
+            try? await host.waitUntil("htop to quit", timeout: .seconds(attempt == 4 ? 10 : 2)) { surface.allText.contains("TUI-EXIT=") }
+        }
+        try await host.waitUntil("htop's exit status", timeout: .seconds(15), screen: { surface.allText }) {
+            surface.allText.contains("TUI-EXIT=0")
+        }
+    }
+
+    /// mactop (Apple Silicon monitor, no sudo needed): it draws, redraws
+    /// for a new size, and quits with q.
+    static func driveMactop(_ surface: TestSurface) async throws {
+        let host = GhosttyTestHost.shared
+        try await host.waitUntil("mactop to draw", timeout: .seconds(30), screen: { surface.screen }) {
+            surface.screen.contains("mactop") && surface.screen.contains("Process List")
+        }
+        let grid = surface.gridSize
+        surface.setSize(width: 1000, height: 640)
+        try await host.waitUntil("a new grid") { surface.gridSize != grid }
+        try await host.waitUntil("a redraw at the new size", timeout: .seconds(15), screen: { surface.screen }) {
+            guard let columns = surface.gridSize?.columns else { return false }
+            // Its frame spans the new width.
+            return surface.screenLines.contains { $0.hasPrefix("╭") && $0.count == columns }
+        }
+        for attempt in 0..<5 where !surface.allText.contains("TUI-EXIT=") {
+            surface.typeKeys("q")
+            try? await host.waitUntil("mactop to quit", timeout: .seconds(attempt == 4 ? 10 : 2)) { surface.allText.contains("TUI-EXIT=") }
+        }
+        try await host.waitUntil("mactop's exit status", timeout: .seconds(15), screen: { surface.allText }) {
+            surface.allText.contains("TUI-EXIT=0")
+        }
+    }
+
     static let lessCommand = command("sh -c 'seq 1 500 | less'", extraEnvironment: "LESS= LESSOPEN= LESSKEY=/dev/null", path: "/usr/bin:/bin")
     static let topCommand = command("top", path: "/usr/bin:/bin")
     static let vimCommand = command(

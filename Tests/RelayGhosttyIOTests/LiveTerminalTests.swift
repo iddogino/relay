@@ -216,6 +216,127 @@ struct LiveTerminalTests {
         try await terminal.close()
     }
 
+    // MARK: System monitors (where the live host has them)
+
+    /// Whether the live host has an executable at `path`.
+    static func liveHas(_ path: String) async -> Bool {
+        guard let target else { return false }
+        let result = try? await pool.exec(target: target, command: "test -x \(path)", stdin: Data(), timeout: .seconds(15))
+        return result?.exitCode == 0
+    }
+
+    enum Transport: String, CaseIterable, CustomTestStringConvertible, Sendable {
+        case builtIn
+        /// The system ssh in a local terminal: Relay's other path.
+        case systemSSH
+        var testDescription: String { rawValue }
+    }
+
+    /// `command` on the live host over `transport`, in a terminal that
+    /// stays after it ends; and how to close it.
+    func terminal(_ command: String, over transport: Transport) throws -> (surface: TestSurface, close: () async throws -> Void) {
+        switch transport {
+        case .builtIn:
+            let io = ManualTerminalIO()
+            let surface = TestSurface(mode: .manual(io), waitAfterCommand: true, captureIO: false)
+            try #require(surface.surface != nil)
+            let link = SSHTerminalLink(io: io, pool: Self.pool, configuration: .init(
+                target: Self.target!, command: command, environment: [("LANG", "en_US.UTF-8")]))
+            link.start()
+            return (surface, { link.close(); try await surface.free() })
+        case .systemSSH:
+            let target = Self.target!
+            let ssh = "/usr/bin/ssh -tt -o BatchMode=yes -p \(target.port) \(target.username)@\(target.host) "
+                + TerminalProtocolTests.shellQuote(command)
+            let surface = TestSurface(mode: .exec(command: "/usr/bin/env LANG=en_US.UTF-8 " + ssh), waitAfterCommand: true)
+            try #require(surface.surface != nil)
+            return (surface, { try await surface.free() })
+        }
+    }
+
+    /// `program` (fresh home, `path`) inside tmux on a private socket, set
+    /// up as Relay sets up its sessions; once tmux is gone, its exit status
+    /// and the terminal's modes are reported (as `RealTUITests.command`
+    /// does).
+    static func inRelayTmuxCommand(_ program: String, path: String, socket: String) -> String {
+        let inner = """
+        trap '' INT; t=$(mktemp -d /tmp/relay-tui.XXXXXX); cd "$t"
+        HOME="$t" PATH='\(path)' \(program); echo $? > "$1/status"; cd /; rm -rf "$t"
+        """
+        let probe = TerminalProtocolTests.probeCommand(["query"] + RealTUITests.modes.map { TerminalProtocolTests.hex($0.query) })
+        let script = """
+        d=$(mktemp -d /tmp/relay-tmux.XXXXXX); trap 'rm -rf "$d"' EXIT HUP TERM
+        cat > "$d/conf" <<'CONF'
+        set -s escape-time 10
+        set -s focus-events on
+        set -sa terminal-features ',xterm-256color:RGB'
+        set -sa terminal-overrides ',xterm-256color:smcup@:rmcup@'
+        set -g status off
+        set -g mouse off
+        set -g allow-passthrough on
+        CONF
+        printf '%s' '\(Data(inner.utf8).base64EncodedString())' | base64 -d > "$d/inner"
+        PATH=/opt/homebrew/bin:/usr/local/bin:$PATH tmux -L \(socket) -f "$d/conf" new-session -s tui "sh $d/inner $d"
+        rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/\(socket)"
+        printf '\\033[0m\\033[H\\033[2J'; echo "TUI-EXIT=$(cat "$d/status" 2>/dev/null)"; PROBE_NOCLEAR=1 \(probe)
+        """
+        return "sh -c " + TerminalProtocolTests.shellQuote(script)
+    }
+
+    @Test(.enabled(if: target != nil), arguments: Transport.allCases)
+    func htopDrawsResizesTakesClicksAndQuits(over transport: Transport) async throws {
+        guard await Self.liveHas("/usr/bin/htop") else { return }
+        // A fresh home, and no settings file at all (htop saves its settings
+        // as it exits, even on a hangup).
+        let (surface, close) = try terminal(RealTUITests.command("/usr/bin/htop", extraEnvironment: "HTOPRC=/dev/null", path: "/usr/bin:/bin"),
+                                            over: transport)
+        try await RealTUITests.driveHtop(surface)
+        try await RealTUITests.expectModesRestored(surface)
+        try await close()
+    }
+
+    @Test(.enabled(if: target != nil), arguments: Transport.allCases)
+    func htopInTmux(over transport: Transport) async throws {
+        guard await Self.liveHas("/usr/bin/htop") else { return }
+        let socket = "relay-live-\(UUID().uuidString.prefix(8))"
+        let (surface, close) = try terminal(Self.inRelayTmuxCommand("HTOPRC=/dev/null /usr/bin/htop", path: "/usr/bin:/bin", socket: socket),
+                                            over: transport)
+        do {
+            try await RealTUITests.driveHtop(surface)
+            try await RealTUITests.expectModesRestored(surface)
+        } catch {
+            try await killTmux(socket)
+            throw error
+        }
+        try await close()
+    }
+
+    static let mactopPath = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin"
+
+    @Test(.enabled(if: target != nil), arguments: Transport.allCases)
+    func mactopDrawsResizesAndQuits(over transport: Transport) async throws {
+        guard await Self.liveHas("/opt/homebrew/bin/mactop") else { return }
+        let (surface, close) = try terminal(RealTUITests.command("mactop", path: Self.mactopPath), over: transport)
+        try await RealTUITests.driveMactop(surface)
+        try await RealTUITests.expectModesRestored(surface)
+        try await close()
+    }
+
+    @Test(.enabled(if: target != nil), arguments: Transport.allCases)
+    func mactopInTmux(over transport: Transport) async throws {
+        guard await Self.liveHas("/opt/homebrew/bin/mactop") else { return }
+        let socket = "relay-live-\(UUID().uuidString.prefix(8))"
+        let (surface, close) = try terminal(Self.inRelayTmuxCommand("mactop", path: Self.mactopPath, socket: socket), over: transport)
+        do {
+            try await RealTUITests.driveMactop(surface)
+            try await RealTUITests.expectModesRestored(surface)
+        } catch {
+            try await killTmux(socket)
+            throw error
+        }
+        try await close()
+    }
+
     // MARK: Coding agents
 
     /// The remote's own copy of `tool`, run like RealTUITests does locally
