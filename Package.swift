@@ -16,9 +16,10 @@ let package = Package(
         .package(path: "RelaySyntaxHighlighter"),
         // Built-in SSH client (RelaySSH). The maintainer's (Joannis
         // Orlandos, of Citadel) fork of apple/swift-nio-ssh: it adds custom
-        // private keys, which signing through ssh-agent needs. Pinned
-        // exactly — this is the crypto/transport layer.
-        .package(url: "https://github.com/Joannis/swift-nio-ssh.git", exact: "0.3.5"),
+        // private keys, which signing through ssh-agent needs. Vendored at
+        // 0.3.5 with a crash fix from upstream — see
+        // ThirdParty/swift-nio-ssh/RELAY.md.
+        .package(path: "ThirdParty/swift-nio-ssh"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.12.3"),
     ],
@@ -43,6 +44,16 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
 
+        // Connects a libghostty surface in manual I/O mode (the Relay patch,
+        // see patches/ghostty) to a program it doesn't run itself: output
+        // in, keystrokes and size changes out, over RelaySSH.
+        .target(
+            name: "RelayGhosttyIO",
+            dependencies: ["GhosttyKit", "RelaySSH"],
+            path: "Sources/RelayGhosttyIO",
+            linkerSettings: ghosttyLinkerSettings
+        ),
+
         // Domain, runtime providers, and persistence. No AppKit, no libghostty.
         .target(
             name: "RelayCore",
@@ -56,6 +67,7 @@ let package = Package(
             dependencies: [
                 "RelayCore",
                 "GhosttyKit",
+                "RelayGhosttyIO",
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "RelaySyntaxHighlighter", package: "RelaySyntaxHighlighter"),
             ],
@@ -63,17 +75,7 @@ let package = Package(
             linkerSettings: [
                 // Sparkle.framework is embedded at Contents/Frameworks.
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
-                .linkedLibrary("c++"),
-                .linkedFramework("AppKit"),
-                .linkedFramework("Carbon"),
-                .linkedFramework("Metal"),
-                .linkedFramework("MetalKit"),
-                .linkedFramework("CoreText"),
-                .linkedFramework("QuartzCore"),
-                .linkedFramework("IOSurface"),
-                .linkedFramework("CoreVideo"),
-                .linkedFramework("UniformTypeIdentifiers"),
-            ]
+            ] + ghosttyLinkerSettings
         ),
 
         // Live end-to-end harness driving the real provider against real remotes.
@@ -91,8 +93,60 @@ let package = Package(
 
         .testTarget(
             name: "RelaySSHTests",
-            dependencies: ["RelaySSH"],
+            dependencies: [
+                "RelaySSH",
+                "RelayTestSupport",
+                .product(name: "NIOEmbedded", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ],
             path: "Tests/RelaySSHTests"
+        ),
+
+        // Libghostty manual I/O, from the C API up to full terminals over SSH.
+        .testTarget(
+            name: "RelayGhosttyIOTests",
+            dependencies: ["RelayGhosttyIO", "GhosttyKit", "RelaySSH", "RelayTestSupport"],
+            path: "Tests/RelayGhosttyIOTests",
+            // The terminal probe the tests run (read from source, not bundled).
+            exclude: ["Fixtures"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+
+        // Test-only SSH servers: an in-process fake that runs real
+        // processes on real ptys (with fault injection), and a throwaway
+        // instance of the system's OpenSSH sshd.
+        .target(
+            name: "RelayTestSupport",
+            dependencies: [
+                "RelaySSH",
+                "RelayPTYSpawn",
+                .product(name: "NIOSSH", package: "swift-nio-ssh"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Tests/Support/RelayTestSupport",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .target(
+            name: "RelayPTYSpawn",
+            path: "Tests/Support/RelayPTYSpawn"
         ),
     ]
 )
+
+/// What linking libghostty needs on macOS.
+var ghosttyLinkerSettings: [LinkerSetting] {
+    [
+        .linkedLibrary("c++"),
+        .linkedFramework("AppKit"),
+        .linkedFramework("Carbon"),
+        .linkedFramework("Metal"),
+        .linkedFramework("MetalKit"),
+        .linkedFramework("CoreText"),
+        .linkedFramework("QuartzCore"),
+        .linkedFramework("IOSurface"),
+        .linkedFramework("CoreVideo"),
+        .linkedFramework("UniformTypeIdentifiers"),
+    ]
+}

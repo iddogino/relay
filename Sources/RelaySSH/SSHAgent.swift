@@ -73,12 +73,12 @@ public struct SSHAgent: Sendable {
 
         var framed = SSHWireWriter()
         framed.writeString(request)
-        try writeAll(fd: fd, data: framed.data)
+        try Self.writeAll(fd: fd, data: framed.data)
 
-        let header = try readExactly(fd: fd, count: 4)
+        let header = try Self.readExactly(fd: fd, count: 4)
         let length = header.reduce(0) { ($0 << 8) | Int($1) }
         guard length > 0, length < 256 * 1024 else { throw AgentError.malformedReply }
-        var reader = SSHWireReader(try readExactly(fd: fd, count: length))
+        var reader = SSHWireReader(try Self.readExactly(fd: fd, count: length))
         let type = try reader.readByte()
         guard type == replyType else { throw AgentError.refused }
         return reader
@@ -117,35 +117,27 @@ public struct SSHAgent: Sendable {
         return fd
     }
 
-    private func writeAll(fd: Int32, data: Data) throws {
+    static func writeAll(fd: Int32, data: Data) throws {
         try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
             guard let base = buffer.baseAddress else { return }
             var offset = 0
             while offset < buffer.count {
-                let n = write(fd, base + offset, buffer.count - offset)
-                if n > 0 {
-                    offset += n
-                } else if n == -1 && errno == EINTR {
-                    continue
-                } else {
-                    throw AgentError.io("write: errno \(errno)")
-                }
+                var n: Int
+                repeat { n = write(fd, base + offset, buffer.count - offset) } while n == -1 && errno == EINTR
+                guard n > 0 else { throw AgentError.io("write: errno \(errno)") }
+                offset += n
             }
         }
     }
 
-    private func readExactly(fd: Int32, count: Int) throws -> Data {
+    static func readExactly(fd: Int32, count: Int) throws -> Data {
         var result = Data(capacity: count)
         var buffer = [UInt8](repeating: 0, count: min(count, 65536))
         while result.count < count {
-            let n = read(fd, &buffer, min(buffer.count, count - result.count))
-            if n > 0 {
-                result.append(contentsOf: buffer[0..<n])
-            } else if n == -1 && errno == EINTR {
-                continue
-            } else {
-                throw AgentError.io(n == 0 ? "agent closed the connection" : "read: errno \(errno)")
-            }
+            var n: Int
+            repeat { n = read(fd, &buffer, min(buffer.count, count - result.count)) } while n == -1 && errno == EINTR
+            guard n > 0 else { throw AgentError.io(n == 0 ? "agent closed the connection" : "read: errno \(errno)") }
+            result.append(contentsOf: buffer[0..<n])
         }
         return result
     }

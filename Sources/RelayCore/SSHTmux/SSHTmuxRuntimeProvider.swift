@@ -332,6 +332,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         fi
         exec "$tp" set-option -t \(name) status off ';' set-option -t \(name) mouse off ';' attach-session -t \(name)
         """
+        let remoteCommand = ["sh", "-c", POSIXShellQuote.quote(attachScript)]
         return TerminalLaunchSpec(
             executable: URL(fileURLWithPath: SSHCommandRunner.sshPath),
             arguments: configArguments + [
@@ -339,13 +340,26 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                 "-o", "ConnectTimeout=10",
                 "--",
                 alias,
-                "sh", "-c", POSIXShellQuote.quote(attachScript),
-            ],
+            ] + remoteCommand,
             environment: [
                 "TERM_PROGRAM": "Relay",
                 "COLORTERM": "truecolor",
-            ]
+            ],
+            builtIn: builtInTerminal(alias: alias, remoteCommand: remoteCommand)
         )
+    }
+
+    /// The built-in client's version of the launch, when it takes this
+    /// host's terminals. ssh sends its remote arguments joined by spaces as
+    /// one command line; this sends that same line.
+    private func builtInTerminal(alias: String, remoteCommand: [String]) -> BuiltInTerminal? {
+        guard let router = runner.builtIn, let target = router.terminalTarget(for: alias) else { return nil }
+        return BuiltInTerminal(
+            target: target,
+            command: remoteCommand.joined(separator: " "),
+            environment: BuiltInSSHRouter.forwardedEnvironment,
+            pool: router.pool,
+            reportOpenFailure: { [router] error in router.noteTerminalOpenFailure(alias: alias, error: error) })
     }
 
     public func sessionExists(_ session: RemoteSession, project: Project) async throws -> Bool {

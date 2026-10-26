@@ -61,6 +61,7 @@ final class GhosttyRuntime {
 
         ghostty_app_set_focus(app, NSApp.isActive)
         syncColorScheme()
+        TerminalSnapshots.installIfDevBuild()
 
         let center = NotificationCenter.default
         center.addObserver(
