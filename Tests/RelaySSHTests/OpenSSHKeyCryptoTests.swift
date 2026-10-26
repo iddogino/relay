@@ -5,7 +5,7 @@ import Testing
 
 /// Passphrase-protected key files and writing keys back out, checked
 /// against the real ssh-keygen in both directions.
-@Suite("OpenSSH key files: decryption and export")
+@Suite("OpenSSH key files: decryption and export", .serialized)
 struct OpenSSHKeyCryptoTests {
     let scratch: URL
 
