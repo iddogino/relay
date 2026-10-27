@@ -77,10 +77,92 @@ struct SSHConfigEvaluatorTests {
     }
 
     static func differences(_ ours: [String: [String]], _ ssh: [String: [String]]) -> [String] {
-        comparedKeys.compactMap { key in
+        let ssh = olderSSH.normalized(ssh)
+        return comparedKeys.compactMap { key in
             let a = ours[key] ?? [], b = ssh[key] ?? []
+            if key == "user", !olderSSH.expandsUser, b.contains(where: { $0.contains("%") || $0.contains("${") }) {
+                return nil
+            }
             return a == b ? nil : "\(key): ours \(a) vs ssh \(b)"
         }
+    }
+
+    /// The evaluator follows OpenSSH 10. An older `ssh` (CI's macOS image)
+    /// differs in three ways, detected rather than assumed from its
+    /// version: it doesn't expand tokens or variables in `User` (those
+    /// comparisons are skipped), its default IdentityFile list has more
+    /// entries (`id_xmss`, `id_dsa`, dropped from its answers), and a
+    /// `ProxyJump none` stops a later ProxyCommand (that case is skipped).
+    struct OlderSSH {
+        var expandsUser = true
+        var extraDefaultIdentityFiles: Set<String> = []
+        var proxyJumpNoneKeepsProxyCommand = true
+
+        func normalized(_ ssh: [String: [String]]) -> [String: [String]] {
+            guard !extraDefaultIdentityFiles.isEmpty, let files = ssh["identityfile"] else { return ssh }
+            var ssh = ssh
+            ssh["identityfile"] = files.filter { !extraDefaultIdentityFiles.contains($0) }
+            return ssh
+        }
+    }
+
+    static let olderSSH: OlderSSH = {
+        guard let fixture = try? Fixture(),
+              let path = try? fixture.write("config", "Host probe\n  User u%h\nHost jump\n  ProxyJump none\n  ProxyCommand nc x\n"),
+              let probe = try? sshG(config: path, alias: "probe"),
+              let jump = try? sshG(config: path, alias: "jump") else { return OlderSSH() }
+        return OlderSSH(
+            expandsUser: probe["user"] == ["uprobe"],
+            extraDefaultIdentityFiles: Set(probe["identityfile"] ?? []).subtracting(SSHConfigEvaluator.defaultIdentityFiles),
+            proxyJumpNoneKeepsProxyCommand: jump["proxycommand"] == ["nc x"])
+    }()
+
+    @Test func theInstalledSSHIsUnderstood() {
+        // On OpenSSH 10 (this Mac, the evaluator's model) nothing differs.
+        let version = Self.sshVersion()
+        if version.hasPrefix("OpenSSH_1") {
+            #expect(Self.olderSSH.expandsUser)
+            #expect(Self.olderSSH.extraDefaultIdentityFiles.isEmpty)
+            #expect(Self.olderSSH.proxyJumpNoneKeepsProxyCommand)
+        }
+        // Whatever the version, only the known extras are ever dropped.
+        #expect(Self.olderSSH.extraDefaultIdentityFiles.isSubset(of: ["~/.ssh/id_xmss", "~/.ssh/id_dsa"]), "\(version)")
+    }
+
+    @Test func olderSSHAdjustmentsAreNarrow() {
+        let older = OlderSSH(expandsUser: false, extraDefaultIdentityFiles: ["~/.ssh/id_xmss", "~/.ssh/id_dsa"],
+                             proxyJumpNoneKeepsProxyCommand: false)
+        let answer = ["identityfile": SSHConfigEvaluator.defaultIdentityFiles + ["~/.ssh/id_xmss", "~/.ssh/id_dsa"], "port": ["22"]]
+        #expect(older.normalized(answer) == ["identityfile": SSHConfigEvaluator.defaultIdentityFiles, "port": ["22"]])
+        #expect(older.normalized(["identityfile": ["~/.ssh/mine"]]) == ["identityfile": ["~/.ssh/mine"]])
+        #expect(Self.hasProxyJumpNone("Host a\n  ProxyJump none\n"))
+        #expect(Self.hasProxyJumpNone("Host a\n\tPROXYJUMP=\"NONE\"\r\n"))
+        #expect(!Self.hasProxyJumpNone("Host a\n  ProxyJump none # c\n"))
+        #expect(!Self.hasProxyJumpNone("Host a\n  ProxyJump j1\n  ProxyCommand none\n"))
+    }
+
+    /// Whether a config has a `ProxyJump none` line (any spelling).
+    static func hasProxyJumpNone(_ config: String) -> Bool {
+        config.split(whereSeparator: \.isNewline).contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let end = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" || $0 == "=" }),
+                  trimmed[..<end].lowercased() == "proxyjump" else { return false }
+            let value = trimmed[end...].trimmingCharacters(in: CharacterSet(charactersIn: " \t=\""))
+            return value.lowercased() == "none"
+        }
+    }
+
+    static func sshVersion() -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: sshPath)
+        process.arguments = ["-V"]
+        let err = Pipe()
+        process.standardError = err
+        process.standardOutput = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return "" }
+        let data = err.fileHandleForReading.readDataToEndOfFile()
+        process.waitForExit()
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// Asserts the evaluator agrees with `ssh -G` for every alias.
@@ -277,6 +359,9 @@ struct SSHConfigEvaluatorTests {
             "Host a\n  ProxyJump j1,ssh://u@j2:2200\n",
             "Host a\n  ProxyJump j1#c\n  User u%j\n",
         ] {
+            if config == "Host a\n  ProxyJump none\n  ProxyCommand nc x\n", !Self.olderSSH.proxyJumpNoneKeepsProxyCommand {
+                continue
+            }
             try Self.expectAgreement(config, aliases: ["a"])
         }
     }
@@ -337,22 +422,30 @@ struct SSHConfigEvaluatorTests {
         let environment = ProcessInfo.processInfo.environment
         let cases = environment["RELAY_SSHCFG_FUZZ_CASES"].flatMap(Int.init) ?? 220
         var rng = SplitMix64(seed: environment["RELAY_SSHCFG_FUZZ_SEED"].flatMap(UInt64.init) ?? 0x5EED_C0F1)
-        var compared = 0, rejected = 0
+        var compared = 0, rejected = 0, skipped = 0
         var failures: [String] = []
+        var failingKeys: [String: Int] = [:]
         for index in 0..<cases {
             let fixture = try Fixture()
             let config = try ConfigGrammar.config(&rng, fixture: fixture)
+            // Behaviour that changed in OpenSSH 10 (see OlderSSH).
+            if !Self.olderSSH.proxyJumpNoneKeepsProxyCommand, Self.hasProxyJumpNone(config) {
+                skipped += 1
+                continue
+            }
             let path = try fixture.write("config", config)
             for alias in ConfigGrammar.aliases {
                 guard let ssh = try Self.sshG(config: path, alias: alias) else { rejected += 1; continue }
                 compared += 1
                 let diffs = Self.differences(Self.evaluate(config: path, alias: alias), ssh)
+                for diff in diffs { failingKeys[String(diff.prefix { $0 != ":" }), default: 0] += 1 }
                 if !diffs.isEmpty, failures.count < 5 {
                     failures.append("case \(index) alias \(alias): \(diffs.joined(separator: "; "))\n\(config)")
                 }
             }
         }
-        #expect(failures.isEmpty, "\(failures.joined(separator: "\n\n"))")
+        #expect(failures.isEmpty, "differing keys \(failingKeys)\n\(failures.joined(separator: "\n\n"))")
+        #expect(skipped < cases / 2, "skipped \(skipped) of \(cases)")
         #expect(compared > rejected * 4, "compared \(compared), ssh rejected \(rejected)")
     }
 
