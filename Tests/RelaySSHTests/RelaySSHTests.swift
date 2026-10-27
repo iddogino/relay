@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import RelayTestSupport
 import NIOCore
 @preconcurrency import NIOSSH
 import Testing
@@ -70,7 +71,7 @@ struct RelaySSHTests {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
         process.arguments = ["-q", "-t", type, "-N", passphrase, "-C", "", "-f", path]
         try process.run()
-        process.waitUntilExit()
+        process.waitForExit()
         return path
     }
 

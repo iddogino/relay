@@ -19,16 +19,19 @@ Remote (from ~/.ssh/config)
 
 The terminal is a real [libghostty](https://github.com/ghostty-org/ghostty)
 surface (Metal renderer) — your own Ghostty configuration (font, theme,
-keybinds) applies automatically. SSH and tmux are invisible implementation
-details: if `ssh <alias>` works and the remote has `tmux`, Relay works without
-changing the remote machine in any way.
+keybinds) can apply too (Settings ▸ Terminal). SSH and tmux are invisible
+implementation details: if you can SSH to a machine and it has `tmux`, Relay
+works without changing the remote machine in any way.
 
 ## What it does
 
-- **Remotes** are discovered from `~/.ssh/config` (including `Include`d files).
-  Connections always run through `/usr/bin/ssh <alias>`, so keys, agents,
-  `ProxyJump`, Tailscale names, `ControlMaster` — everything you configured —
-  just works.
+- **Hosts** are Relay's own list (Settings ▸ Hosts), added by hand or
+  imported from `~/.ssh/config` (`Include`, `Match` and wildcards evaluated
+  in-app, jump hosts brought along). Relay connects with its built-in SSH
+  client — no `ssh` process, so it runs in the App Sandbox — signing in with a
+  Relay key (synced through iCloud Keychain, or kept in the Secure Enclave),
+  your SSH agent, a key file (certificates too) or a password, through jump
+  hosts like `ProxyJump`.
 - **Projects** pin a folder on a remote, with an optional *launch command*
   (run in every new session — `claude`, `codex`, your worktree bootstrap
   script, anything) and an optional *shutdown command* (run when you archive a
@@ -59,11 +62,11 @@ Two conveniences make the remote feel local:
 
 - **Localhost links point at the right machine.** When something in the
   terminal prints `http://localhost:3000` and you ⌘-click it, Relay rewrites
-  the loopback host to the session's remote (resolved via `ssh -G`) and opens
+  the loopback host to the session's remote (its hostname in Relay) and opens
   it in your local default browser. Ports, paths and queries are preserved;
   `*.localhost` virtual hosts are left alone.
 - **Drop a file on the terminal to upload it.** The file (or folder) is
-  copied to a fresh scratch directory on the remote via scp and the remote
+  streamed to a fresh scratch directory on the remote and the remote
   path is typed into the terminal, quoted. Hold ⌥ while dropping to insert
   the local path instead. Uploads show progress, can be cancelled, and clean
   up after themselves on failure; if you switch sessions mid-upload the

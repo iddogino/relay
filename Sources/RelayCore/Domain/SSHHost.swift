@@ -32,9 +32,11 @@ public struct SSHHost: Codable, Sendable, Hashable, Identifiable {
     /// nil means the local username (OpenSSH's default).
     public var user: String?
     public var auth: SSHHostAuth
-    /// Settings found at import that Relay doesn't model (ProxyJump, …).
-    /// On the Mac they still apply — the user's ssh config is consulted
-    /// after Relay's own entry — but they won't carry to other devices.
+    /// Another Relay host (by alias) to connect through first, as
+    /// OpenSSH's ProxyJump. That host may have its own jump host.
+    public var proxyJump: String?
+    /// Settings found at import that Relay doesn't model (forwards,
+    /// ProxyCommand…), shown so the user knows they don't apply.
     public var inheritedOptions: [String]
 
     public init(
@@ -43,6 +45,7 @@ public struct SSHHost: Codable, Sendable, Hashable, Identifiable {
         port: Int? = nil,
         user: String? = nil,
         auth: SSHHostAuth = .automatic,
+        proxyJump: String? = nil,
         inheritedOptions: [String] = []
     ) {
         self.alias = alias
@@ -50,6 +53,7 @@ public struct SSHHost: Codable, Sendable, Hashable, Identifiable {
         self.port = port
         self.user = user
         self.auth = auth
+        self.proxyJump = proxyJump
         self.inheritedOptions = inheritedOptions
     }
 
@@ -60,6 +64,7 @@ public struct SSHHost: Codable, Sendable, Hashable, Identifiable {
         port = try container.decodeIfPresent(Int.self, forKey: .port)
         user = try container.decodeIfPresent(String.self, forKey: .user)
         auth = try container.decodeIfPresent(SSHHostAuth.self, forKey: .auth) ?? .automatic
+        proxyJump = try container.decodeIfPresent(String.self, forKey: .proxyJump)
         inheritedOptions = try container.decodeIfPresent([String].self, forKey: .inheritedOptions) ?? []
     }
 
@@ -76,7 +81,7 @@ public struct SSHHost: Codable, Sendable, Hashable, Identifiable {
     // MARK: Validation
 
     public enum ValidationError: Error, Equatable, LocalizedError {
-        case alias, hostname, port, user, keyPath, storedKey
+        case alias, hostname, port, user, keyPath, storedKey, proxyJump
 
         public var errorDescription: String? {
             switch self {
@@ -86,6 +91,7 @@ public struct SSHHost: Codable, Sendable, Hashable, Identifiable {
             case .user: return "The username can't contain spaces or quotes."
             case .keyPath: return "Choose a key file."
             case .storedKey: return "Set up a Relay key for this host."
+            case .proxyJump: return "Choose another host to connect through."
             }
         }
     }
@@ -102,6 +108,9 @@ public struct SSHHost: Codable, Sendable, Hashable, Identifiable {
         if case .keyFile(let path, let certificate) = auth {
             guard Self.isValidPath(path) else { throw ValidationError.keyPath }
             if let certificate, !certificate.isEmpty, !Self.isValidPath(certificate) { throw ValidationError.keyPath }
+        }
+        if let proxyJump {
+            guard Self.isValidAlias(proxyJump), proxyJump != alias else { throw ValidationError.proxyJump }
         }
         if case .storedKey(let id) = auth {
             guard !id.isEmpty, id.count <= 64, id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else {

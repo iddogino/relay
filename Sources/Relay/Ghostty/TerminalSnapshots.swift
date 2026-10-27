@@ -50,7 +50,7 @@ enum TerminalSnapshots {
     }
 
     private static func writeAll() {
-        let dir = AppVariant.dataDirectory.appendingPathComponent("snapshots", isDirectory: true)
+        let dir = AppVariant.devHookDirectory.appendingPathComponent("snapshots", isDirectory: true)
         // Start clean, so nothing from an earlier snapshot is mistaken for
         // this one.
         try? FileManager.default.removeItem(at: dir)
@@ -81,7 +81,7 @@ enum TerminalSnapshots {
 
 extension TerminalSnapshots {
     private static func drive() {
-        let dir = AppVariant.dataDirectory
+        let dir = AppVariant.devHookDirectory
         let resultURL = dir.appendingPathComponent("drive-result.json")
         try? FileManager.default.removeItem(at: resultURL)
         guard let data = try? Data(contentsOf: dir.appendingPathComponent("drive.json")),

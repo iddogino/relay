@@ -30,7 +30,8 @@ public actor SSHConnectionPool {
         public init() {}
     }
 
-    private final class Slot {
+    /// Only read or changed on the actor (closures merely carry it back).
+    private final class Slot: @unchecked Sendable {
         let connection: SSHConnection
         var activeChannels = 0
         var lastUsed = ContinuousClock.now
@@ -332,9 +333,49 @@ public actor SSHConnectionPool {
             for: target.credentials, agent: options.agent, defaultKeyFiles: options.defaultKeyFiles,
             keyStore: options.keyStore)
         let knownHosts = KnownHosts.load(files: options.knownHostsFiles)
-        return try await SSHConnection.connect(
-            target: target, offers: offers, knownHosts: knownHosts, group: group,
-            connectTimeout: options.connectTimeout, handshakeTimeout: options.handshakeTimeout)
+        guard let last = target.jumps.last else {
+            return try await SSHConnection.connect(
+                target: target, offers: offers, knownHosts: knownHosts, group: group,
+                connectTimeout: options.connectTimeout, handshakeTimeout: options.handshakeTimeout)
+        }
+        // Through the last jump host — itself reached through the ones
+        // before it — on a pooled connection that the forward occupies a
+        // channel of until this connection closes.
+        let hop = SSHTarget(
+            host: last.host, port: last.port, username: last.username, credentials: last.credentials,
+            jumps: Array(target.jumps.dropLast()))
+        let slot: Slot
+        do {
+            (slot, _) = try await acquire(hop)
+        } catch let error as SSHClientError {
+            throw Self.throughJump(error, hop: hop)
+        }
+        do {
+            let connection = try await SSHConnection.connect(
+                target: target, offers: offers, knownHosts: knownHosts, through: slot.connection,
+                openTimeout: options.channelOpenTimeout, handshakeTimeout: options.handshakeTimeout)
+            connection.closeFuture.whenComplete { [weak self] _ in
+                guard let self else { return }
+                Task { await self.release(slot, target: hop) }
+            }
+            return connection
+        } catch {
+            // A jump connection that can't open the forward is stale.
+            if case SSHClientError.channelFailed = error { slot.retired = true }
+            release(slot, target: hop)
+            throw error
+        }
+    }
+
+    /// A jump host's own failure, told apart from the target's: its host
+    /// key or sign-in is a problem with that host, not this one.
+    static func throughJump(_ error: SSHClientError, hop: SSHTarget) -> SSHClientError {
+        switch error {
+        case .unreachable, .connectionLost:
+            return error
+        case .hostKeyNotTrusted, .authenticationFailed, .handshakeFailed, .channelFailed:
+            return .handshakeFailed("jump host \(hop.host): \(error.description)")
+        }
     }
 
     /// Authentication attempts in OpenSSH's order: the configured key
@@ -366,6 +407,14 @@ public actor SSHConnectionPool {
             offeredBlobs.insert(blob)
             offers.append(.privateKey(.init(privateKey: key)))
         }
+        // OpenSSH offers a key's certificate first, then the plain key.
+        func offerCertified(_ path: String, certificate: NIOSSHCertifiedPublicKey, agentIdentity: SSHAgent.Identity?) {
+            if let agentIdentity, let agent, let key = AgentKeys.privateKey(for: agentIdentity, agent: agent) {
+                offers.append(.privateKey(.init(privateKey: key, certifiedKey: certificate)))
+            } else if let key = try? OpenSSHKeyFile.load(path: path) {
+                offers.append(.privateKey(.init(privateKey: key, certifiedKey: certificate)))
+            }
+        }
 
         switch credentials {
         case .password(let password):
@@ -373,11 +422,16 @@ public actor SSHConnectionPool {
         case .storedKey(let id):
             guard let key = keyStore?.signingKey(id: id) else { return [] }
             return [.privateKey(.init(privateKey: key))]
-        case .keyFile(let path):
+        case .keyFile(let path, let certificatePath):
             let identities = agentIdentities()
-            if let blob = OpenSSHKeyFile.publicKeyBlob(forPrivateKeyAt: path),
-               let identity = identities.first(where: { $0.blob == blob }) {
-                offerAgent(identity)
+            let held = OpenSSHKeyFile.publicKeyBlob(forPrivateKeyAt: path).flatMap { blob in
+                identities.first(where: { $0.blob == blob })
+            }
+            if let certificatePath, let certificate = OpenSSHKeyFile.certificate(at: certificatePath) {
+                offerCertified(path, certificate: certificate, agentIdentity: held)
+            }
+            if let held {
+                offerAgent(held)
             } else {
                 offerFile(path)
             }

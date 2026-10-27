@@ -12,8 +12,9 @@ struct RelayApp: App {
         // Initialize libghostty before any UI exists.
         _ = GhosttyRuntime.shared
         AppearancePreference.stored().apply()
-        let hostRegistry = SSHHostRegistry(
-            configFile: AppVariant.dataDirectory.appendingPathComponent("ssh_config"))
+        // Folders outside the container this build was granted (sandbox).
+        _ = FolderGrants.ssh
+        let hostRegistry = SSHHostRegistry()
         let keyStore = KeychainSSHKeyStore(
             accessGroup: AppVariant.keychainAccessGroup, deviceName: AppVariant.computerName)
         var poolOptions = SSHConnectionPool.Options()
@@ -24,8 +25,6 @@ struct RelayApp: App {
             pool: SSHConnectionPool(options: poolOptions),
             keyStore: keyStore,
             trustedHostsFile: AppVariant.knownHostsFile.path,
-            isEnabled: { UserDefaults.standard.bool(forKey: BuiltInSSHSetting.defaultsKey) },
-            isTerminalEnabled: { UserDefaults.standard.bool(forKey: BuiltInSSHSetting.terminalsDefaultsKey) },
             passwordLookup: { SSHPasswordStore.load(alias: $0) })
         hostRegistry.onHostsChanged = { builtInSSH.hostsChanged() }
         let model = AppModel(
@@ -54,6 +53,8 @@ struct RelayApp: App {
             TabView {
                 HostsSettingsView(model: model)
                     .tabItem { Label("Hosts", systemImage: "server.rack") }
+                TerminalSettingsView()
+                    .tabItem { Label("Terminal", systemImage: "terminal") }
                 NotificationsSettingsView(notifier: model.agentNotifier)
                     .tabItem { Label("Notifications", systemImage: "bell.badge") }
             }
@@ -154,7 +155,7 @@ struct RelayApp: App {
                 // Disabled status line: where PR badges get their API access.
                 Text(gitHubStatusLine)
                 Divider()
-                if case .connected(.device, _) = model.gitHub {
+                if case .connected = model.gitHub {
                     Button("Sign Out of GitHub") {
                         model.signOutGitHub()
                     }
@@ -181,9 +182,7 @@ struct RelayApp: App {
         switch model.gitHub {
         case .checking:
             return "Status: Checking…"
-        case .connected(.cli, let login):
-            return "Status: Connected via gh CLI (@\(login))"
-        case .connected(.device, let login):
+        case .connected(let login):
             return "Status: Connected (@\(login))"
         case .notConnected:
             return "Status: Not Connected"

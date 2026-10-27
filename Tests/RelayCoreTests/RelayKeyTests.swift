@@ -124,7 +124,7 @@ struct RelayKeyTests {
         keygen.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
         keygen.arguments = ["-q", "-t", "ed25519", "-a", "2", "-N", "open sesame", "-C", "me@laptop", "-f", keyPath]
         try keygen.run()
-        keygen.waitUntilExit()
+        keygen.waitForExit()
         let filePublicKey = try String(contentsOfFile: keyPath + ".pub", encoding: .utf8).split(separator: " ").prefix(2).joined(separator: " ")
 
         let store = InMemorySSHKeyStore()
@@ -150,14 +150,20 @@ struct RelayKeyTests {
         #expect(store.keys().count == 1)
     }
 
-    @Test func proxiedHostsCantUseRelayKeys() async throws {
+    @Test func aHostRelayCantReachCantGetAKey() async throws {
         let store = InMemorySSHKeyStore()
         let setup = RelayKeySetup(store: store, pool: SSHConnectionPool(), trustedHostsFile: nil)
         var proxied = SSHHost(alias: "p", hostname: "h", auth: .automatic)
-        proxied.inheritedOptions = ["ProxyJump bastion"]
-        await #expect(throws: RelayKeySetup.Failure.needsDirectConnection) {
+        proxied.inheritedOptions = ["ProxyCommand /x"]
+        await #expect(throws: RelayKeySetup.Failure.self) {
             try await setup.run(.init(host: proxied, storage: .iCloudKeychain))
         }
+        let orphan = SSHHost(alias: "p", hostname: "h", auth: .automatic, proxyJump: "gone")
+        await #expect(throws: RelayKeySetup.Failure.self) {
+            try await setup.run(.init(host: orphan, storage: .iCloudKeychain))
+        }
+        // Nothing was made for a sign-in that couldn't happen.
+        #expect(store.keys().isEmpty)
     }
 
     // MARK: Keys on a host
@@ -209,13 +215,10 @@ struct RelayKeyTests {
     // MARK: Routing
 
     func registry(_ hosts: [SSHHost]) -> SSHHostRegistry {
-        let registry = SSHHostRegistry(
-            configFile: scratch.appendingPathComponent("ssh_config-\(UUID().uuidString)"), userConfigPath: "/u", systemConfigPath: "/s")
-        registry.setHosts(hosts)
-        return registry
+        SSHHostRegistry(hosts: hosts)
     }
 
-    @Test func relayKeyHostsAlwaysUseTheBuiltInClient() throws {
+    @Test func relayKeyHostsNeedTheirKeyOnThisDevice() throws {
         let store = InMemorySSHKeyStore()
         let key = try store.syncedKey()
         let registry = registry([
@@ -223,37 +226,27 @@ struct RelayKeyTests {
             SSHHost(alias: "missing", hostname: "m.example", auth: .storedKey(id: "00000000-0000-0000-0000-000000000000")),
             SSHHost(alias: "plain", hostname: "p.example"),
         ])
-        let router = BuiltInSSHRouter(
-            registry: registry, keyStore: store, isEnabled: { false }, isTerminalEnabled: { false }, passwordLookup: { _ in nil })
-        #expect(router.target(for: "keyed")?.credentials == .storedKey(id: key.id))
-        #expect(router.terminalTarget(for: "keyed") != nil)
-        #expect(router.target(for: "plain") == nil)
-        #expect(router.isRequired("keyed") && !router.isRequired("plain"))
-
-        // Failures never send it to the system ssh.
-        router.noteFallback(alias: "keyed", error: .authenticationFailed)
-        router.noteTerminalOpenFailure(alias: "keyed", error: SSHClientError.authenticationFailed)
-        #expect(router.target(for: "keyed") != nil)
-
+        let router = BuiltInSSHRouter(registry: registry, keyStore: store, passwordLookup: { _ in nil })
+        #expect(router.connection(for: "keyed") == .ready(SSHTarget(
+            host: "k.example", port: 22, username: NSUserName(), credentials: .storedKey(id: key.id))))
         #expect(router.setupProblem(for: "keyed") == nil)
-        #expect(router.setupProblem(for: "missing") == "This host signs in with a Relay key that isn't on this device.")
+        #expect(router.setupProblem(for: "missing") == "This host signs in with a Relay key that isn\u{2019}t on this device.")
         #expect(router.setupProblem(for: "plain") == nil)
     }
 
     @Test func aHostWhoseKeyIsElsewhereNeedsSetup() async throws {
         let registry = registry([SSHHost(alias: "elsewhere", hostname: "e.example", auth: .storedKey(id: "ABC-123"))])
-        let router = BuiltInSSHRouter(
-            registry: registry, keyStore: InMemorySSHKeyStore(), isEnabled: { true }, passwordLookup: { _ in nil })
-        let runner = SSHCommandRunner(configFile: registry.configFile.path, builtIn: router)
+        let router = BuiltInSSHRouter(registry: registry, keyStore: InMemorySSHKeyStore(), passwordLookup: { _ in nil })
+        let runner = SSHCommandRunner(builtIn: router)
         let result = try await runner.runScript(alias: "elsewhere", script: "true")
         #expect(result.exitCode == 255)
         #expect(result.stderr.hasPrefix(SSHCommandRunner.needsSetupPrefix))
 
-        let provider = SSHTmuxRuntimeProvider(runner: runner, hostRegistry: registry, builtInSSH: router)
+        let provider = SSHTmuxRuntimeProvider(hostRegistry: registry, builtInSSH: router)
         let project = Project(name: "p", workspace: WorkspaceRef(provider: .sshTmux, opaqueID: "elsewhere"),
                               pathInput: "/tmp", resolvedPath: "/tmp")
         await #expect(throws: RuntimeProviderError.hostNeedsSetup(
-            workspace: "elsewhere", reason: "This host signs in with a Relay key that isn't on this device.")) {
+            workspace: "elsewhere", reason: "This host signs in with a Relay key that isn\u{2019}t on this device.")) {
             _ = try await provider.listSessions(for: project)
         }
     }
@@ -265,11 +258,10 @@ struct RelayKeyTests {
         let key = try store.syncedKey()
         let registry = registry([host(server, auth: .storedKey(id: key.id))])
         let router = BuiltInSSHRouter(
-            registry: registry, pool: try pool(server, store: store), keyStore: store,
-            isEnabled: { false }, passwordLookup: { _ in nil })
-        let runner = SSHCommandRunner(configFile: registry.configFile.path, builtIn: router)
+            registry: registry, pool: try pool(server, store: store), keyStore: store, passwordLookup: { _ in nil })
+        let runner = SSHCommandRunner(builtIn: router)
         let result = try await runner.runScript(alias: "fake", script: "true")
-        #expect(result.stderr == SSHCommandRunner.needsSetupPrefix + "The host didn't accept this device's Relay key.")
+        #expect(result.stderr == SSHCommandRunner.needsSetupPrefix + "The host didn\u{2019}t accept this device\u{2019}s Relay key.")
     }
 
     // MARK: Test Connection
@@ -281,19 +273,19 @@ struct RelayKeyTests {
         let trustFile = scratch.appendingPathComponent("trust").path
         let pool = try pool(server, store: store, knownHosts: [trustFile])
 
-        let first = await SSHConnectionTest.runBuiltIn(host: host(server), password: FakeSSHServer.password, pool: pool, keyStore: store)
+        let first = await SSHConnectionTest.run(host: host(server), password: FakeSSHServer.password, hosts: { _ in nil }, pool: pool, keyStore: store)
         guard case .untrustedHostKey(let presented) = first else {
             Issue.record("expected an untrusted host key, got \(first)")
             return
         }
         try KnownHosts.trust(host: "127.0.0.1", port: server.port, presentedKey: presented, in: trustFile)
-        let second = await SSHConnectionTest.runBuiltIn(host: host(server), password: FakeSSHServer.password, pool: pool, keyStore: store)
+        let second = await SSHConnectionTest.run(host: host(server), password: FakeSSHServer.password, hosts: { _ in nil }, pool: pool, keyStore: store)
         #expect(second == .ok(tmuxVersion: second.tmuxVersion ?? "") || second == .noTmux)
 
-        let wrong = await SSHConnectionTest.runBuiltIn(host: host(server), password: "nope", pool: pool, keyStore: store)
+        let wrong = await SSHConnectionTest.run(host: host(server), password: "nope", hosts: { _ in nil }, pool: pool, keyStore: store)
         #expect(wrong == .authenticationFailed("Check the user and password."))
-        let elsewhere = await SSHConnectionTest.runBuiltIn(
-            host: host(server, auth: .storedKey(id: "ABC")), password: nil, pool: pool, keyStore: store)
+        let elsewhere = await SSHConnectionTest.run(
+            host: host(server, auth: .storedKey(id: "ABC")), password: nil, hosts: { _ in nil }, pool: pool, keyStore: store)
         #expect(elsewhere == .keyNotOnThisDevice)
     }
 
@@ -337,6 +329,44 @@ struct RelayKeyTests {
             input: .data(Data()), timeout: .seconds(60), retainStdout: false, onStdout: { received.add(Int64($0.count)) })
         #expect(read.exitCode == 0 && read.stdout.isEmpty)
         #expect(received.value == Int64(bytes.count))
+    }
+
+    /// A file Relay can't read (permissions, or the App Sandbox) fails the
+    /// copy — even though `cat` on the host then exits 0 on what it saw as
+    /// an empty stream.
+    @Test func anUnreadableFileFailsTheCopy() async throws {
+        // A real sshd: it reports cat's exit status (0) as the channel
+        // closes, which is what used to win over the local read error.
+        let sshd = try TestSSHD()
+        defer { sshd.stop() }
+        var options = SSHConnectionPool.Options()
+        options.knownHostsFiles = [sshd.knownHostsPath]
+        options.agent = nil
+        options.defaultKeyFiles = []
+        let pool = SSHConnectionPool(options: options)
+        let source = scratch.appendingPathComponent("locked.bin")
+        _ = try writeRandomFile(at: source, count: 1000)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: source.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: source.path) }
+        let destination = scratch.appendingPathComponent("locked-copy.bin").path
+        await #expect(throws: SSHClientError.self) {
+            _ = try await pool.exec(
+                target: sshd.target, command: SSHTmuxRuntimeProvider.pathCommand(#"exec cat > "$p""#, path: destination),
+                input: .file(source, onProgress: nil), timeout: .seconds(30))
+        }
+        // The connection stays usable.
+        let after = try await pool.exec(target: sshd.target, command: "echo ok", input: .data(Data()), timeout: .seconds(30))
+        #expect(String(decoding: after.stdout, as: UTF8.self) == "ok\n")
+    }
+
+    @Test func anUnreadableFileIsRefusedBeforeAnythingIsCopied() throws {
+        let file = scratch.appendingPathComponent("secret.txt")
+        try Data("x".utf8).write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: file.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path) }
+        #expect(throws: RuntimeProviderError.uploadFailed("Relay can\u{2019}t read \u{201C}secret.txt\u{201D}.")) {
+            _ = try SSHTmuxRuntimeProvider.uploadPlan(localPaths: [file.path], names: ["secret.txt"])
+        }
     }
 
     @Test func plansUploadsOfFoldersAndFiles() throws {

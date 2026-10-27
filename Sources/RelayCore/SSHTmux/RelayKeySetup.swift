@@ -23,8 +23,9 @@ public final class RelayKeySetup: Sendable {
         /// elsewhere, certificates only…).
         case keyNotAccepted
         case unreachable(String)
-        /// ProxyJump and friends: the built-in client can't reach it.
-        case needsDirectConnection
+        /// Relay can't connect with these settings (`BuiltInSSHRouter`'s
+        /// reason: a key file it can't read, a missing jump host…).
+        case cantConnect(String)
         case keyStore(String)
         case remoteFailed(String)
 
@@ -38,7 +39,7 @@ public final class RelayKeySetup: Sendable {
             case .signInFailed(let detail): return "The host refused the sign-in. \(detail)"
             case .keyNotAccepted: return "The key was added, but the host still doesn't accept it. It may manage keys centrally or accept only certificates — use Sync with iCloud Keychain, or your current sign-in."
             case .unreachable(let detail): return "Couldn't connect. \(detail)"
-            case .needsDirectConnection: return "Relay keys need a host Relay can reach directly; ProxyJump and similar settings aren't supported yet."
+            case .cantConnect(let reason): return reason
             case .keyStore(let detail): return detail
             case .remoteFailed(let detail): return "Couldn't add the key on the host.\n\(detail)"
             }
@@ -80,37 +81,52 @@ public final class RelayKeySetup: Sendable {
     let store: any SSHKeyStore
     let pool: SSHConnectionPool
     let trustedHostsFile: String?
-    /// Runs a script through the system ssh, for one-time sign-ins the
-    /// built-in client can't do (certificates). nil where there's none.
-    let systemSSH: (@Sendable (SSHHost, String) async throws -> SSHCommandRunner.CommandResult)?
+    /// Saved hosts by alias — jump hosts are reached with their own
+    /// settings.
+    let hosts: @Sendable (String) -> SSHHost?
 
     public init(
         store: any SSHKeyStore,
         pool: SSHConnectionPool,
         trustedHostsFile: String?,
-        systemSSH: (@Sendable (SSHHost, String) async throws -> SSHCommandRunner.CommandResult)? = nil
+        hosts: @escaping @Sendable (String) -> SSHHost? = { _ in nil }
     ) {
         self.store = store
         self.pool = pool
         self.trustedHostsFile = trustedHostsFile
-        self.systemSSH = systemSSH
+        self.hosts = hosts
     }
 
     public func run(_ request: Request) async throws -> Outcome {
-        guard request.host.inheritedOptions.isEmpty else { throw Failure.needsDirectConnection }
+        // The host must be reachable as set up (jump hosts, no ProxyCommand)
+        // before a key is made or imported.
+        var route = request.host
+        route.auth = .automatic
+        _ = try target(for: route, password: nil)
         let key = try resolveKey(request)
         var host = request.host
         host.auth = .storedKey(id: key.id)
-        guard let keyTarget = BuiltInSSHRouter.target(for: host, password: { nil }) else {
-            throw Failure.needsDirectConnection
-        }
+        let keyTarget = try target(for: host, password: nil)
 
         if try await keyWorks(keyTarget) {
             return Outcome(host: host, key: key, added: false)
         }
-        try await install(key, request: request)
+        // Only now is the one-time sign-in needed.
+        try await install(key, request: request, target: try target(for: request.host, password: request.password))
         guard try await keyWorks(keyTarget) else { throw Failure.keyNotAccepted }
         return Outcome(host: host, key: key, added: true)
+    }
+
+    private func target(for host: SSHHost, password: String?) throws -> SSHTarget {
+        let store = store
+        switch BuiltInSSHRouter.connection(
+            for: host, hosts: hosts, password: { $0 == host.alias ? password : nil },
+            hasStoredKey: { store.signingKey(id: $0) != nil }) {
+        case .ready(let target):
+            return target
+        case .needsSetup(let reason):
+            throw Failure.cantConnect(reason)
+        }
     }
 
     /// Records the host key a run reported as unknown as trusted (in
@@ -135,7 +151,9 @@ public final class RelayKeySetup: Sendable {
                 }
                 let text: String
                 do { text = try OpenSSHKeyFile.contents(ofFileAt: path) } catch {
-                    throw Failure.keyFile("it isn't readable.")
+                    throw Failure.keyFile(UserHome.isSandboxed
+                        ? "Relay doesn't have access to it. Pick it with Choose…, or give Relay access to your .ssh folder in Settings ▸ Hosts."
+                        : "it isn't readable.")
                 }
                 if OpenSSHKeyFile.isEncrypted(text), (request.passphrase ?? "").isEmpty { throw Failure.needsPassphrase }
                 let material: SSHPrivateKeyMaterial
@@ -177,31 +195,22 @@ public final class RelayKeySetup: Sendable {
         }
     }
 
-    private func install(_ key: SSHKeyInfo, request: Request) async throws {
+    private func install(_ key: SSHKeyInfo, request: Request, target: SSHTarget) async throws {
         let script = SSHKeyInstaller.installScript(key: key)
         let result: SSHCommandRunner.CommandResult
-        if let target = BuiltInSSHRouter.target(for: request.host, password: { request.password }) {
-            do {
-                let exec = try await pool.exec(
-                    target: target, command: "/bin/sh -s", stdin: Data(script.utf8), timeout: .seconds(30))
-                result = SSHCommandRunner.CommandResult(
-                    exitCode: exec.exitCode,
-                    stdout: String(decoding: exec.stdout, as: UTF8.self),
-                    stderr: String(decoding: exec.stderr, as: UTF8.self))
-            } catch SSHClientError.authenticationFailed {
-                throw Failure.signInFailed(Self.signInHint(for: request.host.auth))
-            } catch let error as SSHClientError {
-                throw Self.failure(for: error)
-            } catch SSHConnectionPool.ExecError.timedOut {
-                throw Failure.unreachable("The host stopped responding.")
-            }
-        } else if let systemSSH {
-            result = try await systemSSH(request.host, script)
-            if result.exitCode == 255 {
-                throw Failure.signInFailed(SSHTmuxRuntimeProvider.sanitizedStderr(result.stderr))
-            }
-        } else {
-            throw Failure.signInFailed("Relay can't sign in to this host with these settings.")
+        do {
+            let exec = try await pool.exec(
+                target: target, command: "/bin/sh -s", stdin: Data(script.utf8), timeout: .seconds(30))
+            result = SSHCommandRunner.CommandResult(
+                exitCode: exec.exitCode,
+                stdout: String(decoding: exec.stdout, as: UTF8.self),
+                stderr: String(decoding: exec.stderr, as: UTF8.self))
+        } catch SSHClientError.authenticationFailed {
+            throw Failure.signInFailed(Self.signInHint(for: request.host.auth))
+        } catch let error as SSHClientError {
+            throw Self.failure(for: error)
+        } catch SSHConnectionPool.ExecError.timedOut {
+            throw Failure.unreachable("The host stopped responding.")
         }
         guard result.exitCode == 0, ["added", "present"].contains(result.markers()[SSHTmuxScripts.Marker.status]) else {
             throw Failure.remoteFailed(SSHTmuxRuntimeProvider.sanitizedStderr(result.stderr))
@@ -225,30 +234,6 @@ public final class RelayKeySetup: Sendable {
         case .unreachable(let detail): return .unreachable(detail)
         case .handshakeFailed(let detail), .channelFailed(let detail): return .unreachable(detail)
         case .connectionLost: return .unreachable("The connection dropped.")
-        }
-    }
-}
-
-extension RelayKeySetup {
-    /// Runs a script through the system ssh with a throwaway config holding
-    /// just the host (as Test Connection does) — for one-time sign-ins only
-    /// it can do, like certificates.
-    public static func systemSSHRunner(
-        userConfigPath: String = SSHConfigDiscovery.defaultConfigPath
-    ) -> @Sendable (SSHHost, String) async throws -> SSHCommandRunner.CommandResult {
-        { host, script in
-            let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("relay-keysetup-\(UUID().uuidString)")
-            let config = directory.appendingPathComponent("ssh_config")
-            SSHHostRegistry.writePrivately(
-                SSHHostRegistry.render(hosts: [host], userConfigPath: userConfigPath, systemConfigPath: "/etc/ssh/ssh_config"),
-                to: config)
-            defer { try? FileManager.default.removeItem(at: directory) }
-            return try await SSHCommandRunner.runProcess(
-                executable: SSHCommandRunner.sshPath,
-                arguments: ["-F", config.path, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-T", "--", host.alias, "/bin/sh -s"],
-                stdin: script,
-                timeout: .seconds(30))
         }
     }
 }

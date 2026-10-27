@@ -281,4 +281,30 @@ struct GitHubDeviceFlowTests {
             _ = try poll(#"{"error": "incorrect_client_credentials", "error_description": "bad id"}"#)
         }
     }
+
+    /// Both requests carry Relay's own client ID — no setup, no secret.
+    @Test func signsInWithRelaysOwnApp() async throws {
+        let bodies = Bodies()
+        let flow = GitHubDeviceFlow { request in
+            bodies.append(request.url!.path, String(decoding: request.httpBody ?? Data(), as: UTF8.self))
+            let json = request.url!.path.hasSuffix("/device/code")
+                ? #"{"device_code": "dc", "user_code": "AB-12", "verification_uri": "https://github.com/login/device"}"#
+                : #"{"access_token": "gho_x"}"#
+            return (Data(json.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        let auth = try await flow.begin()
+        #expect(try await flow.poll(deviceCode: auth.deviceCode, currentInterval: 5) == .authorized(token: "gho_x"))
+        let sent = bodies.all
+        #expect(sent.map(\.path) == ["/login/device/code", "/login/oauth/access_token"])
+        #expect(sent.allSatisfy { $0.body.contains("client_id=\(GitHubDeviceFlow.relayClientID)") })
+        #expect(sent.allSatisfy { !$0.body.contains("client_secret") })
+        #expect(sent[0].body.contains("scope=repo"))
+    }
+
+    final class Bodies: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [(path: String, body: String)] = []
+        func append(_ path: String, _ body: String) { lock.withLock { items.append((path, body)) } }
+        var all: [(path: String, body: String)] { lock.withLock { items } }
+    }
 }

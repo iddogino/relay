@@ -16,6 +16,9 @@ public enum OpenSSHKeyFile {
         case unsupportedCipher(String)
         case unsupportedKeyType(String)
         case malformed
+        /// The file couldn't be read (missing, permissions, or — in the App
+        /// Sandbox — a folder the user hasn't given Relay access to).
+        case unreadable
     }
 
     /// An unencrypted key file, ready to sign with.
@@ -24,17 +27,27 @@ public enum OpenSSHKeyFile {
     }
 
     public static func contents(ofFileAt path: String) throws -> String {
-        let expanded = (path as NSString).expandingTildeInPath
+        let expanded = UserHome.expand(path)
         guard let text = try? String(contentsOfFile: expanded, encoding: .utf8) else {
-            throw KeyFileError.malformed
+            throw FileManager.default.isReadableFile(atPath: expanded) ? KeyFileError.malformed : KeyFileError.unreadable
         }
         return text
+    }
+
+    /// An OpenSSH certificate (`<key>-cert.pub`), or nil when the file is
+    /// missing or isn't one.
+    public static func certificate(at path: String) -> NIOSSHCertifiedPublicKey? {
+        guard let text = try? String(contentsOfFile: UserHome.expand(path), encoding: .utf8),
+              let key = try? NIOSSHPublicKey(openSSHPublicKey: text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+        return NIOSSHCertifiedPublicKey(key)
     }
 
     /// The public key blob from the `.pub` next to a private key file,
     /// used to pick the matching agent identity.
     public static func publicKeyBlob(forPrivateKeyAt path: String) -> Data? {
-        let expanded = (path as NSString).expandingTildeInPath + ".pub"
+        let expanded = UserHome.expand(path) + ".pub"
         guard let text = try? String(contentsOfFile: expanded, encoding: .utf8) else { return nil }
         let fields = text.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
         guard fields.count >= 2 else { return nil }

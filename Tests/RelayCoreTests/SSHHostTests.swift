@@ -37,67 +37,83 @@ struct SSHHostTests {
         #expect(SSHHost(alias: "a", hostname: "h", port: 2222, user: "me").summary == "me@h:2222")
     }
 
-    // MARK: Rendering
+    // MARK: Registry & jump hosts
 
-    @Test func rendersRelayHostsBeforeTheUserAndSystemConfigs() {
-        let text = SSHHostRegistry.render(
-            hosts: [
-                SSHHost(alias: "gputer", hostname: "iddo-gino-gputer", user: "iddogino",
-                        auth: .keyFile(path: "~/.ssh/id_ed25519", certificatePath: "~/.ssh/id_ed25519-cert.pub")),
-                SSHHost(alias: "box", hostname: "10.0.0.5", port: 2222),
-                SSHHost(alias: "pw", hostname: "pw.example", auth: .password),
-            ],
-            userConfigPath: "/Users/me/.ssh/config",
-            systemConfigPath: "/etc/ssh/ssh_config")
-        let lines = text.split(separator: "\n").map(String.init)
-        let expected = [
-            "Host gputer",
-            "  HostName iddo-gino-gputer",
-            "  User iddogino",
-            "  IdentityFile \"~/.ssh/id_ed25519\"",
-            "  CertificateFile \"~/.ssh/id_ed25519-cert.pub\"",
-            "  AddKeysToAgent yes",
-            "  UseKeychain yes",
-            "Host box",
-            "  HostName 10.0.0.5",
-            "  Port 2222",
-            "Host pw",
-            "  HostName pw.example",
-            "  PreferredAuthentications keyboard-interactive,password",
-            "  PubkeyAuthentication no",
-            "Match all",
-            "Include \"/Users/me/.ssh/config\"",
-            "Include \"/etc/ssh/ssh_config\"",
-        ]
-        #expect(lines.filter { !$0.hasPrefix("#") } == expected)
-    }
-
-    @Test func skipsInvalidHostsAndEscapesTokens() {
-        let text = SSHHostRegistry.render(
-            hosts: [
-                SSHHost(alias: "evil", hostname: "h\nProxyCommand x"),
-                SSHHost(alias: "pct", hostname: "h", auth: .keyFile(path: "/keys/100%/id", certificatePath: nil)),
-            ],
-            userConfigPath: "/u", systemConfigPath: "/s")
-        #expect(!text.contains("ProxyCommand"))
-        #expect(text.contains("# Skipped evil"))
-        #expect(text.contains("IdentityFile \"/keys/100%%/id\""))
-    }
-
-    @Test func registryWritesAPrivateConfigFileImmediately() throws {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-reg-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let file = dir.appendingPathComponent("ssh_config")
-        let registry = SSHHostRegistry(configFile: file, userConfigPath: "/u", systemConfigPath: "/s")
-        let initial = try String(contentsOf: file, encoding: .utf8)
-        #expect(initial.contains("Include \"/u\""))
-        #expect(!initial.contains("Host "))
-        let mode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int
-        #expect(mode == 0o600)
-
+    @Test func registryHoldsTheHostsAndTellsOfChanges() {
+        let registry = SSHHostRegistry()
+        let changes = Changes()
+        registry.onHostsChanged = { changes.count += 1 }
         registry.setHosts([SSHHost(alias: "mini", hostname: "iddos-mac-mini")])
-        #expect(try String(contentsOf: file, encoding: .utf8).contains("Host mini"))
         #expect(registry.host(alias: "mini")?.hostname == "iddos-mac-mini")
+        #expect(registry.host(alias: "other") == nil)
+        #expect(changes.count == 1)
+    }
+
+    final class Changes: @unchecked Sendable { var count = 0 }
+
+    @Test func aJumpHostIsAnotherHostsName() throws {
+        try SSHHost(alias: "db", hostname: "db.internal", proxyJump: "bastion").validate()
+        #expect(throws: SSHHost.ValidationError.proxyJump) {
+            try SSHHost(alias: "db", hostname: "db.internal", proxyJump: "db").validate()
+        }
+        #expect(throws: SSHHost.ValidationError.proxyJump) {
+            try SSHHost(alias: "db", hostname: "db.internal", proxyJump: "user@bastion:22").validate()
+        }
+        // Older state has no jump host.
+        let old = try JSONDecoder().decode(SSHHost.self, from: Data(#"{"alias":"a","hostname":"h"}"#.utf8))
+        #expect(old.proxyJump == nil)
+        let round = try JSONDecoder().decode(
+            SSHHost.self, from: JSONEncoder().encode(SSHHost(alias: "a", hostname: "h", proxyJump: "b")))
+        #expect(round.proxyJump == "b")
+    }
+
+    @Test func importBringsJumpHostsAlong() {
+        let configs = [
+            "db": "hostname db.internal\nuser me\nport 22\nproxyjump admin@bastion:2222,inner",
+            "bastion": "hostname bastion.example.com\nuser nobody\nport 22\nproxyjump edge",
+            "edge": "hostname edge.example.com\nport 22",
+            "inner": "hostname 10.1.1.1\nport 22",
+        ]
+        let hosts = SSHConfigImporter.importHosts(alias: "db", evaluate: { configs[$0] })
+        func host(_ alias: String) -> SSHHost? { hosts.first { $0.alias == alias } }
+        #expect(hosts.first?.alias == "db")
+        #expect(Set(hosts.map(\.alias)) == ["db", "bastion", "edge", "inner"])
+        // db ← inner ← bastion ← edge: each hop through the one before it.
+        #expect(host("db")?.proxyJump == "inner")
+        #expect(host("inner")?.proxyJump == "bastion")
+        #expect(host("bastion")?.proxyJump == "edge")
+        #expect(host("edge")?.proxyJump == nil)
+        // The hop's own user/port win over its config.
+        #expect(host("bastion")?.user == "admin")
+        #expect(host("bastion")?.port == 2222)
+        #expect(hosts.allSatisfy { (try? $0.validate()) != nil })
+
+        // Jump hosts Relay already has are linked, not imported again.
+        let linked = SSHConfigImporter.importHosts(alias: "db", existing: ["inner", "bastion"], evaluate: { configs[$0] })
+        #expect(linked.map(\.alias) == ["db"])
+        #expect(linked.first?.proxyJump == "inner")
+    }
+
+    @Test func aProxyCommandThatOnlyJumpsBecomesAJumpHost() {
+        #expect(SSHConfigImporter.jumpHost(fromProxyCommand: "ssh -W %h:%p bastion") == "bastion")
+        #expect(SSHConfigImporter.jumpHost(fromProxyCommand: "/usr/bin/ssh -q -W [%h]:%p admin@bastion") == "admin@bastion")
+        #expect(SSHConfigImporter.jumpHost(fromProxyCommand: "exec ssh -W %h:%p bastion") == "bastion")
+        #expect(SSHConfigImporter.jumpHost(fromProxyCommand: "ssh bastion nc %h %p") == nil)
+        #expect(SSHConfigImporter.jumpHost(fromProxyCommand: "ssh -W %h:%p -o Foo=bar bastion") == nil)
+        #expect(SSHConfigImporter.jumpHost(fromProxyCommand: "cloudflared access ssh --hostname %h") == nil)
+
+        let hosts = SSHConfigImporter.importHosts(alias: "db", evaluate: { alias in
+            alias == "db" ? "hostname db.internal\nproxycommand ssh -W %h:%p bastion" : "hostname b.example"
+        })
+        #expect(hosts.first?.proxyJump == "bastion")
+        #expect(hosts.first?.inheritedOptions == [])
+    }
+
+    @Test func parsesJumpSpecs() {
+        #expect(SSHConfigImporter.parseHop("bastion") == .init(spec: "bastion", user: nil, host: "bastion", port: nil))
+        #expect(SSHConfigImporter.parseHop("me@b:2200") == .init(spec: "me@b:2200", user: "me", host: "b", port: 2200))
+        #expect(SSHConfigImporter.parseHop("me@[::1]:2200") == .init(spec: "me@[::1]:2200", user: "me", host: "::1", port: 2200))
+        #expect(SSHConfigImporter.parseHop("ssh://b") == nil)
     }
 
     // MARK: Import (ssh -G)
@@ -171,17 +187,6 @@ struct SSHHostTests {
         #expect(SSHConnectionTest.outcome(exitCode: 0, stdout: "RTERM_STATUS=ok\nRTERM_TMUX_VERSION=tmux 3.4\n", stderr: "")
                 == .ok(tmuxVersion: "tmux 3.4"))
         #expect(SSHConnectionTest.outcome(exitCode: 21, stdout: "RTERM_STATUS=no_tmux\n", stderr: "") == .noTmux)
-        if case .unknownHostKey = SSHConnectionTest.outcome(
-            exitCode: 255, stdout: "",
-            stderr: "No ED25519 host key is known for box and you have requested strict checking.\nHost key verification failed.") {
-        } else { Issue.record("expected unknownHostKey") }
-        if case .changedHostKey = SSHConnectionTest.outcome(
-            exitCode: 255, stdout: "",
-            stderr: "@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\nHost key verification failed.") {
-        } else { Issue.record("expected changedHostKey") }
-        if case .authenticationFailed = SSHConnectionTest.outcome(
-            exitCode: 255, stdout: "", stderr: "me@box: Permission denied (publickey).") {
-        } else { Issue.record("expected authenticationFailed") }
         if case .unreachable = SSHConnectionTest.outcome(
             exitCode: 255, stdout: "", stderr: "ssh: Could not resolve hostname nope: nodename nor servname provided") {
         } else { Issue.record("expected unreachable") }

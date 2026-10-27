@@ -537,7 +537,7 @@ struct TerminalOverSSHTests {
         guard (try? process.run()) != nil else { return "" }
         // Read before waiting, so a full pipe can't stall the process.
         let output = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        process.waitForExit()
         return String(decoding: output, as: UTF8.self)
     }
 

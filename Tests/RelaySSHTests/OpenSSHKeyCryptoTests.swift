@@ -21,7 +21,7 @@ struct OpenSSHKeyCryptoTests {
         process.standardOutput = output ?? FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
-        process.waitUntilExit()
+        process.waitForExit()
         return process.terminationStatus
     }
 

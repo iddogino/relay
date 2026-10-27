@@ -1,12 +1,11 @@
 import Foundation
+import RelaySSH
 
-/// Enumerates concrete host aliases from the user's OpenSSH configuration.
-///
-/// This parser exists ONLY to list aliases for the sidebar. It never resolves
-/// connection parameters; actual connections always invoke `/usr/bin/ssh <alias>`
-/// so the user's real OpenSSH behavior applies.
+/// Enumerates concrete host aliases from the user's OpenSSH configuration,
+/// for Add Host's import list. Connection settings for an alias come from
+/// `SSHConfigEvaluator`.
 public enum SSHConfigDiscovery {
-    public static let defaultConfigPath = NSString(string: "~/.ssh/config").expandingTildeInPath
+    public static let defaultConfigPath = UserHome.path + "/.ssh/config"
 
     /// Discover concrete aliases starting from the given config file.
     /// Missing files yield an empty list; malformed lines are skipped.
@@ -111,12 +110,9 @@ public enum SSHConfigDiscovery {
     /// relative to `~/.ssh`; `~` is expanded; globs are supported.
     static func resolveIncludes(pattern: String, relativeTo includingFile: String) -> [String] {
         var expanded = pattern
-        if expanded.hasPrefix("~") {
-            expanded = NSString(string: expanded).expandingTildeInPath
-        }
+        expanded = UserHome.expand(expanded)
         if !expanded.hasPrefix("/") {
-            let sshDir = NSString(string: "~/.ssh").expandingTildeInPath
-            expanded = sshDir + "/" + expanded
+            expanded = UserHome.path + "/.ssh/" + expanded
         }
 
         if expanded.contains("*") || expanded.contains("?") || expanded.contains("[") {

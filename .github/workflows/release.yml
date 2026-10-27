@@ -55,7 +55,21 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: brew install tmux
 
+      # The ssh_config evaluator's tests compare it with OpenSSH 10's
+      # `ssh -G` (the system ssh on this image is older); only those tests
+      # use this ssh.
+      - name: Install OpenSSH 10
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          brew install openssh
+          echo "RELAY_TEST_SSH=$(brew --prefix openssh)/bin/ssh" >> "$GITHUB_ENV"
+          "$(brew --prefix openssh)/bin/ssh" -V
+
       - name: Run tests
+        env:
+          RELAY_TEST_REQUIRE_OPENSSH10: "1"
         run: swift test
 
       - name: Import signing certificate

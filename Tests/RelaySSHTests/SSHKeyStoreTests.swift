@@ -179,7 +179,7 @@ struct SSHKeyStoreTests {
         let pipe = Pipe()
         process.standardOutput = pipe
         try process.run()
-        process.waitUntilExit()
+        process.waitForExit()
         let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         #expect(output.split(separator: " ")[1] == KnownHosts.fingerprint(ofPublicKey: key.publicKey).map { Substring($0) })
     }

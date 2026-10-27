@@ -777,7 +777,7 @@ struct SSHTerminalSessionSSHDTests {
         add.environment = ["SSH_AUTH_SOCK": socket]
         add.standardError = FileHandle.nullDevice
         try add.run()
-        add.waitUntilExit()
+        add.waitForExit()
         try #require(add.terminationStatus == 0)
         try FileManager.default.removeItem(atPath: keyPath)
 
@@ -807,7 +807,7 @@ struct SSHTerminalSessionSSHDTests {
         let pipe = Pipe()
         process.standardOutput = pipe
         try process.run()
-        process.waitUntilExit()
+        process.waitForExit()
         let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         return String(out.prefix(64))
     }

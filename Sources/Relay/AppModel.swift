@@ -89,8 +89,8 @@ final class AppModel {
         return controller
     }
     private let store: ProjectStore
-    /// Relay's own host list, rendered to the ssh config every connection
-    /// uses. `hosts` mirrors it for the UI and persistence.
+    /// Relay's own host list, which every connection uses. `hosts` mirrors
+    /// it for the UI and persistence.
     let hostRegistry: SSHHostRegistry?
     private(set) var hosts: [SSHHost] = []
     /// Relay's SSH client, with its keys and trusted host keys.
@@ -152,7 +152,6 @@ final class AppModel {
         self.warmAttachmentCap = storedCap == 0
             ? Self.warmAttachmentCapDefault
             : max(1, min(storedCap, 16))
-        self.gitHubClientID = UserDefaults.standard.string(forKey: Self.gitHubClientIDKey) ?? ""
 
         // When a session ends we keep its sidebar row until the user acts
         // (Remove From Sidebar / New Session) or a refresh reconciles it away,
@@ -224,9 +223,6 @@ final class AppModel {
 
     // MARK: Terminal links
 
-    /// Cache of alias → browser-usable host, resolved via `ssh -G`.
-    private var resolvedLinkHosts: [String: String] = [:]
-
     /// Dispatches a link clicked in the terminal: web URLs open in the
     /// browser (loopback hosts rewritten to the remote), file-ish matches
     /// are fetched from the session's machine and shown in Quick Look.
@@ -254,16 +250,8 @@ final class AppModel {
             return
         }
         let alias = project.workspace.opaqueID
-        Task { @MainActor in
-            let host: String
-            if let cached = resolvedLinkHosts[alias] {
-                host = cached
-            } else {
-                host = await SSHHostNameResolver.resolve(alias: alias, configFile: hostRegistry?.configFile.path)
-                resolvedLinkHosts[alias] = host
-            }
-            NSWorkspace.shared.open(LocalhostURLRewriter.rewrite(url, remoteHost: host) ?? url)
-        }
+        let host = SSHHostNameResolver.browserHost(alias: alias, host: hosts.first { $0.alias == alias })
+        NSWorkspace.shared.open(LocalhostURLRewriter.rewrite(url, remoteHost: host) ?? url)
     }
 
     // MARK: Remote file preview
@@ -374,12 +362,12 @@ final class AppModel {
         if let loaded {
             hosts = loaded
         } else {
-            var seen = Set<String>()
             var imported: [SSHHost] = []
             for project in projects where project.workspace.provider == .sshTmux {
                 let alias = project.workspace.opaqueID
-                guard seen.insert(alias).inserted, SSHHost.isValidAlias(alias) else { continue }
-                imported.append(await SSHConfigImporter.importHost(alias: alias))
+                guard !imported.contains(where: { $0.alias == alias }), SSHHost.isValidAlias(alias) else { continue }
+                imported += SSHConfigImporter.importHosts(
+                    alias: alias, existing: Set(imported.map(\.alias)), evaluate: SSHConfigImporter.effectiveConfig)
             }
             hosts = imported
             ghosttyLogger.info("migrated \(imported.count, privacy: .public) hosts from ssh config")
@@ -411,7 +399,6 @@ final class AppModel {
             SSHPasswordStore.delete(alias: host.alias)
         }
         hostRegistry?.setHosts(hosts)
-        resolvedLinkHosts[host.alias] = nil
         persist()
         await refreshRemotes()
     }
@@ -424,9 +411,10 @@ final class AppModel {
     /// client).
     func relayKeySetup() -> RelayKeySetup? {
         guard let builtInSSH, let store = builtInSSH.keyStore else { return nil }
+        let registry = hostRegistry
         return RelayKeySetup(
             store: store, pool: builtInSSH.pool, trustedHostsFile: builtInSSH.trustedHostsFile,
-            systemSSH: RelayKeySetup.systemSSHRunner())
+            hosts: { registry?.host(alias: $0) })
     }
 
     /// The Relay key `host` signs in with on this device, if it has it.
@@ -435,25 +423,25 @@ final class AppModel {
         return keyStore?.key(id: id)
     }
 
-    /// A Relay-key host whose key isn't on this device: it needs
-    /// connecting here before it can be used.
-    func needsConnection(_ host: SSHHost) -> Bool {
-        host.auth.storedKeyID != nil && relayKey(for: host) == nil
+    /// Why Relay can't connect to a saved host on this device as it's set
+    /// up (its Relay key isn't here, no password saved, a key file it can't
+    /// read…), or nil. Such a host "needs connection" here.
+    func connectionProblem(_ host: SSHHost) -> String? {
+        builtInSSH?.setupProblem(for: host.alias)
     }
 
-    /// Test Connection: over the built-in client for hosts only it can sign
-    /// in to (Relay keys, passwords), else the system ssh.
-    func testConnection(_ host: SSHHost, password: String?, trustNewHostKey: Bool = false) async -> SSHConnectionTest.Outcome {
-        let builtInOnly: Bool
-        switch host.auth {
-        case .storedKey, .password: builtInOnly = true
-        case .automatic, .keyFile: builtInOnly = false
-        }
-        if builtInOnly, let builtInSSH {
-            return await SSHConnectionTest.runBuiltIn(
-                host: host, password: password, pool: builtInSSH.pool, keyStore: builtInSSH.keyStore)
-        }
-        return await SSHConnectionTest.run(host: host, trustNewHostKey: trustNewHostKey)
+    func needsConnection(_ host: SSHHost) -> Bool {
+        connectionProblem(host) != nil
+    }
+
+    /// Test Connection, with the host's settings as they stand in the
+    /// editor (`password` for a password host not saved yet).
+    func testConnection(_ host: SSHHost, password: String?) async -> SSHConnectionTest.Outcome {
+        guard let builtInSSH else { return .unreachable("Relay can\u{2019}t connect to hosts here.") }
+        let registry = hostRegistry
+        return await SSHConnectionTest.run(
+            host: host, password: password ?? SSHPasswordStore.load(alias: host.alias),
+            hosts: { registry?.host(alias: $0) }, pool: builtInSSH.pool, keyStore: builtInSSH.keyStore)
     }
 
     /// Trusts the host key the built-in client was shown for `host`.
@@ -1242,26 +1230,16 @@ final class AppModel {
     // MARK: GitHub connection & PR status
 
     /// Whether the app can talk to the GitHub API (powers the PR badge).
-    /// Resolved at launch and on demand: the local gh CLI's token when
-    /// present, else a device-flow token from the keychain — either way
-    /// validated with a live `/user` call before claiming "connected".
+    /// Resolved at launch and on demand: the device-flow token from the
+    /// keychain, validated with a live `/user` call before claiming
+    /// "connected".
     private(set) var gitHub: GitHubConnection = .checking
-    /// The validated token, held only in memory (the keychain / gh keyring
-    /// stay the durable homes).
+    /// The validated token, held only in memory (the keychain stays its
+    /// durable home).
     private var gitHubToken: String?
     var gitHubLoginPresented = false
     private(set) var gitHubLogin: GitHubLoginProgress?
     private var gitHubLoginTask: Task<Void, Never>?
-
-    /// OAuth app client ID for the device-flow login. Public identifier,
-    /// not a secret — lives in UserDefaults.
-    var gitHubClientID: String = "" {
-        didSet {
-            guard gitHubClientID != oldValue else { return }
-            UserDefaults.standard.set(gitHubClientID, forKey: Self.gitHubClientIDKey)
-        }
-    }
-    static let gitHubClientIDKey = "githubOAuthClientID"
 
     private(set) var prStatuses: [SessionID: PullRequestStatus] = [:]
     private var prStatusTask: Task<Void, Never>?
@@ -1326,60 +1304,36 @@ final class AppModel {
     func recheckGitHubAuth() async {
         gitHub = .checking
         gitHubToken = nil
-        var lastFailure: GitHubConnection?
-        if let cliToken = await GHCLI.token() {
-            let outcome = await validatedConnection(token: cliToken, method: .cli)
-            if outcome.isConnected {
-                gitHub = outcome
-                refreshPRStatus()
-                return
-            }
-            lastFailure = outcome
+        guard let stored = GitHubTokenStore.load() else {
+            gitHub = .notConnected
+            return
         }
-        if let stored = GitHubTokenStore.load() {
-            let outcome = await validatedConnection(token: stored, method: .device)
-            if outcome.isConnected {
-                gitHub = outcome
-                refreshPRStatus()
-                return
-            }
-            lastFailure = outcome
-        }
-        gitHub = lastFailure ?? .notConnected
+        gitHub = await validatedConnection(token: stored)
+        if gitHub.isConnected { refreshPRStatus() }
     }
 
-    private func validatedConnection(
-        token: String,
-        method: GitHubAuthMethod
-    ) async -> GitHubConnection {
+    private func validatedConnection(token: String) async -> GitHubConnection {
         do {
             let login = try await GitHubAPIClient(token: token).viewerLogin()
             gitHubToken = token
-            return .connected(method: method, login: login)
+            return .connected(login: login)
         } catch GitHubAPIClient.APIError.unauthorized {
-            let source = method == .cli ? "the gh CLI's token" : "the saved GitHub token"
-            return .failed("GitHub rejected \(source).")
+            return .failed("GitHub rejected the saved sign-in (it may have been revoked). Log in again.")
         } catch {
             return .failed("Couldn't reach GitHub — check the connection and retry.")
         }
     }
 
-    /// Starts the device flow with the configured client ID and polls until
-    /// GitHub authorizes (token → keychain), the code expires, or the user
-    /// closes the sheet.
+    /// Starts the device flow (Relay's OAuth app) and polls until GitHub
+    /// authorizes (token → keychain), the code expires, or the user closes
+    /// the sheet.
     func beginGitHubLogin() {
-        let clientID = gitHubClientID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clientID.isEmpty else {
-            gitHubLogin = .failed("Enter the OAuth app's Client ID first.")
-            return
-        }
-        gitHubClientID = clientID
         gitHubLoginTask?.cancel()
         gitHubLogin = .requesting
         gitHubLoginTask = Task {
             do {
                 let flow = GitHubDeviceFlow()
-                let auth = try await flow.begin(clientID: clientID)
+                let auth = try await flow.begin()
                 self.gitHubLogin = .waiting(
                     userCode: auth.userCode,
                     verificationURL: auth.verificationURL)
@@ -1392,13 +1346,12 @@ final class AppModel {
                         return
                     }
                     switch try await flow.poll(
-                        clientID: clientID,
                         deviceCode: auth.deviceCode,
                         currentInterval: interval
                     ) {
                     case .authorized(let token):
                         GitHubTokenStore.save(token)
-                        self.gitHub = await self.validatedConnection(token: token, method: .device)
+                        self.gitHub = await self.validatedConnection(token: token)
                         self.gitHubLogin = nil
                         self.gitHubLoginPresented = false
                         self.refreshPRStatus()
@@ -1429,13 +1382,13 @@ final class AppModel {
         gitHubLogin = nil
     }
 
-    /// Removes the device-flow token. A logged-in gh CLI will reconnect on
-    /// the recheck — that credential belongs to gh, not to Relay.
+    /// Removes the device-flow token from the keychain. (The grant itself
+    /// stays listed on GitHub until revoked there.)
     func signOutGitHub() {
         GitHubTokenStore.delete()
         gitHubToken = nil
         prStatuses = [:]
-        Task { await recheckGitHubAuth() }
+        gitHub = .notConnected
     }
 
     /// Refreshes the selected session's PR status via the GitHub API.

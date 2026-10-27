@@ -35,6 +35,11 @@ struct HostEditorSheet: View {
     @State private var password = ""
     @State private var hasStoredPassword = false
     @State private var inheritedOptions: [String] = []
+    /// Another host to connect through ("" = directly).
+    @State private var proxyJump = ""
+    /// Jump hosts an import brought along, saved with this host.
+    @State private var importedJumpHosts: [SSHHost] = []
+    @State private var sshFolder = FolderGrants.ssh
     @State private var keyStorage: SSHKeyInfo.Storage = .iCloudKeychain
     @State private var bootstrap: Bootstrap = .password
     @State private var bootstrapPassword = ""
@@ -90,6 +95,7 @@ struct HostEditorSheet: View {
             case .importConfig:
                 SSHConfigImportList(
                     existing: Set(model.hosts.map(\.alias)),
+                    grant: sshFolder,
                     onPick: applyImport)
                     .frame(height: 300)
             case .form:
@@ -141,6 +147,13 @@ struct HostEditorSheet: View {
             TextField("Hostname", text: $hostname, prompt: Text("server.example.com or 10.0.0.5"))
             TextField("Port", text: $port, prompt: Text("22"))
             TextField("User", text: $user, prompt: Text(NSUserName()))
+            Picker("Connect", selection: $proxyJump) {
+                Text("Directly").tag("")
+                ForEach(jumpHostChoices, id: \.self) { alias in
+                    Text("Through \(alias)").tag(alias)
+                }
+            }
+            .help("Like ProxyJump: Relay connects to the other host first, and through it to this one. The connection stays end-to-end encrypted.")
 
             Picker("Sign in with", selection: $authKind) {
                 if model.keyStore != nil {
@@ -162,6 +175,17 @@ struct HostEditorSheet: View {
                 LabeledContent("Certificate") {
                     PathField(path: $certificatePath, prompt: "optional", title: "Choose an SSH certificate")
                 }
+                if sshFolder.needsGrant {
+                    LabeledContent("") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Relay can keep using a key file only with access to your .ssh folder.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button("Allow Access…") { Task { await sshFolder.requestAccess() } }
+                                .controlSize(.small)
+                        }
+                    }
+                }
             case .password:
                 SecureField("Password", text: $password,
                             prompt: Text(hasStoredPassword ? "Saved in Keychain" : ""))
@@ -173,16 +197,17 @@ struct HostEditorSheet: View {
         .formStyle(.columns)
         .textFieldStyle(.roundedBorder)
 
-        if !inheritedOptions.isEmpty {
-            if authKind == .relayKey {
-                notice(systemImage: "exclamationmark.triangle.fill", tint: .orange) {
-                    Text("Relay keys need a host Relay can reach directly, and your ssh config also sets \(inheritedOptions.joined(separator: ", ")) for it. Choose another way to sign in.")
-                }
-            } else {
-                notice(systemImage: "info.circle", tint: .blue) {
-                    Text("Also set for this host in your ssh config: \(inheritedOptions.joined(separator: ", ")). Relay keeps using them on this Mac, but they won't carry over to other devices.")
-                }
+        if usesProxyCommand {
+            notice(systemImage: "exclamationmark.triangle.fill", tint: .orange) {
+                Text("Your ssh config reaches this host through a ProxyCommand, which Relay can\u{2019}t run. Connect through another host instead, or directly.")
             }
+        } else if !inheritedOptions.isEmpty {
+            notice(systemImage: "info.circle", tint: .blue) {
+                Text("Also set for this host in your ssh config, but not used by Relay: \(inheritedOptions.joined(separator: ", ")).")
+            }
+        }
+        if let problem = connectionProblem {
+            notice(systemImage: "link.badge.plus", tint: .orange) { Text(problem) }
         }
         if authKind == .relayKey {
             relayKeyNotices
@@ -293,11 +318,6 @@ struct HostEditorSheet: View {
     }
 
     @ViewBuilder private var relayKeyNotices: some View {
-        if let original, model.needsConnection(original) {
-            notice(systemImage: "link.badge.plus", tint: .orange) {
-                Text("This host signs in with a Relay key that isn't on this Mac — it was set up on another device. Sign in once to connect it here.")
-            }
-        }
         if keyStorage == .iCloudKeychain {
             if !(model.keyStore?.canSync ?? false) {
                 notice(systemImage: "exclamationmark.triangle.fill", tint: .orange) {
@@ -379,7 +399,7 @@ struct HostEditorSheet: View {
     /// A Relay key can't be set up here at all.
     private var relayKeyBlocked: Bool {
         guard authKind == .relayKey else { return false }
-        if !inheritedOptions.isEmpty { return true }
+        if usesProxyCommand { return true }
         if keyStorage == .iCloudKeychain && !(model.keyStore?.canSync ?? false) { return true }
         if keyStorage == .secureEnclave && !(model.keyStore?.canUseSecureEnclave ?? false) { return true }
         return false
@@ -387,7 +407,7 @@ struct HostEditorSheet: View {
 
     /// Whatever, once changed, makes an earlier setup result stale.
     private var setupInputs: [String] {
-        [hostname, port, user, "\(keyStorage)", "\(bootstrap)", bootstrapKeyPath, "\(authKind)"]
+        [hostname, port, user, proxyJump, "\(keyStorage)", "\(bootstrap)", bootstrapKeyPath, "\(authKind)"]
     }
 
     /// The host with the one-time sign-in as its auth.
@@ -404,6 +424,8 @@ struct HostEditorSheet: View {
     private func runSetup() async {
         guard let host = candidate, let setup = model.relayKeySetup() else { return }
         setupState = .running
+        // Jump hosts first: the setup connects through them.
+        await saveImportedJumpHosts()
         let request = RelayKeySetup.Request(
             host: bootstrapHost(host),
             password: bootstrap == .password ? bootstrapPassword : nil,
@@ -440,7 +462,7 @@ struct HostEditorSheet: View {
 
     private var testButton: some View {
         Button {
-            Task { await runTest(trustNewHostKey: false) }
+            Task { await runTest() }
         } label: {
             HStack(spacing: 6) {
                 if testState == .running { ProgressView().controlSize(.small) }
@@ -478,14 +500,6 @@ struct HostEditorSheet: View {
                 notice(systemImage: "exclamationmark.triangle.fill", tint: .orange) {
                     Text("Connected, but tmux isn't installed there. Install tmux 3.2 or newer to run sessions.")
                 }
-            case .unknownHostKey(let detail):
-                notice(systemImage: "questionmark.circle.fill", tint: .orange) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("You haven't connected to this host before, so its identity can't be checked yet.")
-                        Text(detail).font(.caption).foregroundStyle(.secondary)
-                        Button("Trust Host & Connect") { Task { await runTest(trustNewHostKey: true) } }
-                    }
-                }
             case .untrustedHostKey(let presented):
                 notice(systemImage: "questionmark.circle.fill", tint: .orange) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -494,14 +508,28 @@ struct HostEditorSheet: View {
                             .font(.caption.monospaced())
                         Button("Trust Host & Connect") {
                             if let host = candidate { try? model.trustHostKey(presented, for: host) }
-                            Task { await runTest(trustNewHostKey: false) }
+                            Task { await runTest() }
+                        }
+                    }
+                }
+            case .untrustedJumpHostKey(let jumpAlias, let presented):
+                notice(systemImage: "questionmark.circle.fill", tint: .orange) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("You haven't connected to the jump host \u{201C}\(jumpAlias)\u{201D} from Relay before, so its identity can't be checked yet. Make sure this is the right fingerprint:")
+                        Text(KnownHosts.fingerprint(ofPublicKey: presented) ?? presented)
+                            .font(.caption.monospaced())
+                        Button("Trust \(jumpAlias) & Connect") {
+                            if let jump = model.hosts.first(where: { $0.alias == jumpAlias }) {
+                                try? model.trustHostKey(presented, for: jump)
+                            }
+                            Task { await runTest() }
                         }
                     }
                 }
             case .changedHostKey(let detail):
                 notice(systemImage: "xmark.shield.fill", tint: .red) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("This host's identity has changed since you last connected. That can mean the machine was reinstalled — or that someone is intercepting the connection. Relay won't connect until the old key is removed from known_hosts.")
+                        Text("This host's identity has changed since you last connected. That can mean the machine was reinstalled — or that someone is intercepting the connection. Relay won't connect until the old key is removed from known_hosts (Relay's own, or ~/.ssh/known_hosts).")
                         Text(detail).font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -517,18 +545,17 @@ struct HostEditorSheet: View {
                 notice(systemImage: "link.badge.plus", tint: .orange) {
                     Text("This host's Relay key isn't on this Mac. Sign in once to set it up here.")
                 }
-            case .passwordNotSupportedYet:
-                notice(systemImage: "info.circle", tint: .blue) {
-                    Text("Password hosts need Relay's built-in SSH client.")
-                }
+            case .needsSetup(let reason):
+                notice(systemImage: "link.badge.plus", tint: .orange) { Text(reason) }
             }
         }
     }
 
-    private func runTest(trustNewHostKey: Bool) async {
+    private func runTest() async {
         guard let subject = testSubject else { return }
         testState = .running
-        let outcome = await model.testConnection(subject.host, password: subject.password, trustNewHostKey: trustNewHostKey)
+        await saveImportedJumpHosts()
+        let outcome = await model.testConnection(subject.host, password: subject.password)
         // Ignore a result for settings the user has since changed.
         guard testSubject?.host == subject.host else { return }
         testState = .finished(outcome)
@@ -589,9 +616,47 @@ struct HostEditorSheet: View {
             port: parsedPort,
             user: trimmedUser.isEmpty ? nil : trimmedUser,
             auth: auth,
+            proxyJump: proxyJump.isEmpty ? nil : proxyJump,
             inheritedOptions: inheritedOptions)
         try host.validate()
         return host
+    }
+
+    private var usesProxyCommand: Bool {
+        proxyJump.isEmpty && inheritedOptions.contains { $0.lowercased().hasPrefix("proxycommand ") }
+    }
+
+    /// Hosts this one can connect through: any other saved (or just
+    /// imported) host whose own route doesn't lead back here.
+    private var jumpHostChoices: [String] {
+        let me = alias.trimmingCharacters(in: .whitespaces)
+        let all = model.hosts + importedJumpHosts.filter { jump in !model.hosts.contains { $0.alias == jump.alias } }
+        func route(_ alias: String) -> [String] {
+            var seen: [String] = []
+            var next: String? = alias
+            while let current = next, !seen.contains(current) {
+                seen.append(current)
+                next = all.first { $0.alias == current }?.proxyJump
+            }
+            return seen
+        }
+        var choices = all.map(\.alias).filter { $0 != me && !route($0).contains(me) }
+        if !proxyJump.isEmpty, !choices.contains(proxyJump) { choices.append(proxyJump) }
+        return choices.sorted()
+    }
+
+    /// Why the saved host can't connect from this Mac now, if it can't
+    /// (and the form still describes it).
+    private var connectionProblem: String? {
+        guard let original, candidate?.proxyJump == original.proxyJump || candidate == nil else { return nil }
+        return model.connectionProblem(original)
+    }
+
+    private func saveImportedJumpHosts() async {
+        for jump in importedJumpHosts where !model.hosts.contains(where: { $0.alias == jump.alias }) {
+            await model.saveHost(jump, password: nil)
+        }
+        importedJumpHosts = []
     }
 
     private struct DuplicateAlias: LocalizedError {
@@ -622,6 +687,7 @@ struct HostEditorSheet: View {
         port = host.port.map(String.init) ?? ""
         user = host.user ?? ""
         inheritedOptions = host.inheritedOptions
+        proxyJump = host.proxyJump ?? ""
         switch host.auth {
         case .automatic:
             authKind = .automatic
@@ -643,11 +709,14 @@ struct HostEditorSheet: View {
         }
     }
 
-    /// An `~/.ssh/config` entry, set up with a Relay key that the entry's
-    /// own sign-in adds (its key file is what Sync copies).
-    private func applyImport(_ host: SSHHost) {
+    /// An `~/.ssh/config` entry (and the jump hosts it goes through), set
+    /// up with a Relay key that the entry's own sign-in adds (its key file
+    /// is what Sync copies).
+    private func applyImport(_ hosts: [SSHHost]) {
+        guard let host = hosts.first else { return }
+        importedJumpHosts = Array(hosts.dropFirst())
         fill(from: host)
-        if model.keyStore != nil && host.inheritedOptions.isEmpty {
+        if model.keyStore != nil && !usesProxyCommand {
             authKind = .relayKey
         }
         tab = .form
@@ -662,6 +731,7 @@ struct HostEditorSheet: View {
         do {
             var host = try buildHost()
             if authKind == .relayKey, let currentKey { host.auth = .storedKey(id: currentKey.id) }
+            await saveImportedJumpHosts()
             await model.saveHost(host, password: authKind == .password ? password : nil)
             onSave?(host)
             dismiss()
@@ -785,36 +855,46 @@ private struct PathField: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.showsHiddenFiles = true
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        panel.directoryURL = home.appendingPathComponent(".ssh", isDirectory: true)
+        panel.directoryURL = URL(fileURLWithPath: UserHome.path).appendingPathComponent(".ssh", isDirectory: true)
+        // In the App Sandbox, choosing the file here is what lets Relay read
+        // it (until it quits).
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let homePath = home.path.hasSuffix("/") ? home.path : home.path + "/"
-        path = url.path.hasPrefix(homePath) ? "~/" + url.path.dropFirst(homePath.count) : url.path
+        path = UserHome.abbreviate(url.path)
     }
 }
 
 /// The `~/.ssh/config` aliases Relay doesn't have yet, each resolved the
-/// way ssh would connect.
+/// way ssh would connect (with the jump hosts it goes through).
 private struct SSHConfigImportList: View {
     let existing: Set<String>
-    let onPick: (SSHHost) -> Void
+    let grant: FolderGrant
+    let onPick: ([SSHHost]) -> Void
 
-    @State private var entries: [SSHHost]?
+    @State private var entries: [[SSHHost]]?
 
     var body: some View {
         Group {
-            if let entries {
+            if grant.needsGrant {
+                ContentUnavailableView {
+                    Label("Allow Access to Your SSH Config", systemImage: "lock.doc")
+                } description: {
+                    Text("Relay lists the hosts in ~/.ssh/config once you give it access to your .ssh folder. It never changes anything there.")
+                } actions: {
+                    Button("Allow Access…") { Task { await grant.requestAccess() } }
+                }
+            } else if let entries {
                 if entries.isEmpty {
                     ContentUnavailableView(
                         "Nothing to Import",
                         systemImage: "checkmark.circle",
                         description: Text("Every host in ~/.ssh/config is already in Relay."))
                 } else {
-                    List(entries) { host in
+                    List(entries, id: \.first?.alias) { hosts in
+                        let host = hosts[0]
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(host.alias).fontWeight(.medium)
-                                Text(host.summary)
+                                Text(host.proxyJump.map { "\(host.summary) · through \($0)" } ?? host.summary)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 if !host.inheritedOptions.isEmpty {
@@ -826,7 +906,7 @@ private struct SSHConfigImportList: View {
                                 }
                             }
                             Spacer()
-                            Button("Import…") { onPick(host) }
+                            Button("Import…") { onPick(hosts) }
                         }
                         .padding(.vertical, 2)
                     }
@@ -837,15 +917,14 @@ private struct SSHConfigImportList: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task {
-            let aliases = SSHConfigDiscovery.discoverAliases().filter {
-                !existing.contains($0) && SSHHost.isValidAlias($0)
-            }
-            var resolved: [SSHHost] = []
-            for alias in aliases {
-                resolved.append(await SSHConfigImporter.importHost(alias: alias))
-            }
-            entries = resolved
+        .task(id: grant.needsGrant) {
+            guard !grant.needsGrant else { return }
+            let existing = existing
+            entries = await Task.detached {
+                SSHConfigDiscovery.discoverAliases()
+                    .filter { !existing.contains($0) && SSHHost.isValidAlias($0) }
+                    .map { SSHConfigImporter.importHosts(alias: $0, existing: existing, evaluate: SSHConfigImporter.effectiveConfig) }
+            }.value
         }
     }
 }

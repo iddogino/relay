@@ -31,49 +31,20 @@ public struct RuntimeCapabilities: OptionSet, Sendable {
     public static let snapshots = RuntimeCapabilities(rawValue: 1 << 5)
 }
 
-/// Backend-produced description of how to attach a terminal to a session.
-/// For v1 this is a local child-process launch spec.
+/// Backend-produced description of how to attach a terminal to a session:
+/// an SSH session over Relay's built-in client — where to connect and the
+/// remote command line to run there.
 public struct TerminalLaunchSpec: Sendable {
-    public let executable: URL
-    public let arguments: [String]
-    public let environment: [String: String]
-    /// Set when the terminal should run over Relay's built-in SSH client
-    /// instead of `executable` (which then remains the description of the
-    /// equivalent system-ssh launch).
-    public let builtIn: BuiltInTerminal?
-
-    public init(executable: URL, arguments: [String], environment: [String: String], builtIn: BuiltInTerminal? = nil) {
-        self.executable = executable
-        self.arguments = arguments
-        self.environment = environment
-        self.builtIn = builtIn
-    }
-}
-
-/// A terminal session over the built-in SSH client: where to connect and
-/// what to run there — the same remote command line the system ssh would
-/// send.
-public struct BuiltInTerminal: Sendable {
     public let target: SSHTarget
     public let command: String
     public let environment: [(String, String)]
     public let pool: SSHConnectionPool
-    /// Call when the session couldn't be opened: the host then uses the
-    /// system ssh for a while, so the next attach doesn't fail the same way.
-    public let reportOpenFailure: @Sendable (Error) -> Void
 
-    public init(
-        target: SSHTarget,
-        command: String,
-        environment: [(String, String)],
-        pool: SSHConnectionPool,
-        reportOpenFailure: @escaping @Sendable (Error) -> Void
-    ) {
+    public init(target: SSHTarget, command: String, environment: [(String, String)], pool: SSHConnectionPool) {
         self.target = target
         self.command = command
         self.environment = environment
         self.pool = pool
-        self.reportOpenFailure = reportOpenFailure
     }
 }
 

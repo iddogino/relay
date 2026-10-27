@@ -16,6 +16,9 @@
 #                       app gets a Keychain access group: SSH keys can then
 #                       sync through iCloud Keychain. Without it, Relay keys
 #                       are Secure Enclave only.
+#   RELAY_SANDBOX       "1" turns on the App Sandbox (what the Mac App Store
+#                       requires): network client access, files the user
+#                       picks, and bookmarks to them — nothing else.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -162,6 +165,33 @@ PLIST
   rm -f "$PROFILE_PLIST"
 fi
 
+# App Sandbox: added to the profile's entitlements, or on its own (ad hoc
+# builds can be sandboxed too).
+if [ "${RELAY_SANDBOX:-}" = "1" ]; then
+  if [ -z "$ENTITLEMENTS" ]; then
+    ENTITLEMENTS="build/Relay.entitlements"
+    cat > "$ENTITLEMENTS" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict/>
+</plist>
+PLIST
+  fi
+  for key in com.apple.security.app-sandbox com.apple.security.network.client \
+             com.apple.security.files.user-selected.read-write com.apple.security.files.bookmarks.app-scope; do
+    /usr/libexec/PlistBuddy -c "Add :$key bool true" "$ENTITLEMENTS"
+  done
+  # Dev builds: the automation hooks' folder (the container is off-limits
+  # to other tools), the one exception to the sandbox.
+  if [ "$VARIANT" = "dev" ]; then
+    HOOK_DIR="/private/tmp/relay-dev-hook/"
+    /usr/libexec/PlistBuddy -c "Add :com.apple.security.temporary-exception.files.absolute-path.read-write array" "$ENTITLEMENTS"
+    /usr/libexec/PlistBuddy -c "Add :com.apple.security.temporary-exception.files.absolute-path.read-write:0 string $HOOK_DIR" "$ENTITLEMENTS"
+    /usr/libexec/PlistBuddy -c "Add :RelayDevHookDirectory string $HOOK_DIR" "$APP/Contents/Info.plist"
+  fi
+fi
+
 # Nested Sparkle executables must be signed inside-out before the framework,
 # and the framework before the app (no --deep).
 FW="$APP/Contents/Frameworks/Sparkle.framework"
@@ -171,7 +201,9 @@ done
 [ -e "$FW/Versions/B/Autoupdate" ] && sign "$FW/Versions/B/Autoupdate"
 [ -e "$FW/Versions/B/Updater.app" ] && sign "$FW/Versions/B/Updater.app"
 sign "$FW"
-if [ -n "$ENTITLEMENTS" ]; then
+if [ -n "$ENTITLEMENTS" ] && [ "$IDENTITY" = "-" ]; then
+  codesign --force --entitlements "$ENTITLEMENTS" --sign - "$APP"
+elif [ -n "$ENTITLEMENTS" ]; then
   codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP"
 else
   sign "$APP"

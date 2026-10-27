@@ -6,7 +6,7 @@ import RelayCore
 /// GitHub menu; gates PR status fetching.
 enum GitHubConnection: Equatable {
     case checking
-    case connected(method: GitHubAuthMethod, login: String)
+    case connected(login: String)
     case notConnected
     /// A credential exists but GitHub (or the network) rejected it — shown
     /// as an error state so the user knows the badge went dark and why.
@@ -23,14 +23,6 @@ enum GitHubLoginProgress: Equatable {
     case requesting
     case waiting(userCode: String, verificationURL: URL)
     case failed(String)
-}
-
-enum GitHubAuthMethod: Equatable {
-    /// Borrowing the local `gh` CLI's token (re-read every check, so keyring
-    /// rotation never bites).
-    case cli
-    /// Our own device-flow token, stored in the login keychain.
-    case device
 }
 
 /// The device-flow token's home: a generic-password item in the user's
@@ -74,38 +66,5 @@ enum GitHubTokenStore {
 
     static func delete() {
         SecItemDelete(baseQuery as CFDictionary)
-    }
-}
-
-/// Locates and quietly interrogates a locally installed GitHub CLI. Used
-/// only to borrow its token — every actual API call is ours.
-enum GHCLI {
-    /// Non-interactive apps inherit a bare PATH, so the usual install
-    /// locations are probed directly.
-    private static let candidates = [
-        "/opt/homebrew/bin/gh",
-        "/usr/local/bin/gh",
-        "/usr/bin/gh",
-        "/opt/local/bin/gh",
-    ]
-
-    static func executablePath() -> String? {
-        candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-    }
-
-    /// The CLI's token for github.com, or nil when gh is missing or logged
-    /// out (`gh auth token` exits non-zero).
-    static func token() async -> String? {
-        guard let gh = executablePath() else { return nil }
-        guard let result = try? await SSHCommandRunner.runProcess(
-            executable: gh,
-            arguments: ["auth", "token", "--hostname", "github.com"],
-            stdin: nil,
-            timeout: .seconds(10)) else {
-            return nil
-        }
-        guard result.exitCode == 0 else { return nil }
-        let token = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        return token.isEmpty ? nil : token
     }
 }

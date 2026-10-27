@@ -90,7 +90,7 @@ public final class TestSSHD: @unchecked Sendable {
                 return
             }
             process.terminate()
-            process.waitUntilExit()
+            process.waitForExit()
             lastLog = (try? String(contentsOfFile: logPath, encoding: .utf8)) ?? ""
         }
         throw StartError.didNotStart(lastLog)
@@ -106,7 +106,7 @@ public final class TestSSHD: @unchecked Sendable {
     public func stop() {
         guard process.isRunning else { return }
         process.terminate()
-        process.waitUntilExit()
+        process.waitForExit()
     }
 
     deinit {
@@ -145,7 +145,7 @@ public final class TestSSHD: @unchecked Sendable {
         keygen.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
         keygen.arguments = ["-q", "-t", "ed25519", "-N", "", "-C", "relay-test", "-f", path]
         try keygen.run()
-        keygen.waitUntilExit()
+        keygen.waitForExit()
         guard keygen.terminationStatus == 0 else { throw StartError.unavailable("ssh-keygen failed") }
     }
 
