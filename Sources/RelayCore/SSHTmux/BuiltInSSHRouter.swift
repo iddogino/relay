@@ -2,21 +2,14 @@ import Foundation
 import os
 import RelaySSH
 
-/// Decides, per host, whether a management command goes through the
-/// built-in SSH client (`RelaySSH`) or the system `ssh`.
+/// How Relay connects to each host: its built-in SSH client (`RelaySSH`),
+/// with the host's record from Relay's registry — the only way Relay
+/// connects anywhere (no system ssh: the App Sandbox and iOS can't run it).
 ///
-/// The built-in client takes a host when Relay's record fully describes
-/// it: hostname/port/user plus automatic, key-file or password auth, and
-/// nothing inherited from `~/.ssh/config` that it can't honor (ProxyJump,
-/// forwards…) or a certificate. Anything else — and any host where it
-/// fails before the command starts (unverifiable host key, auth refused)
-/// — uses the system ssh, so turning this on never strands a host.
-///
-/// Hosts that sign in with a Relay key are the exception: only the built-in
-/// client holds that key, so they always use it (switches or not) and never
-/// fall back. When such a host can't be used — its key isn't on this
-/// device, its host key isn't trusted — commands fail with a "needs setup"
-/// reason instead.
+/// A host Relay can't connect to as it's set up — its Relay key isn't on
+/// this device, no password is saved here, its host key isn't trusted yet,
+/// the host refused the sign-in — "needs setup", with a reason the UI shows
+/// and the host editor fixes.
 public final class BuiltInSSHRouter: @unchecked Sendable {
     public let pool: SSHConnectionPool
     /// Relay's own keys (what `.storedKey` hosts sign in with).
@@ -24,16 +17,9 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
     /// Relay's own known_hosts, where host keys the user trusts in Relay go.
     public let trustedHostsFile: String?
     private let registry: SSHHostRegistry
-    private let isEnabled: @Sendable () -> Bool
-    private let isTerminalEnabled: @Sendable () -> Bool
     private let passwordLookup: @Sendable (String) -> String?
     private let lock = NSLock()
-    private var fallbackUntil: [String: ContinuousClock.Instant] = [:]
     private var passwords: [String: String?] = [:]
-
-    /// How long a host stays on the system ssh after the built-in client
-    /// couldn't connect to it.
-    private let fallbackCooldown: Duration
 
     static let logger = Logger(subsystem: "com.iddogino.Relay", category: "ssh")
 
@@ -42,89 +28,108 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
         pool: SSHConnectionPool = .shared,
         keyStore: (any SSHKeyStore)? = nil,
         trustedHostsFile: String? = nil,
-        isEnabled: @escaping @Sendable () -> Bool,
-        isTerminalEnabled: @escaping @Sendable () -> Bool = { false },
-        passwordLookup: @escaping @Sendable (String) -> String?,
-        fallbackCooldown: Duration = .seconds(600)
+        passwordLookup: @escaping @Sendable (String) -> String?
     ) {
-        self.fallbackCooldown = fallbackCooldown
         self.registry = registry
         self.pool = pool
         self.keyStore = keyStore
         self.trustedHostsFile = trustedHostsFile
-        self.isEnabled = isEnabled
-        self.isTerminalEnabled = isTerminalEnabled
         self.passwordLookup = passwordLookup
     }
 
-    /// The built-in client's target for `alias`'s management commands, or
-    /// nil to use the system ssh.
-    func target(for alias: String) -> SSHTarget? {
-        guard isEnabled() || isRequired(alias) else { return nil }
-        return eligibleTarget(for: alias)
+    /// Where a host's commands and terminals go.
+    public enum Connection: Sendable, Equatable {
+        case ready(SSHTarget)
+        /// Relay can't connect as the host is set up; the reason says why.
+        case needsSetup(String)
     }
 
-    /// The built-in client's target for `alias`'s terminals (a separate
-    /// switch, rolled out separately), or nil to use the system ssh.
-    func terminalTarget(for alias: String) -> SSHTarget? {
-        guard isTerminalEnabled() || isRequired(alias) else { return nil }
-        return eligibleTarget(for: alias)
+    public func host(alias: String) -> SSHHost? {
+        registry.host(alias: alias)
     }
 
-    /// Whether only the built-in client can connect to `alias` (it signs in
-    /// with a Relay key).
-    public func isRequired(_ alias: String) -> Bool {
-        registry.host(alias: alias)?.auth.storedKeyID != nil
+    public func connection(for alias: String) -> Connection {
+        guard let host = registry.host(alias: alias) else {
+            return .needsSetup("Relay doesn\u{2019}t have a host named \u{201C}\(alias)\u{201D}.")
+        }
+        return Self.connection(
+            for: host, hosts: { self.registry.host(alias: $0) }, password: { self.password(for: $0) },
+            hasStoredKey: { self.keyStore?.signingKey(id: $0) != nil })
     }
 
-    /// Why a host that needs the built-in client can't use it on this
-    /// device, if it can't. nil for every other host.
+    /// Why Relay can't connect to `alias` as it's set up, or nil.
     public func setupProblem(for alias: String) -> String? {
-        guard let host = registry.host(alias: alias), let id = host.auth.storedKeyID else { return nil }
-        guard host.inheritedOptions.isEmpty else {
-            return "Relay keys need a host Relay can reach directly (\(host.inheritedOptions.joined(separator: ", ")) isn't supported yet)."
-        }
-        guard keyStore?.signingKey(id: id) != nil else {
-            return "This host signs in with a Relay key that isn't on this device."
-        }
+        if case .needsSetup(let reason) = connection(for: alias) { return reason }
         return nil
     }
 
-    private func eligibleTarget(for alias: String) -> SSHTarget? {
-        guard let host = registry.host(alias: alias) else { return nil }
-        if host.auth.storedKeyID != nil {
-            return Self.target(for: host, password: { nil })
+    /// Resolves `host` (and its jump hosts, each a Relay host) into a
+    /// target. Pure apart from the lookups; unit-tested.
+    static func connection(
+        for host: SSHHost,
+        hosts: (String) -> SSHHost?,
+        password: (String) -> String?,
+        hasStoredKey: (String) -> Bool,
+        visited: [String] = []
+    ) -> Connection {
+        // Problems are reported about the host the user picked; a jump
+        // host is named.
+        let subject = visited.isEmpty ? "This host" : "Its jump host \u{201C}\(host.alias)\u{201D}"
+        let possessive = visited.isEmpty ? "this host\u{2019}s" : "\u{201C}\(host.alias)\u{201D}\u{2019}s"
+        guard (try? host.validate()) != nil else {
+            return .needsSetup("\(subject)\u{2019}s settings are incomplete.")
         }
-        let cooling = lock.withLock { () -> Bool in
-            guard let until = fallbackUntil[alias] else { return false }
-            if ContinuousClock.now < until { return true }
-            fallbackUntil[alias] = nil
-            return false
+        if host.inheritedOptions.contains(where: { $0.lowercased().hasPrefix("proxycommand ") }) {
+            return .needsSetup("\(subject) connects through a ProxyCommand, which Relay can\u{2019}t run. Use a jump host instead.")
         }
-        guard !cooling else { return nil }
-        return Self.target(for: host, password: { self.password(for: alias) })
-    }
-
-    static func target(for host: SSHHost, password: () -> String?) -> SSHTarget? {
-        guard host.inheritedOptions.isEmpty, (try? host.validate()) != nil else { return nil }
         let credentials: SSHTarget.Credentials
         switch host.auth {
         case .automatic:
             credentials = .automatic
         case .keyFile(let path, let certificatePath):
-            guard certificatePath == nil else { return nil }
-            credentials = .keyFile(path: path)
+            let file = UserHome.expand(path)
+            guard FileManager.default.isReadableFile(atPath: file) else {
+                if UserHome.isSandboxed {
+                    return .needsSetup("Relay can\u{2019}t read \(possessive) key file (\(path)). Give Relay access to your .ssh folder in Settings \u{25B8} Hosts.")
+                }
+                return .needsSetup(FileManager.default.fileExists(atPath: file)
+                    ? "Relay can\u{2019}t read \(possessive) key file (\(path))."
+                    : "\(possessive.prefix(1).uppercased() + possessive.dropFirst()) key file (\(path)) isn\u{2019}t there.")
+            }
+            credentials = .keyFile(path: path, certificatePath: certificatePath?.isEmpty == false ? certificatePath : nil)
         case .password:
-            guard let secret = password(), !secret.isEmpty else { return nil }
+            guard let secret = password(host.alias), !secret.isEmpty else {
+                return .needsSetup("No password for \(visited.isEmpty ? "this host" : "\u{201C}\(host.alias)\u{201D}") is saved on this device.")
+            }
             credentials = .password(secret)
         case .storedKey(let id):
+            guard hasStoredKey(id) else {
+                return .needsSetup("\(subject) signs in with a Relay key that isn\u{2019}t on this device.")
+            }
             credentials = .storedKey(id: id)
         }
-        return SSHTarget(
+        var target = SSHTarget(
             host: host.hostname,
             port: host.port ?? 22,
             username: host.user ?? NSUserName(),
             credentials: credentials)
+        if let jumpAlias = host.proxyJump {
+            guard !visited.contains(jumpAlias), jumpAlias != host.alias else {
+                return .needsSetup("This host\u{2019}s jump hosts lead back to it.")
+            }
+            guard let jump = hosts(jumpAlias) else {
+                return .needsSetup("\(subject)\u{2019}s jump host \u{201C}\(jumpAlias)\u{201D} isn\u{2019}t in Relay.")
+            }
+            switch connection(for: jump, hosts: hosts, password: password, hasStoredKey: hasStoredKey, visited: visited + [host.alias]) {
+            case .needsSetup(let reason):
+                return .needsSetup(reason)
+            case .ready(var hop):
+                let before = hop.jumps
+                hop.jumps = []
+                target.jumps = before + [hop]
+            }
+        }
+        return .ready(target)
     }
 
     private func password(for alias: String) -> String? {
@@ -134,45 +139,27 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
         return value
     }
 
-    /// Host settings or saved passwords changed: forget cached passwords
-    /// and fallbacks so the next command re-evaluates every host.
+    /// Host settings or saved passwords changed: forget cached passwords so
+    /// the next command re-evaluates every host.
     public func hostsChanged() {
-        lock.withLock {
-            passwords = [:]
-            fallbackUntil = [:]
-        }
+        lock.withLock { passwords = [:] }
     }
 
-    /// A terminal session couldn't be opened over the built-in client.
-    /// Failures that would recur (host key, auth, a refused channel) send
-    /// the host to the system ssh for a while; an unreachable host is just
-    /// down, and would be for ssh too.
-    func noteTerminalOpenFailure(alias: String, error: Error) {
-        guard let error = error as? SSHClientError, !isRequired(alias) else { return }
-        switch error {
-        case .hostKeyNotTrusted, .authenticationFailed, .handshakeFailed, .channelFailed:
-            noteFallback(alias: alias, error: error)
-        case .unreachable, .connectionLost:
-            break
-        }
-    }
-
-    func noteFallback(alias: String, error: SSHClientError) {
-        guard !isRequired(alias) else { return }
-        lock.withLock { fallbackUntil[alias] = .now + fallbackCooldown }
-        Self.logger.notice("built-in ssh: \(alias, privacy: .public) falls back to system ssh (\(error.description, privacy: .public))")
-    }
-
-    /// The "needs setup" reason for a Relay-key host's connection failure,
-    /// or nil when it's an ordinary one (unreachable, dropped).
-    static func setupReason(for error: SSHClientError) -> String? {
+    /// The "needs setup" reason for a connection failure, or nil when it's
+    /// an ordinary one (unreachable, dropped).
+    public static func setupReason(for error: SSHClientError, host: SSHHost?) -> String? {
         switch error {
         case .hostKeyNotTrusted(.unknown, _):
-            return "This host's identity isn't trusted on this device yet."
+            return "This host\u{2019}s identity isn\u{2019}t trusted on this device yet."
         case .hostKeyNotTrusted:
-            return "This host's identity has changed since Relay last connected."
+            return "This host\u{2019}s identity has changed since Relay last connected."
         case .authenticationFailed:
-            return "The host didn't accept this device's Relay key."
+            switch host?.auth {
+            case .storedKey: return "The host didn\u{2019}t accept this device\u{2019}s Relay key."
+            case .password: return "The host didn\u{2019}t accept the saved password."
+            case .keyFile: return "The host didn\u{2019}t accept the key file."
+            case .automatic, nil: return "The host didn\u{2019}t accept any of this Mac\u{2019}s keys."
+            }
         case .unreachable, .connectionLost, .handshakeFailed, .channelFailed:
             return nil
         }

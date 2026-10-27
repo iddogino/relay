@@ -5,6 +5,9 @@ import Foundation
 /// `poll`s until GitHub hands back a token. Needs only a public OAuth app
 /// client ID (device flow enabled) — no client secret, no callback URL.
 public struct GitHubDeviceFlow: Sendable {
+    /// Relay's OAuth app (device flow on; the ID is public by design).
+    public static let relayClientID = "Ov23lijFwxlZQXYx1t79"
+
     public typealias Transport = GitHubAPIClient.Transport
 
     public struct Authorization: Sendable, Equatable {
@@ -37,7 +40,7 @@ public struct GitHubDeviceFlow: Sendable {
         }
     }
 
-    public func begin(clientID: String, scope: String = "repo") async throws -> Authorization {
+    public func begin(clientID: String = relayClientID, scope: String = "repo") async throws -> Authorization {
         let data = try await post(
             "https://github.com/login/device/code",
             form: ["client_id": clientID, "scope": scope])
@@ -45,7 +48,7 @@ public struct GitHubDeviceFlow: Sendable {
     }
 
     public func poll(
-        clientID: String,
+        clientID: String = relayClientID,
         deviceCode: String,
         currentInterval: Int
     ) async throws -> PollOutcome {

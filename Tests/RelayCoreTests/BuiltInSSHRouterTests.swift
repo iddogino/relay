@@ -5,118 +5,118 @@ import Testing
 
 @Suite("Built-in SSH routing")
 struct BuiltInSSHRouterTests {
-    @Test func takesHostsRelayFullyDescribes() {
+    private static func connection(
+        _ host: SSHHost, hosts: [SSHHost] = [], password: String? = nil, storedKeys: Set<String> = []
+    ) -> BuiltInSSHRouter.Connection {
+        BuiltInSSHRouter.connection(
+            for: host, hosts: { alias in hosts.first { $0.alias == alias } }, password: { _ in password },
+            hasStoredKey: { storedKeys.contains($0) })
+    }
+
+    private static func reason(_ connection: BuiltInSSHRouter.Connection) -> String? {
+        if case .needsSetup(let reason) = connection { return reason }
+        return nil
+    }
+
+    /// A key file that exists, for hosts that sign in with one.
+    private static let keyFile: String = {
+        let path = NSTemporaryDirectory() + "relay-router-key-\(UUID().uuidString)"
+        FileManager.default.createFile(atPath: path, contents: Data("key".utf8))
+        return path
+    }()
+
+    @Test func resolvesEveryKindOfSignIn() {
         let key = SSHHost(alias: "gputer", hostname: "iddo-gino-gputer", user: "iddogino",
-                          auth: .keyFile(path: "~/.ssh/id_ed25519", certificatePath: nil))
-        #expect(BuiltInSSHRouter.target(for: key, password: { nil })
-                == SSHTarget(host: "iddo-gino-gputer", port: 22, username: "iddogino",
-                             credentials: .keyFile(path: "~/.ssh/id_ed25519")))
+                          auth: .keyFile(path: Self.keyFile, certificatePath: nil))
+        #expect(Self.connection(key) == .ready(SSHTarget(
+            host: "iddo-gino-gputer", port: 22, username: "iddogino", credentials: .keyFile(path: Self.keyFile))))
+
+        let cert = SSHHost(alias: "c", hostname: "h", auth: .keyFile(path: Self.keyFile, certificatePath: "/x/k-cert.pub"))
+        #expect(Self.connection(cert) == .ready(SSHTarget(
+            host: "h", port: 22, username: NSUserName(),
+            credentials: .keyFile(path: Self.keyFile, certificatePath: "/x/k-cert.pub"))))
 
         let auto = SSHHost(alias: "box", hostname: "10.0.0.5", port: 2222)
-        #expect(BuiltInSSHRouter.target(for: auto, password: { nil })
-                == SSHTarget(host: "10.0.0.5", port: 2222, username: NSUserName(), credentials: .automatic))
+        #expect(Self.connection(auto) == .ready(SSHTarget(host: "10.0.0.5", port: 2222, username: NSUserName(), credentials: .automatic)))
 
         let pw = SSHHost(alias: "pw", hostname: "pw.example", auth: .password)
-        #expect(BuiltInSSHRouter.target(for: pw, password: { "s3cret" })?.credentials == .password("s3cret"))
+        #expect(Self.connection(pw, password: "s3cret") == .ready(SSHTarget(
+            host: "pw.example", port: 22, username: NSUserName(), credentials: .password("s3cret"))))
+
+        let relay = SSHHost(alias: "r", hostname: "r.example", auth: .storedKey(id: "K1"))
+        #expect(Self.connection(relay, storedKeys: ["K1"]) == .ready(SSHTarget(
+            host: "r.example", port: 22, username: NSUserName(), credentials: .storedKey(id: "K1"))))
     }
 
-    @Test func leavesTheRestToTheSystemSSH() {
+    @Test func saysWhatAHostNeedsWhenItCantConnect() throws {
+        let noPassword = SSHHost(alias: "pw", hostname: "h", auth: .password)
+        #expect(try #require(Self.reason(Self.connection(noPassword))).contains("No password"))
+
+        let elsewhere = SSHHost(alias: "r", hostname: "h", auth: .storedKey(id: "K1"))
+        #expect(try #require(Self.reason(Self.connection(elsewhere))).contains("isn\u{2019}t on this device"))
+
+        let missingKey = SSHHost(alias: "k", hostname: "h", auth: .keyFile(path: "/nonexistent/key", certificatePath: nil))
+        #expect(try #require(Self.reason(Self.connection(missingKey))).contains("/nonexistent/key"))
+
         var proxied = SSHHost(alias: "orb", hostname: "127.0.0.1")
         proxied.inheritedOptions = ["ProxyCommand /x"]
-        #expect(BuiltInSSHRouter.target(for: proxied, password: { nil }) == nil)
+        #expect(try #require(Self.reason(Self.connection(proxied))).contains("ProxyCommand"))
 
-        let cert = SSHHost(alias: "c", hostname: "h",
-                           auth: .keyFile(path: "~/.ssh/k", certificatePath: "~/.ssh/k-cert.pub"))
-        #expect(BuiltInSSHRouter.target(for: cert, password: { nil }) == nil)
-
-        let noPassword = SSHHost(alias: "pw", hostname: "h", auth: .password)
-        #expect(BuiltInSSHRouter.target(for: noPassword, password: { nil }) == nil)
+        // Settings Relay doesn't use (forwards…) don't stop it connecting.
+        var forwards = SSHHost(alias: "f", hostname: "h")
+        forwards.inheritedOptions = ["LocalForward 8080 [localhost]:80", "ForwardAgent yes"]
+        #expect(Self.reason(Self.connection(forwards)) == nil)
     }
 
-    @Test func terminalsAreOffUnlessSwitchedOn() throws {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-router-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let registry = SSHHostRegistry(configFile: dir.appendingPathComponent("ssh_config"), userConfigPath: "/u", systemConfigPath: "/s")
-        registry.setHosts([SSHHost(alias: "box", hostname: "box.example")])
-        let router = BuiltInSSHRouter(registry: registry, isEnabled: { true }, passwordLookup: { _ in nil })
-        #expect(router.target(for: "box") != nil)
-        #expect(router.terminalTarget(for: "box") == nil)
+    @Test func connectsThroughJumpHostsInOrder() throws {
+        let edge = SSHHost(alias: "edge", hostname: "edge.example", user: "e")
+        let bastion = SSHHost(alias: "bastion", hostname: "bastion.internal", port: 2222, auth: .storedKey(id: "K1"), proxyJump: "edge")
+        let target = SSHHost(alias: "db", hostname: "db.internal", proxyJump: "bastion")
+        let connection = Self.connection(target, hosts: [edge, bastion], storedKeys: ["K1"])
+        guard case .ready(let resolved) = connection else { Issue.record("\(connection)"); return }
+        #expect(resolved.host == "db.internal")
+        // Reached directly first, then each next hop through the previous.
+        #expect(resolved.jumps == [
+            SSHTarget(host: "edge.example", port: 22, username: "e", credentials: .automatic),
+            SSHTarget(host: "bastion.internal", port: 2222, username: NSUserName(), credentials: .storedKey(id: "K1")),
+        ])
+        #expect(resolved.jumps.allSatisfy { $0.jumps.isEmpty })
     }
 
-    @Test func respectsTheSwitchAndFallbacks() throws {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-router-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let registry = SSHHostRegistry(configFile: dir.appendingPathComponent("ssh_config"), userConfigPath: "/u", systemConfigPath: "/s")
-        registry.setHosts([SSHHost(alias: "box", hostname: "box.example")])
-        let enabled = Flag()
-        let router = BuiltInSSHRouter(registry: registry, isEnabled: { enabled.value }, passwordLookup: { _ in nil })
+    @Test func aJumpHostsProblemIsTheTargetsProblem() throws {
+        let bastion = SSHHost(alias: "bastion", hostname: "b", auth: .password)
+        let target = SSHHost(alias: "db", hostname: "d", proxyJump: "bastion")
+        #expect(try #require(Self.reason(Self.connection(target, hosts: [bastion]))).contains("\u{201C}bastion\u{201D}"))
 
-        #expect(router.target(for: "box") == nil)
-        enabled.value = true
-        #expect(router.target(for: "box") != nil)
-        #expect(router.target(for: "unknown") == nil)
+        let orphan = SSHHost(alias: "db", hostname: "d", proxyJump: "gone")
+        #expect(try #require(Self.reason(Self.connection(orphan))).contains("gone"))
 
-        router.noteFallback(alias: "box", error: .authenticationFailed)
-        #expect(router.target(for: "box") == nil)
-        router.hostsChanged()
-        #expect(router.target(for: "box") != nil)
+        let a = SSHHost(alias: "a", hostname: "a", proxyJump: "b")
+        let b = SSHHost(alias: "b", hostname: "b", proxyJump: "a")
+        #expect(try #require(Self.reason(Self.connection(a, hosts: [a, b]))).contains("lead back"))
     }
 
-    @Test func terminalsHaveTheirOwnSwitchAndFallBackOnRecurringFailures() throws {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-router-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let registry = SSHHostRegistry(configFile: dir.appendingPathComponent("ssh_config"), userConfigPath: "/u", systemConfigPath: "/s")
-        registry.setHosts([SSHHost(alias: "box", hostname: "box.example")])
-        let commands = Flag()
-        let terminals = Flag()
-        let router = BuiltInSSHRouter(registry: registry, isEnabled: { commands.value },
-                                      isTerminalEnabled: { terminals.value }, passwordLookup: { _ in nil })
-
-        commands.value = true
-        #expect(router.terminalTarget(for: "box") == nil)
-        commands.value = false
-        terminals.value = true
-        #expect(router.terminalTarget(for: "box") != nil)
-        #expect(router.target(for: "box") == nil)
-
-        // A host that's down is down for ssh too: no fallback.
-        router.noteTerminalOpenFailure(alias: "box", error: SSHClientError.unreachable("refused"))
-        #expect(router.terminalTarget(for: "box") != nil)
-        router.noteTerminalOpenFailure(alias: "box", error: CancellationError())
-        #expect(router.terminalTarget(for: "box") != nil)
-        // One that refuses us would refuse again: the system ssh takes it.
-        router.noteTerminalOpenFailure(alias: "box", error: SSHClientError.authenticationFailed)
-        #expect(router.terminalTarget(for: "box") == nil)
-        router.hostsChanged()
-        router.noteTerminalOpenFailure(alias: "box", error: SSHClientError.channelFailed("refused a terminal"))
-        #expect(router.terminalTarget(for: "box") == nil)
-    }
-
-    @Test func fallbacksExpireAndPasswordsAreLookedUpOnce() async throws {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-router-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let registry = SSHHostRegistry(configFile: dir.appendingPathComponent("ssh_config"), userConfigPath: "/u", systemConfigPath: "/s")
-        registry.setHosts([SSHHost(alias: "pw", hostname: "pw.example", auth: .password)])
+    @Test func looksUpPasswordsOnceUntilHostsChange() {
+        let registry = SSHHostRegistry(hosts: [SSHHost(alias: "pw", hostname: "pw.example", auth: .password)])
         let lookups = Counter()
-        let router = BuiltInSSHRouter(
-            registry: registry, isEnabled: { true }, isTerminalEnabled: { true },
-            passwordLookup: { _ in lookups.increment(); return "s3cret" },
-            fallbackCooldown: .milliseconds(500))
-
-        #expect(router.terminalTarget(for: "pw")?.credentials == .password("s3cret"))
-        #expect(router.target(for: "pw")?.credentials == .password("s3cret"))
+        let router = BuiltInSSHRouter(registry: registry, passwordLookup: { _ in lookups.increment(); return "s3cret" })
+        #expect(router.setupProblem(for: "pw") == nil)
+        #expect(router.setupProblem(for: "pw") == nil)
         #expect(lookups.value == 1)
-
-        router.noteTerminalOpenFailure(alias: "pw", error: SSHClientError.authenticationFailed)
-        #expect(router.terminalTarget(for: "pw") == nil)
-        try await Task.sleep(for: .milliseconds(700))
-        // The cooldown is over: the built-in client gets another chance.
-        #expect(router.terminalTarget(for: "pw") != nil)
-
-        // Changed hosts or passwords are looked up afresh.
         router.hostsChanged()
-        _ = router.target(for: "pw")
+        _ = router.connection(for: "pw")
         #expect(lookups.value == 2)
+        #expect(router.setupProblem(for: "unknown") != nil)
+    }
+
+    @Test func authFailuresNeedSetupAndSayWhichSignIn() {
+        let reasons = [SSHHostAuth.storedKey(id: "K"), .password, .keyFile(path: "/k", certificatePath: nil), .automatic].map {
+            BuiltInSSHRouter.setupReason(for: .authenticationFailed, host: SSHHost(alias: "h", hostname: "h", auth: $0))
+        }
+        #expect(Set(reasons.compactMap { $0 }).count == 4)
+        #expect(BuiltInSSHRouter.setupReason(for: .hostKeyNotTrusted(.unknown, presented: "k"), host: nil) != nil)
+        #expect(BuiltInSSHRouter.setupReason(for: .unreachable("refused"), host: nil) == nil)
+        #expect(BuiltInSSHRouter.setupReason(for: .connectionLost, host: nil) == nil)
     }
 
     final class Counter: @unchecked Sendable {
@@ -126,46 +126,28 @@ struct BuiltInSSHRouterTests {
         var value: Int { lock.withLock { count } }
     }
 
-    @Test func aBuiltInTerminalRunsWhatSSHWouldRun() async throws {
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-launch-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let registry = SSHHostRegistry(configFile: dir.appendingPathComponent("ssh_config"), userConfigPath: "/u", systemConfigPath: "/s")
+    @Test func aTerminalRunsTheAttachOverTheBuiltInClient() async throws {
+        let registry = SSHHostRegistry()
         var proxied = SSHHost(alias: "orb", hostname: "127.0.0.1")
         proxied.inheritedOptions = ["ProxyCommand /x"]
         registry.setHosts([SSHHost(alias: "box", hostname: "box.example", port: 2200, user: "me"), proxied])
-        let terminals = Flag()
-        let router = BuiltInSSHRouter(registry: registry, isEnabled: { false },
-                                      isTerminalEnabled: { terminals.value }, passwordLookup: { _ in nil })
+        let router = BuiltInSSHRouter(registry: registry, passwordLookup: { _ in nil })
         let provider = SSHTmuxRuntimeProvider(hostRegistry: registry, builtInSSH: router)
         let project = Project(name: "P", workspace: WorkspaceRef(provider: .sshTmux, opaqueID: "box"),
                               pathInput: "~/code", resolvedPath: "/home/me/code")
         let session = RemoteSession(id: SessionID(), projectID: project.id, displayName: "work",
                                     createdAt: Date(), backendID: "rterm-abc123")
 
-        #expect(try await provider.makeTerminalLaunch(for: session, project: project).builtIn == nil)
-
-        terminals.value = true
         let launch = try await provider.makeTerminalLaunch(for: session, project: project)
-        let builtIn = try #require(launch.builtIn)
-        #expect(builtIn.target == SSHTarget(host: "box.example", port: 2200, username: "me", credentials: .automatic))
-        // ssh joins the arguments after the alias into the remote command line.
-        let alias = try #require(launch.arguments.firstIndex(of: "box"))
-        #expect(builtIn.command == launch.arguments[(alias + 1)...].joined(separator: " "))
-        #expect(builtIn.command.hasPrefix("sh -c '"))
-        #expect(builtIn.command.contains("attach-session -t rterm-abc123"))
+        #expect(launch.target == SSHTarget(host: "box.example", port: 2200, username: "me", credentials: .automatic))
+        #expect(launch.command.hasPrefix("sh -c '"))
+        #expect(launch.command.contains("attach-session -t rterm-abc123"))
 
-        // Hosts the client can't handle keep the system ssh.
+        // A host Relay can't connect to fails with the reason.
         let other = Project(name: "Q", workspace: WorkspaceRef(provider: .sshTmux, opaqueID: "orb"),
                             pathInput: "~", resolvedPath: "/root")
-        #expect(try await provider.makeTerminalLaunch(for: session, project: other).builtIn == nil)
-    }
-
-    final class Flag: @unchecked Sendable {
-        private let lock = NSLock()
-        private var _value = false
-        var value: Bool {
-            get { lock.withLock { _value } }
-            set { lock.withLock { _value = newValue } }
+        await #expect(throws: RuntimeProviderError.self) {
+            _ = try await provider.makeTerminalLaunch(for: session, project: other)
         }
     }
 }

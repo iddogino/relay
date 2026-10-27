@@ -1,8 +1,8 @@
 import Foundation
 
 /// Minimal GitHub REST client for the PR badge. Runs entirely on this Mac
-/// with a bearer token (from the local `gh` CLI or our own device-flow
-/// login) — nothing here touches the remote host or shells out.
+/// with a bearer token (from Relay's device-flow login) — nothing here
+/// touches the remote host or shells out.
 public struct GitHubAPIClient: Sendable {
     public typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
 

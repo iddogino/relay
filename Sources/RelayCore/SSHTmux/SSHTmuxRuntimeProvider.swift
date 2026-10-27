@@ -18,45 +18,19 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
     static let tmuxVersionMetadataKey = "tmuxVersion"
 
     private let runner: SSHCommandRunner
-    private let configPath: String
-    /// Relay's own host list. When set, it's the only source of
-    /// workspaces and every ssh/scp runs against its generated config;
-    /// without it (the E2E harness), hosts come from `~/.ssh/config`.
-    private let hostRegistry: SSHHostRegistry?
+    /// Relay's own host list: the only source of workspaces.
+    private let hostRegistry: SSHHostRegistry
 
-    public init(
-        runner: SSHCommandRunner = SSHCommandRunner(),
-        sshConfigPath: String = SSHConfigDiscovery.defaultConfigPath,
-        hostRegistry: SSHHostRegistry? = nil,
-        builtInSSH: BuiltInSSHRouter? = nil
-    ) {
-        var runner = runner
-        if let hostRegistry { runner.configFile = hostRegistry.configFile.path }
-        if let builtInSSH { runner.builtIn = builtInSSH }
-        self.runner = runner
-        self.configPath = sshConfigPath
+    public init(hostRegistry: SSHHostRegistry, builtInSSH: BuiltInSSHRouter) {
+        self.runner = SSHCommandRunner(builtIn: builtInSSH)
         self.hostRegistry = hostRegistry
     }
-
-    /// `-F <config>` for direct ssh/scp invocations.
-    private var configArguments: [String] { runner.configArguments }
 
     // MARK: Workspaces
 
     public func discoverWorkspaces() async throws -> [WorkspaceDescriptor] {
-        if let hostRegistry {
-            return hostRegistry.hosts.map { host in
-                WorkspaceDescriptor(id: host.workspace, displayName: host.alias, providerID: id)
-            }
-        }
-        let path = configPath
-        let aliases = SSHConfigDiscovery.discoverAliases(configPath: path)
-        return aliases.map { alias in
-            WorkspaceDescriptor(
-                id: WorkspaceRef(provider: id, opaqueID: alias),
-                displayName: alias,
-                providerID: id
-            )
+        hostRegistry.hosts.map { host in
+            WorkspaceDescriptor(id: host.workspace, displayName: host.alias, providerID: id)
         }
     }
 
@@ -305,8 +279,12 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
 
     public func makeTerminalLaunch(for session: RemoteSession, project: Project) async throws -> TerminalLaunchSpec {
         let alias = try self.alias(for: project)
-        if let problem = runner.builtIn?.setupProblem(for: alias) {
-            throw RuntimeProviderError.hostNeedsSetup(workspace: alias, reason: problem)
+        let target: SSHTarget
+        switch runner.builtIn.connection(for: alias) {
+        case .needsSetup(let reason):
+            throw RuntimeProviderError.hostNeedsSetup(workspace: alias, reason: reason)
+        case .ready(let ready):
+            target = ready
         }
         guard TmuxNaming.isSafeSessionName(session.backendID) else {
             throw RuntimeProviderError.invalidInput("Unsafe session identifier.")
@@ -336,34 +314,14 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         fi
         exec "$tp" set-option -t \(name) status off ';' set-option -t \(name) mouse off ';' attach-session -t \(name)
         """
+        // ssh would send its remote arguments joined by spaces as one
+        // command line; this is that line.
         let remoteCommand = ["sh", "-c", POSIXShellQuote.quote(attachScript)]
         return TerminalLaunchSpec(
-            executable: URL(fileURLWithPath: SSHCommandRunner.sshPath),
-            arguments: configArguments + [
-                "-tt",
-                "-o", "ConnectTimeout=10",
-                "--",
-                alias,
-            ] + remoteCommand,
-            environment: [
-                "TERM_PROGRAM": "Relay",
-                "COLORTERM": "truecolor",
-            ],
-            builtIn: builtInTerminal(alias: alias, remoteCommand: remoteCommand)
-        )
-    }
-
-    /// The built-in client's version of the launch, when it takes this
-    /// host's terminals. ssh sends its remote arguments joined by spaces as
-    /// one command line; this sends that same line.
-    private func builtInTerminal(alias: String, remoteCommand: [String]) -> BuiltInTerminal? {
-        guard let router = runner.builtIn, let target = router.terminalTarget(for: alias) else { return nil }
-        return BuiltInTerminal(
             target: target,
             command: remoteCommand.joined(separator: " "),
             environment: BuiltInSSHRouter.forwardedEnvironment,
-            pool: router.pool,
-            reportOpenFailure: { [router] error in router.noteTerminalOpenFailure(alias: alias, error: error) })
+            pool: runner.builtIn.pool)
     }
 
     public func sessionExists(_ session: RemoteSession, project: Project) async throws -> Bool {
@@ -514,8 +472,6 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             )
         } catch SSHCommandRunner.RunnerError.timedOut {
             throw RuntimeProviderError.workspaceUnreachable(workspace: alias, detail: "Connection timed out.")
-        } catch let error as SSHCommandRunner.RunnerError {
-            throw RuntimeProviderError.operationFailed("Couldn't start ssh: \(error)")
         }
         guard result.exitCode == 0 else { throw mapFailure(alias: alias, result: result) }
 
@@ -562,8 +518,6 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             )
         } catch SSHCommandRunner.RunnerError.timedOut {
             throw RuntimeProviderError.workspaceUnreachable(workspace: alias, detail: "Connection timed out.")
-        } catch let error as SSHCommandRunner.RunnerError {
-            throw RuntimeProviderError.operationFailed("Couldn't start ssh: \(error)")
         }
         guard result.exitCode == 0 else { throw mapFailure(alias: alias, result: result) }
 
@@ -577,9 +531,6 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
 
     public func fetchPreviewFile(linkPath: String, for session: RemoteSession, project: Project) async throws -> URL {
         let alias = try self.alias(for: project)
-        guard !alias.contains(":") else {
-            throw RuntimeProviderError.invalidInput("SSH alias \"\(alias)\" can't be used as an scp source.")
-        }
         guard TmuxNaming.isSafeSessionName(session.backendID) else {
             throw RuntimeProviderError.invalidInput("Unsafe session identifier.")
         }
@@ -630,29 +581,13 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
 
         // Always fetch fresh: sessions rewrite files constantly and staleness
         // is worse than an extra transfer.
-        if let (router, target) = try builtInTransferTarget(alias: alias) {
-            do {
-                try await fetchBuiltIn(remotePath: remotePath, to: partial, router: router, target: target)
-            } catch {
-                try? FileManager.default.removeItem(at: partial)
-                throw RuntimeProviderError.operationFailed(
-                    "Couldn't fetch \u{201C}\(name)\u{201D} from \(alias).\n\(Self.describeTransferError(error))")
-            }
-            try? FileManager.default.removeItem(at: destination)
-            try FileManager.default.moveItem(at: partial, to: destination)
-            return destination
-        }
-        let scpResult = try await SSHCommandRunner.runProcess(
-            executable: "/usr/bin/scp",
-            arguments: configArguments + ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--",
-                        "\(alias):\(remotePath)", partial.path],
-            stdin: nil,
-            timeout: .seconds(600)
-        )
-        guard scpResult.exitCode == 0 else {
+        let target = try transferTarget(alias: alias)
+        do {
+            try await fetchBuiltIn(remotePath: remotePath, to: partial, target: target)
+        } catch {
             try? FileManager.default.removeItem(at: partial)
             throw RuntimeProviderError.operationFailed(
-                "Couldn't fetch \u{201C}\(name)\u{201D} from \(alias).\n\(Self.sanitizedStderr(scpResult.stderr))")
+                "Couldn't fetch \u{201C}\(name)\u{201D} from \(alias).\n\(Self.describeTransferError(error))")
         }
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: partial, to: destination)
@@ -724,12 +659,6 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         progress: (@Sendable (UploadProgress) -> Void)?
     ) async throws -> [String] {
         let alias = try self.alias(for: project)
-        // scp's target syntax splits on the first colon; an alias containing
-        // one would misroute. (Config discovery never produces such aliases,
-        // but the provider re-checks its own preconditions.)
-        guard !alias.contains(":") else {
-            throw RuntimeProviderError.invalidInput("SSH alias \"\(alias)\" can't be used as an scp target.")
-        }
         let basenames = try Self.validateDropBasenames(localPaths)
         for path in localPaths {
             guard FileManager.default.fileExists(atPath: path) else {
@@ -757,77 +686,21 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             )
         }
 
-        // 2. Transfer — over the built-in client when it takes this host.
-        if let (router, target) = try builtInTransferTarget(alias: alias) {
-            do {
-                try await uploadBuiltIn(
-                    localPaths: localPaths, names: basenames, dropDir: dropDir, alias: alias,
-                    router: router, target: target, progress: progress)
-            } catch is CancellationError {
-                bestEffortRemoveDropDirectory(dropDir, alias: alias)
-                throw CancellationError()
-            } catch let error as RuntimeProviderError {
-                bestEffortRemoveDropDirectory(dropDir, alias: alias)
-                throw error
-            } catch {
-                bestEffortRemoveDropDirectory(dropDir, alias: alias)
-                throw RuntimeProviderError.uploadFailed(Self.describeTransferError(error))
-            }
-            return basenames.map { dropDir + "/" + $0 }
-        }
-
-        // -r covers directories; -- protects dash-leading
-        // names; modern OpenSSH scp speaks SFTP, so remote names are taken
-        // literally (no remote shell expansion). With a progress callback,
-        // scp runs under a terminal (no -q) and its meter is parsed live.
+        // 2. Transfer.
         do {
-            let scpArguments = configArguments + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-r", "--"]
-                + localPaths + ["\(alias):\(dropDir)/"]
-            let scpResult: SSHCommandRunner.CommandResult
-            var errorText: String
-            if let progress {
-                let parser = LockedSCPParser()
-                let (executable, arguments) = Self.foregroundTTYCommand("/usr/bin/scp", scpArguments)
-                scpResult = try await SSHCommandRunner.runProcess(
-                    executable: executable,
-                    arguments: arguments,
-                    stdin: nil,
-                    timeout: .seconds(1800),
-                    onStdout: { chunk in
-                        if let update = parser.feed(chunk) { progress(update) }
-                    }
-                )
-                // Under the terminal, scp's stderr is merged into stdout.
-                errorText = SCPProgressParser.nonMeterText(scpResult.stdout)
-                if errorText.isEmpty { errorText = scpResult.stderr }
-            } else {
-                scpResult = try await SSHCommandRunner.runProcess(
-                    executable: "/usr/bin/scp",
-                    arguments: ["-q"] + scpArguments,
-                    stdin: nil,
-                    timeout: .seconds(1800)
-                )
-                errorText = scpResult.stderr
-            }
-            guard scpResult.exitCode == 0 else {
-                bestEffortRemoveDropDirectory(dropDir, alias: alias)
-                throw RuntimeProviderError.uploadFailed(
-                    "scp exited with status \(scpResult.exitCode).\n\(Self.sanitizedStderr(errorText))"
-                )
-            }
+            try await uploadBuiltIn(
+                localPaths: localPaths, names: basenames, dropDir: dropDir, alias: alias,
+                target: try transferTarget(alias: alias), progress: progress)
         } catch is CancellationError {
             bestEffortRemoveDropDirectory(dropDir, alias: alias)
             throw CancellationError()
-        } catch let error as SSHCommandRunner.RunnerError {
+        } catch let error as RuntimeProviderError {
             bestEffortRemoveDropDirectory(dropDir, alias: alias)
-            switch error {
-            case .timedOut:
-                throw RuntimeProviderError.uploadFailed("The transfer timed out.")
-            case .launchFailed(let detail):
-                throw RuntimeProviderError.uploadFailed(detail)
-            }
+            throw error
+        } catch {
+            bestEffortRemoveDropDirectory(dropDir, alias: alias)
+            throw RuntimeProviderError.uploadFailed(Self.describeTransferError(error))
         }
-
         return basenames.map { dropDir + "/" + $0 }
     }
 
@@ -849,15 +722,15 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
 
     // MARK: Transfers over the built-in client
 
-    /// The built-in client's target for file transfers to `alias`, or nil to
-    /// use scp. Throws for a Relay-key host that can't be used here.
-    private func builtInTransferTarget(alias: String) throws -> (BuiltInSSHRouter, SSHTarget)? {
-        guard let router = runner.builtIn else { return nil }
-        if let problem = router.setupProblem(for: alias) {
-            throw RuntimeProviderError.hostNeedsSetup(workspace: alias, reason: problem)
+    /// Where file transfers to `alias` connect; throws when the host needs
+    /// setting up.
+    private func transferTarget(alias: String) throws -> SSHTarget {
+        switch runner.builtIn.connection(for: alias) {
+        case .needsSetup(let reason):
+            throw RuntimeProviderError.hostNeedsSetup(workspace: alias, reason: reason)
+        case .ready(let target):
+            return target
         }
-        guard let target = router.target(for: alias) else { return nil }
-        return (router, target)
     }
 
     /// A command line running `script` under `/bin/sh` with the remote
@@ -896,6 +769,11 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                     try add(child, remote: remote + "/" + name, topLevel: false)
                 }
             } else if values.isRegularFile == true {
+                // Up front, so nothing is half-copied (and a file the App
+                // Sandbox keeps from Relay says so plainly).
+                guard FileManager.default.isReadableFile(atPath: resolved.path) else {
+                    throw RuntimeProviderError.uploadFailed("Relay can\u{2019}t read \u{201C}\(remote)\u{201D}.")
+                }
                 files.append((resolved, remote, Int64(values.fileSize ?? 0)))
             }
         }
@@ -910,7 +788,6 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         names: [String],
         dropDir: String,
         alias: String,
-        router: BuiltInSSHRouter,
         target: SSHTarget,
         progress: (@Sendable (UploadProgress) -> Void)?
     ) async throws {
@@ -930,7 +807,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             let base = sent
             let size = file.size
             progress?(UploadProgress(bytesTransferred: base, currentFileFraction: 0, filesStarted: index + 1))
-            let result = try await router.pool.exec(
+            let result = try await runner.builtIn.pool.exec(
                 target: target,
                 command: Self.pathCommand(#"exec cat > "$p""#, path: dropDir + "/" + file.remote),
                 input: .file(file.local, onProgress: { bytes in
@@ -951,13 +828,13 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
     }
 
     /// Streams a remote file into `destination` (never held in memory).
-    private func fetchBuiltIn(remotePath: String, to destination: URL, router: BuiltInSSHRouter, target: SSHTarget) async throws {
+    private func fetchBuiltIn(remotePath: String, to destination: URL, target: SSHTarget) async throws {
         guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
             throw CocoaError(.fileWriteUnknown)
         }
         let handle = try FileHandle(forWritingTo: destination)
         defer { try? handle.close() }
-        let result = try await router.pool.exec(
+        let result = try await runner.builtIn.pool.exec(
             target: target,
             command: Self.pathCommand(#"exec cat -- "$p""#, path: remotePath),
             input: .data(Data()),
@@ -977,37 +854,12 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         case SSHConnectionPool.ExecError.timedOut:
             return "The transfer timed out."
         case let error as SSHClientError:
-            return BuiltInSSHRouter.setupReason(for: error) ?? error.description
+            return BuiltInSSHRouter.setupReason(for: error, host: nil) ?? error.description
         default:
             return error.localizedDescription
         }
     }
 
-    /// Wraps a command in script(1) so it runs on a pseudo-terminal that is
-    /// its controlling tty with it in the foreground process group — scp
-    /// only draws its progress meter then (progressmeter.c can_output()),
-    /// and posix_spawn can't hand a child a controlling tty itself. script
-    /// execs the command directly (no shell), relays the terminal output to
-    /// our stdout pipe, and exits with the command's status; killing script
-    /// hangs up the terminal, which takes scp and its ssh down with it.
-    static func foregroundTTYCommand(_ executable: String, _ arguments: [String]) -> (String, [String]) {
-        ("/usr/bin/script", ["-q", "/dev/null", executable] + arguments)
-    }
-
-    /// Serializes parser state across output reads.
-    private final class LockedSCPParser: @unchecked Sendable {
-        private let lock = NSLock()
-        private var parser = SCPProgressParser()
-        func feed(_ data: Data) -> UploadProgress? {
-            lock.lock(); defer { lock.unlock() }
-            return parser.feed(data)
-        }
-    }
-
-    /// Removes a failed/cancelled drop directory. Fire-and-forget on a
-    /// detached task so a cancelled upload settles immediately and cleanup
-    /// itself can't be cancelled away. Only ever touches paths that passed
-    /// `isSafeDropDirectory`.
     // MARK: Machine load
 
     /// Cadence of the remote sampling loop: a slow heartbeat for the toolbar
@@ -1033,15 +885,12 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                 alias: alias,
                 script: script,
                 timeout: .seconds(interval * iterations + 120),
-                keepAlive: true,
                 onStdout: { data in
                     for sample in parser.feed(data) { onSample(sample) }
                 }
             )
         } catch SSHCommandRunner.RunnerError.timedOut {
             throw RuntimeProviderError.workspaceUnreachable(workspace: alias, detail: "Load sampling timed out.")
-        } catch let error as SSHCommandRunner.RunnerError {
-            throw RuntimeProviderError.operationFailed("Couldn't start ssh: \(error)")
         }
         try Task.checkCancellation()
         guard result.exitCode == 0 else { throw mapFailure(alias: alias, result: result) }
@@ -1075,8 +924,6 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                 alias: alias, script: SSHTmuxScripts.installGlobalAgentReporter(agent: agent), timeout: .seconds(120))
         } catch SSHCommandRunner.RunnerError.timedOut {
             throw RuntimeProviderError.workspaceUnreachable(workspace: alias, detail: "Installing the status reporter timed out.")
-        } catch let error as SSHCommandRunner.RunnerError {
-            throw RuntimeProviderError.operationFailed("Couldn't start ssh: \(error)")
         }
         guard result.exitCode != 0 || result.markers()["RTERM_AGENT_STATUS"] != "ok" else { return }
         let detail = Self.sanitizedStderr(result.stderr)
@@ -1112,15 +959,12 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
                 alias: alias,
                 script: script,
                 timeout: .seconds(Self.agentStatusInterval * iterations + 120),
-                keepAlive: true,
                 onStdout: { data in
                     for snapshot in parser.feed(data) { onSnapshot(snapshot) }
                 }
             )
         } catch SSHCommandRunner.RunnerError.timedOut {
             throw RuntimeProviderError.workspaceUnreachable(workspace: alias, detail: "Agent status watch timed out.")
-        } catch let error as SSHCommandRunner.RunnerError {
-            throw RuntimeProviderError.operationFailed("Couldn't start ssh: \(error)")
         }
         try Task.checkCancellation()
         guard result.exitCode == 0 else { throw mapFailure(alias: alias, result: result) }
@@ -1144,6 +988,10 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         }
     }
 
+    /// Removes a failed/cancelled drop directory. Fire-and-forget on a
+    /// detached task so a cancelled upload settles immediately and cleanup
+    /// itself can't be cancelled away. Only ever touches paths that passed
+    /// `isSafeDropDirectory`.
     private func bestEffortRemoveDropDirectory(_ dropDir: String, alias: String) {
         guard Self.isSafeDropDirectory(dropDir) else { return }
         let script = "rm -rf \(POSIXShellQuote.quote(dropDir))"
@@ -1182,8 +1030,6 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             return try await runner.runScript(alias: alias, script: script)
         } catch SSHCommandRunner.RunnerError.timedOut {
             throw RuntimeProviderError.workspaceUnreachable(workspace: alias, detail: "Connection timed out.")
-        } catch let error as SSHCommandRunner.RunnerError {
-            throw RuntimeProviderError.operationFailed("Couldn't start ssh: \(error)")
         }
     }
 

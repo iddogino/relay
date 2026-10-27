@@ -48,23 +48,6 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
 
     override var acceptsFirstResponder: Bool { true }
 
-    /// A surface running `command` locally.
-    convenience init?(command: String, environment: [String: String]) {
-        let envPairs = environment.map { (key: $0.key, value: $0.value) }
-        self.init { app, config in
-            command.withCString { commandPointer in
-                config.command = commandPointer
-                return withCStringArray(envPairs) { envVars in
-                    envVars.withUnsafeMutableBufferPointer { buffer in
-                        config.env_vars = buffer.baseAddress
-                        config.env_var_count = buffer.count
-                        return ghostty_surface_new(app, &config)
-                    }
-                }
-            }
-        }
-    }
-
     /// A surface in manual I/O mode: no local process; `io` carries the
     /// program's output in and the terminal's input and size out.
     convenience init?(manualIO io: ManualTerminalIO) {
@@ -797,30 +780,4 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
             break
         }
     }
-}
-
-/// Runs `body` with a C array of ghostty_env_var_s valid for its duration.
-private func withCStringArray<T>(
-    _ pairs: [(key: String, value: String)],
-    _ body: (inout [ghostty_env_var_s]) -> T
-) -> T {
-    func recurse(
-        _ remaining: ArraySlice<(key: String, value: String)>,
-        _ collected: inout [ghostty_env_var_s],
-        _ body: (inout [ghostty_env_var_s]) -> T
-    ) -> T {
-        guard let pair = remaining.first else {
-            return body(&collected)
-        }
-        return pair.key.withCString { keyPointer in
-            pair.value.withCString { valuePointer in
-                collected.append(ghostty_env_var_s(key: keyPointer, value: valuePointer))
-                defer { collected.removeLast() }
-                return recurse(remaining.dropFirst(), &collected, body)
-            }
-        }
-    }
-    var collected: [ghostty_env_var_s] = []
-    collected.reserveCapacity(pairs.count)
-    return recurse(pairs[...], &collected, body)
 }

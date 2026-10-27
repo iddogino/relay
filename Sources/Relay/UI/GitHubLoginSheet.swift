@@ -1,9 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Device-flow login: shows the one-time setup (OAuth app client ID), then
-/// the user code to enter at github.com/login/device while Relay polls for
-/// the token in the background.
+/// Device-flow login: shows the user code to enter at
+/// github.com/login/device while Relay polls for the token in the
+/// background.
 struct GitHubLoginSheet: View {
     @Bindable var model: AppModel
 
@@ -50,36 +50,15 @@ struct GitHubLoginSheet: View {
 
     private var intro: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Relay shows pull-request status — checks and mergeability — via the GitHub API. Log in with a one-time device code; Relay never sees your password. If the gh CLI is installed and logged in, Relay uses it automatically and this isn't needed.")
+            Text("Relay shows pull-request status — checks and mergeability — via the GitHub API. Log in with a one-time code at github.com; Relay never sees your password, and keeps the sign-in in your keychain.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("OAuth App Client ID")
-                    .font(.system(size: 12, weight: .medium))
-                Text("One-time setup: create an OAuth app on GitHub (any name, any URLs), enable “Device Flow” in its settings, and paste its Client ID here. The ID is public — there's no secret involved.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    TextField("Ov23li…", text: $model.gitHubClientID)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                        .autocorrectionDisabled()
-                    Button("Create OAuth App…") {
-                        NSWorkspace.shared.open(
-                            URL(string: "https://github.com/settings/applications/new")!)
-                    }
-                    .font(.system(size: 12))
-                }
-            }
 
             Button("Get Login Code") {
                 model.beginGitHubLogin()
             }
             .buttonStyle(.borderedProminent)
-            .disabled(model.gitHubClientID.trimmingCharacters(in: .whitespaces).isEmpty)
         }
     }
 

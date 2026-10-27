@@ -1,9 +1,9 @@
 import Crypto
 import Foundation
 
-/// Host key verification against OpenSSH `known_hosts` files — the same
-/// trust store the system ssh uses, so a host trusted there is trusted
-/// here. The only file ever written is Relay's own (`trust(…)`), for hosts
+/// Host key verification against OpenSSH `known_hosts` files — the
+/// user's own (read when Relay can: always outside the App Sandbox, once
+/// granted in it), so a host trusted for ssh is trusted here. The only file ever written is Relay's own (`trust(…)`), for hosts
 /// the user trusts in Relay.
 public struct KnownHosts: Sendable {
     public enum Verdict: Sendable, Equatable {
@@ -35,7 +35,7 @@ public struct KnownHosts: Sendable {
     public static func load(files: [String] = defaultFiles) -> KnownHosts {
         var entries: [Entry] = []
         for file in files {
-            let path = (file as NSString).expandingTildeInPath
+            let path = UserHome.expand(file)
             guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
             entries += parse(text)
         }
@@ -51,7 +51,7 @@ public struct KnownHosts: Sendable {
               !host.contains(where: { $0.isWhitespace || $0 == "," }) else {
             throw CocoaError(.fileWriteInvalidFileName)
         }
-        let path = (file as NSString).expandingTildeInPath
+        let path = UserHome.expand(file)
         let line = "\(lookupName(host: host, port: port)) \(fields[0]) \(fields[1])\n"
         let fm = FileManager.default
         try fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)

@@ -79,16 +79,25 @@ let package = Package(
             ] + ghosttyLinkerSettings
         ),
 
+        // Running local programs — for tests and the E2E harness only. The
+        // app never starts other programs (the App Sandbox and iOS don't
+        // allow it), so no app target links this.
+        .target(
+            name: "RelayLocalProcess",
+            dependencies: ["RelayCore"],
+            path: "Sources/RelayLocalProcess"
+        ),
+
         // Live end-to-end harness driving the real provider against real remotes.
         .executableTarget(
             name: "relay-e2e",
-            dependencies: ["RelayCore"],
+            dependencies: ["RelayCore", "RelayLocalProcess"],
             path: "Sources/RelayE2E"
         ),
 
         .testTarget(
             name: "RelayCoreTests",
-            dependencies: ["RelayCore", "RelaySSH", "RelayTestSupport"],
+            dependencies: ["RelayCore", "RelaySSH", "RelayTestSupport", "RelayLocalProcess"],
             path: "Tests/RelayCoreTests"
         ),
 

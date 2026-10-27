@@ -56,7 +56,8 @@ enum E2ECleanup {
             fputs("cleanup: can't read state file \(statePath)\n", stderr)
             exit(2)
         }
-        let runner = SSHCommandRunner()
+        await E2ETransport.setUp()
+        let runner = E2ETransport.runner()
         var failed = false
         for host in state.hosts {
             let script = cleanupScript(runID: state.runID, tempRoot: host.tempRoot)

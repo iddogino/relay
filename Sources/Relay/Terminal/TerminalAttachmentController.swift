@@ -5,7 +5,7 @@ import RelayCore
 
 /// Drives the single terminal attachment: connect, attached, reconnect with
 /// bounded backoff, ended/error. There is at most one live surface (and one
-/// local ssh child) at any time.
+/// SSH session feeding it) at any time.
 @MainActor
 @Observable
 final class TerminalAttachmentController {
@@ -154,11 +154,7 @@ final class TerminalAttachmentController {
     }
 
     private func createSurface(spec: TerminalLaunchSpec, attempt: Int, creationTry: Int = 0) {
-        // The surface runs its command as a shell command line (libghostty
-        // itself wraps it in `exec -l …` via its login-shell wrapper, so no
-        // exec prefix here). Every argv element is fully quoted.
-        let command = POSIXShellQuote.quoteJoin([spec.executable.path] + spec.arguments)
-        let created = makeSurface(spec: spec, command: command)
+        let created = makeSurface(spec: spec)
         guard let view = created?.view else {
             // ghostty_surface_new can fail transiently in the first moments
             // of a launch (a restored selection may attach before the window
@@ -209,25 +205,19 @@ final class TerminalAttachmentController {
         phase = .attached
     }
 
-    /// The surface for `spec`: a local `ssh` process, or — when the
-    /// built-in client takes this host's terminals — a manual-I/O surface
-    /// and the SSH session that feeds it (started by the caller).
-    private func makeSurface(spec: TerminalLaunchSpec, command: String) -> (view: TerminalSurfaceView, link: SSHTerminalLink?)? {
-        guard let builtIn = spec.builtIn else {
-            return TerminalSurfaceView(command: command, environment: spec.environment).map { ($0, nil) }
-        }
+    /// The surface for `spec`: a manual-I/O surface and the SSH session
+    /// that feeds it (started by the caller).
+    private func makeSurface(spec: TerminalLaunchSpec) -> (view: TerminalSurfaceView, link: SSHTerminalLink?)? {
         let gen = generation
         let io = ManualTerminalIO()
         guard let view = TerminalSurfaceView(manualIO: io) else { return nil }
         let link = SSHTerminalLink(
             io: io,
-            pool: builtIn.pool,
-            configuration: .init(target: builtIn.target, command: builtIn.command, environment: builtIn.environment),
+            pool: spec.pool,
+            configuration: .init(target: spec.target, command: spec.command, environment: spec.environment),
             onEnd: { [weak self] end, openError in
                 // The surface reports the end like a process exit (and the
-                // reconnect logic takes it from there); an open failure
-                // also moves this host to the system ssh for a while.
-                if let openError { builtIn.reportOpenFailure(openError) }
+                // reconnect logic takes it from there).
                 let failure = openError.map(SSHTerminalLink.describe)
                 Task { @MainActor [weak self] in
                     guard let self, gen == self.generation else { return }
@@ -323,7 +313,7 @@ final class TerminalAttachmentController {
         }
     }
 
-    /// Turns raw scp progress into the overlay's bar fraction and detail
+    /// Turns raw upload progress into the overlay's bar fraction and detail
     /// line. Main-actor only.
     @MainActor private final class UploadProgressTracker {
         let singleFile: Bool
@@ -338,8 +328,8 @@ final class TerminalAttachmentController {
             if firstSample == nil { firstSample = (.now, update.bytesTransferred) }
         }
 
-        /// One file: scp's exact percentage. Several: approximate bytes over
-        /// the measured total, held short of full until scp actually exits.
+        /// One file: its exact fraction. Several: bytes over the measured
+        /// total, held short of full until the upload actually finishes.
         var fraction: Double? {
             guard let latest else { return nil }
             if singleFile { return latest.currentFileFraction }
@@ -401,7 +391,7 @@ final class TerminalAttachmentController {
 
     private var lastAttachTime = Date.distantPast
 
-    /// The local ssh child exited. Never touches the remote session: decide
+    /// The SSH session ended. Never touches the remote session: decide
     /// between ended (session gone) and reconnect (transient failure).
     private func handleProcessExit(previousAttempt: Int) {
         guard let session, let project else { return }
@@ -409,7 +399,7 @@ final class TerminalAttachmentController {
 
         // An attachment that survived a while resets the backoff; one that
         // died quickly continues escalating it. The threshold must exceed the
-        // ssh ConnectTimeout so slow connection failures still escalate and
+        // connect timeout so slow connection failures still escalate and
         // the bounded-retry limit stays reachable.
         let quickFailure = Date().timeIntervalSince(lastAttachTime) < 30
         let attempt = quickFailure ? previousAttempt + 1 : 0

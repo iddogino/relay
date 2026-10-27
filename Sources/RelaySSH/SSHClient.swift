@@ -11,8 +11,9 @@ public struct SSHTarget: Sendable, Hashable {
         /// OpenSSH tries with no IdentityFile configured.
         case automatic
         /// That key: via the agent when it holds it, else the file itself
-        /// when it isn't passphrase-protected; then other agent keys.
-        case keyFile(path: String)
+        /// when it isn't passphrase-protected; then other agent keys. With
+        /// an OpenSSH certificate, the key signs in with it.
+        case keyFile(path: String, certificatePath: String? = nil)
         case password(String)
         /// One of Relay's own keys (`SSHKeyStore`), and nothing else.
         case storedKey(id: String)
@@ -22,12 +23,17 @@ public struct SSHTarget: Sendable, Hashable {
     public var port: Int
     public var username: String
     public var credentials: Credentials
+    /// Hosts to connect through first, in order (OpenSSH's ProxyJump): the
+    /// first is reached directly, each next one — and finally this target
+    /// — through a TCP forward over the previous connection.
+    public var jumps: [SSHTarget]
 
-    public init(host: String, port: Int = 22, username: String, credentials: Credentials) {
+    public init(host: String, port: Int = 22, username: String, credentials: Credentials, jumps: [SSHTarget] = []) {
         self.host = host
         self.port = port
         self.username = username
         self.credentials = credentials
+        self.jumps = jumps
     }
 }
 
@@ -142,7 +148,58 @@ final class SSHConnection: @unchecked Sendable {
             authenticated.fail(error)
             throw SSHClientError.unreachable(Self.describeConnectError(error, host: target.host))
         }
+        return try await finishHandshake(
+            target: target, channel: channel, authenticated: authenticated, failure: failure, timeout: handshakeTimeout)
+    }
 
+    /// Connects to `target` through `jump` (OpenSSH's ProxyJump): a TCP
+    /// forward (`direct-tcpip`) on the jump host's connection carries this
+    /// connection, end-to-end encrypted to `target` — the jump host only
+    /// relays bytes. The forward ends when this connection closes.
+    static func connect(
+        target: SSHTarget,
+        offers: [NIOSSHUserAuthenticationOffer.Offer],
+        knownHosts: KnownHosts,
+        through jump: SSHConnection,
+        openTimeout: TimeAmount = .seconds(10),
+        handshakeTimeout: TimeAmount = .seconds(20)
+    ) async throws -> SSHConnection {
+        let failure = FailureBox()
+        let authenticated = jump.channelEventLoop.makePromise(of: Void.self)
+        let userAuth = OfferingAuthDelegate(username: target.username, offers: offers, failure: failure)
+        let serverAuth = KnownHostsDelegate(host: target.host, port: target.port, knownHosts: knownHosts, failure: failure)
+        let forward = SSHChannelType.DirectTCPIP(
+            targetHost: target.host, targetPort: target.port,
+            originatorAddress: try SocketAddress(ipAddress: "127.0.0.1", port: 0))
+        let channel: Channel
+        do {
+            channel = try await jump.openChannel(timeout: openTimeout, type: .directTCPIP(forward)) { child in
+                child.eventLoop.makeCompletedFuture {
+                    let sync = child.pipeline.syncOperations
+                    try sync.addHandler(ForwardedBytesHandler())
+                    try sync.addHandler(NIOSSHHandler(
+                        role: .client(.init(userAuthDelegate: userAuth, serverAuthDelegate: serverAuth)),
+                        allocator: child.allocator,
+                        inboundChildChannelInitializer: nil))
+                    try sync.addHandler(HandshakeWatcher(authenticated: authenticated))
+                }
+            }
+        } catch {
+            authenticated.fail(error)
+            throw error
+        }
+        return try await finishHandshake(
+            target: target, channel: channel, authenticated: authenticated, failure: failure, timeout: handshakeTimeout)
+    }
+
+    /// Waits out key exchange and authentication on a connected `channel`.
+    private static func finishHandshake(
+        target: SSHTarget,
+        channel: Channel,
+        authenticated: EventLoopPromise<Void>,
+        failure: FailureBox,
+        timeout: TimeAmount
+    ) async throws -> SSHConnection {
         // A server that hangs up before authentication fails the handshake
         // at once (NIOSSHHandler doesn't pass channelInactive on, so the
         // watcher can't see it). After success this is a no-op.
@@ -151,7 +208,7 @@ final class SSHConnection: @unchecked Sendable {
         }
         // Key exchange + auth; bounded so a server that stalls mid-handshake
         // can't hang a caller.
-        let handshakeTimer = channel.eventLoop.scheduleTask(in: handshakeTimeout) {
+        let handshakeTimer = channel.eventLoop.scheduleTask(in: timeout) {
             authenticated.fail(SSHClientError.handshakeFailed("timed out"))
         }
         do {
@@ -199,6 +256,7 @@ final class SSHConnection: @unchecked Sendable {
     /// answer within `timeout`.
     func openChannel(
         timeout: TimeAmount,
+        type: SSHChannelType = .session,
         initialize: @escaping @Sendable (Channel) -> EventLoopFuture<Void>
     ) async throws -> Channel {
         let eventLoop = channel.eventLoop
@@ -220,7 +278,7 @@ final class SSHConnection: @unchecked Sendable {
         eventLoop.execute { [channel] in
             do {
                 let sshHandler = try channel.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
-                sshHandler.createChannel(opened, channelType: .session) { child, _ in
+                sshHandler.createChannel(opened, channelType: type) { child, _ in
                     late.child = child
                     // Failing setup ends a channel that hasn't been opened
                     // yet (a close would wait for an activation that, with
@@ -241,6 +299,13 @@ final class SSHConnection: @unchecked Sendable {
         } catch {
             openTimeout.cancel()
             if let clientError = error as? SSHClientError { throw clientError }
+            // A jump host that can't (or won't) reach the next host refuses
+            // the forward: for the caller, that host is unreachable.
+            if case .directTCPIP(let forward) = type, let refusal = error as? NIOSSHError,
+               refusal.type == .channelSetupRejected {
+                throw SSHClientError.unreachable(
+                    "\(target.host) couldn\u{2019}t connect to \(forward.targetHost) port \(forward.targetPort) (\(refusal))")
+            }
             throw SSHClientError.channelFailed(String(describing: error))
         }
     }
@@ -261,6 +326,26 @@ final class SSHConnection: @unchecked Sendable {
 }
 
 // MARK: Handlers & delegates
+
+/// The bytes of a TCP forward (a `direct-tcpip` channel) as a plain byte
+/// stream, so another SSH connection can run over it.
+final class ForwardedBytesHandler: ChannelDuplexHandler {
+    typealias InboundIn = SSHChannelData
+    typealias InboundOut = ByteBuffer
+    typealias OutboundIn = ByteBuffer
+    typealias OutboundOut = SSHChannelData
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let message = unwrapInboundIn(data)
+        guard message.type == .channel, case .byteBuffer(let bytes) = message.data else { return }
+        context.fireChannelRead(wrapInboundOut(bytes))
+    }
+
+    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+        let bytes = unwrapOutboundIn(data)
+        context.write(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(bytes))), promise: promise)
+    }
+}
 
 /// A channel being opened, for the open timeout (event-loop confined).
 final class LateChannel: @unchecked Sendable {
@@ -392,6 +477,10 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
     private var exitCode: Int32?
     private var execAccepted = false
     private var failure: Error?
+    /// The local file couldn't be read. Fails the command even when the
+    /// remote side then exits 0 — it saw a short (or empty) stream as a
+    /// complete one.
+    private var inputFailure: SSHClientError?
 
     convenience init(
         command: String,
@@ -451,7 +540,7 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
                 do {
                     file = try FileHandle(forReadingFrom: url)
                 } catch {
-                    failure = failure ?? SSHClientError.channelFailed("couldn't read \(url.lastPathComponent): \(error.localizedDescription)")
+                    inputFailure = SSHClientError.channelFailed("couldn't read \(url.lastPathComponent): \(error.localizedDescription)")
                     context.close(promise: nil)
                     return
                 }
@@ -478,7 +567,7 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
             do {
                 chunk = try file.read(upToCount: Self.fileChunkSize) ?? Data()
             } catch {
-                failure = failure ?? SSHClientError.channelFailed("couldn't read the file: \(error.localizedDescription)")
+                inputFailure = SSHClientError.channelFailed("couldn't read the file: \(error.localizedDescription)")
                 context.close(promise: nil)
                 return
             }
@@ -542,7 +631,9 @@ final class ExecHandler: ChannelDuplexHandler, @unchecked Sendable {
         self.done = nil
         try? file?.close()
         file = nil
-        if let exitCode {
+        if let inputFailure {
+            done.fail(inputFailure)
+        } else if let exitCode {
             done.succeed(SSHExecResult(exitCode: exitCode, stdout: stdout, stderr: stderr))
         } else if !execAccepted {
             done.fail(failure as? SSHClientError ?? SSHClientError.channelFailed(failure.map { String(describing: $0) } ?? "channel closed"))

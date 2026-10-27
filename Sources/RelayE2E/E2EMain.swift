@@ -85,18 +85,8 @@ enum HostDiscovery {
         }
         guard !os.isEmpty else { return nil }
 
-        // ssh -G resolves the effective hostname without connecting.
-        var loopback = false
-        if let resolved = try? await SSHCommandRunner.runProcess(
-            executable: SSHCommandRunner.sshPath,
-            arguments: ["-G", alias],
-            stdin: nil,
-            timeout: .seconds(5)) {
-            for line in resolved.stdout.split(separator: "\n") where line.hasPrefix("hostname ") {
-                let host = line.dropFirst("hostname ".count)
-                loopback = host == "127.0.0.1" || host == "localhost" || host == "::1"
-            }
-        }
+        let hostname = E2ETransport.host(alias: alias)?.hostname ?? alias
+        let loopback = LocalhostURLRewriter.isLoopbackHost(hostname)
         return Probe(alias: alias, os: os, loopback: loopback)
     }
 }

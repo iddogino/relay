@@ -1,4 +1,5 @@
 import Foundation
+import RelaySSH
 import Testing
 @testable import RelayCore
 
@@ -142,7 +143,9 @@ struct FakeRuntimeProvider: RuntimeProvider {
     }
 
     func makeTerminalLaunch(for session: RemoteSession, project: Project) async throws -> TerminalLaunchSpec {
-        TerminalLaunchSpec(executable: URL(fileURLWithPath: "/bin/cat"), arguments: [], environment: [:])
+        TerminalLaunchSpec(
+            target: SSHTarget(host: "fake.invalid", username: "me", credentials: .automatic),
+            command: "cat", environment: [], pool: SSHConnectionPool())
     }
 
     func sessionExists(_ session: RemoteSession, project: Project) async throws -> Bool {
@@ -186,7 +189,7 @@ struct RuntimeAbstractionTests {
         #expect(try await provider.sessionExists(session, project: project))
 
         let launch = try await provider.makeTerminalLaunch(for: session, project: project)
-        #expect(launch.executable.path.hasPrefix("/"))
+        #expect(launch.command == "cat")
 
         try await provider.archiveSession(session, project: project)
         #expect(try await provider.listSessions(for: project).isEmpty)

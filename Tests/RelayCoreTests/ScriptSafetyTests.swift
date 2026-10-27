@@ -1,4 +1,5 @@
 import Foundation
+import RelayLocalProcess
 import Testing
 @testable import RelayCore
 

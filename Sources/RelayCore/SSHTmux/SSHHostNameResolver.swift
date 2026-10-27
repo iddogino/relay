@@ -1,38 +1,16 @@
 import Foundation
 
-/// Resolves an SSH alias to the effective `HostName` the way ssh itself
-/// would, via `ssh -G` (local config evaluation only — no connection).
-/// Used so rewritten localhost links point at a name the client's browser
-/// can actually resolve, even when the alias is not itself a DNS name.
+/// The name a browser on this device should use for a host, so rewritten
+/// localhost links point at something it can resolve even when the alias
+/// is not itself a DNS name.
 public enum SSHHostNameResolver {
-    /// Parses `ssh -G` output for the effective hostname. Pure; unit-tested.
-    public static func parseHostName(fromConfigDump output: String) -> String? {
-        for line in output.split(separator: "\n") {
-            // Format: "hostname <value>" (lowercase key, single space).
-            if line.hasPrefix("hostname ") {
-                let value = String(line.dropFirst("hostname ".count))
-                    .trimmingCharacters(in: .whitespaces)
-                return value.isEmpty ? nil : value
-            }
-        }
-        return nil
-    }
-
-    /// Resolves the alias, falling back to the alias itself when `ssh -G`
-    /// fails or resolves to a loopback address (tunnel-style configs where
-    /// the real endpoint is not reachable by name from a browser anyway).
-    /// `configFile` is Relay's generated config (see `SSHHostRegistry`).
-    public static func resolve(alias: String, configFile: String? = nil) async -> String {
-        let result = try? await SSHCommandRunner.runProcess(
-            executable: SSHCommandRunner.sshPath,
-            arguments: (configFile.map { ["-F", $0] } ?? []) + ["-G", "--", alias],
-            stdin: nil,
-            timeout: .seconds(5)
-        )
-        guard let result, result.exitCode == 0,
-              let hostname = parseHostName(fromConfigDump: result.stdout),
-              !LocalhostURLRewriter.isLoopbackHost(hostname)
-        else { return alias }
+    /// The host's hostname — or its alias when there's no record, or the
+    /// hostname is a loopback address (tunnel-style setups where the real
+    /// endpoint isn't reachable by name from a browser anyway). Pure;
+    /// unit-tested.
+    public static func browserHost(alias: String, host: SSHHost?) -> String {
+        guard let hostname = host?.hostname, !hostname.isEmpty,
+              !LocalhostURLRewriter.isLoopbackHost(hostname) else { return alias }
         return hostname
     }
 }
