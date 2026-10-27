@@ -111,8 +111,25 @@ struct SSHConfigEvaluatorTests {
     static func differences(_ ours: [String: [String]], _ ssh: [String: [String]]) -> [String] {
         comparedKeys.compactMap { key in
             let a = ours[key] ?? [], b = ssh[key] ?? []
+            // Each OpenSSH release may add key types to its defaults
+            // (10.5: id_mldsa44_ed25519); defaults are defaults.
+            if key == "identityfile", a == SSHConfigEvaluator.defaultIdentityFiles, b == sshDefaultIdentityFiles {
+                return nil
+            }
             return a == b ? nil : "\(key): ours \(a) vs ssh \(b)"
         }
+    }
+
+    /// The IdentityFile list this ssh uses when a config sets none.
+    static let sshDefaultIdentityFiles: [String]? = {
+        guard let fixture = try? Fixture(), let path = try? fixture.write("config", "") else { return nil }
+        return (try? sshG(config: path, alias: "probe"))?["identityfile"]
+    }()
+
+    @Test(.enabled(if: comparesWithSSH)) func newerDefaultKeysOnlyAddToOurs() throws {
+        let theirs = try #require(Self.sshDefaultIdentityFiles)
+        #expect(Array(theirs.prefix(SSHConfigEvaluator.defaultIdentityFiles.count)) == SSHConfigEvaluator.defaultIdentityFiles,
+                "\(Self.sshVersion): \(theirs)")
     }
 
     /// Asserts the evaluator agrees with `ssh -G` for every alias.
