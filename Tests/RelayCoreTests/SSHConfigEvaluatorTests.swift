@@ -5,7 +5,12 @@ import Testing
 
 /// The in-app ssh_config evaluator, checked against the real thing: every
 /// differential case writes a config to a temp folder and compares the
-/// evaluator with `/usr/bin/ssh -G -F <config> <alias>` key by key.
+/// evaluator with `ssh -G -F <config> <alias>` key by key.
+///
+/// The evaluator follows OpenSSH 10, and so must the ssh it's compared
+/// with: older versions differ (no expansion in User, a final pass for any
+/// `Match final`, more default keys…). Those comparisons are skipped with
+/// an older ssh; CI installs OpenSSH 10 and points `RELAY_TEST_SSH` at it.
 @Suite("SSH config evaluator")
 struct SSHConfigEvaluatorTests {
     /// What the comparison covers (what Relay reads from a config).
@@ -14,7 +19,34 @@ struct SSHConfigEvaluatorTests {
         "localforward", "remoteforward", "dynamicforward", "forwardagent",
     ]
 
-    static let sshPath = "/usr/bin/ssh"
+    static let sshPath = ProcessInfo.processInfo.environment["RELAY_TEST_SSH"] ?? "/usr/bin/ssh"
+
+    /// `ssh -V`, e.g. "OpenSSH_10.3p1, LibreSSL 3.3.6".
+    static let sshVersion: String = {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: sshPath)
+        process.arguments = ["-V"]
+        let err = Pipe()
+        process.standardError = err
+        process.standardOutput = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return "" }
+        let data = err.fileHandleForReading.readDataToEndOfFile()
+        process.waitForExit()
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }()
+
+    /// Whether `sshPath` is OpenSSH 10 or later — what the comparisons need.
+    static let comparesWithSSH: Bool = {
+        guard let match = sshVersion.firstMatch(of: /^OpenSSH_(\d+)\./), let major = Int(match.1) else { return false }
+        return major >= 10
+    }()
+
+    @Test func theComparisonSSHIsOpenSSH10() {
+        // CI requires it, so the comparisons can't quietly stop running.
+        if ProcessInfo.processInfo.environment["RELAY_TEST_REQUIRE_OPENSSH10"] == "1" {
+            #expect(Self.comparesWithSSH, "\(Self.sshPath): \(Self.sshVersion)")
+        }
+    }
 
     // MARK: Harness
 
@@ -77,92 +109,10 @@ struct SSHConfigEvaluatorTests {
     }
 
     static func differences(_ ours: [String: [String]], _ ssh: [String: [String]]) -> [String] {
-        let ssh = olderSSH.normalized(ssh)
-        return comparedKeys.compactMap { key in
+        comparedKeys.compactMap { key in
             let a = ours[key] ?? [], b = ssh[key] ?? []
-            if key == "user", !olderSSH.expandsUser, b.contains(where: { $0.contains("%") || $0.contains("${") }) {
-                return nil
-            }
             return a == b ? nil : "\(key): ours \(a) vs ssh \(b)"
         }
-    }
-
-    /// The evaluator follows OpenSSH 10. An older `ssh` (CI's macOS image)
-    /// differs in three ways, detected rather than assumed from its
-    /// version: it doesn't expand tokens or variables in `User` (those
-    /// comparisons are skipped), its default IdentityFile list has more
-    /// entries (`id_xmss`, `id_dsa`, dropped from its answers), and a
-    /// `ProxyJump none` stops a later ProxyCommand (that case is skipped).
-    struct OlderSSH {
-        var expandsUser = true
-        var extraDefaultIdentityFiles: Set<String> = []
-        var proxyJumpNoneKeepsProxyCommand = true
-
-        func normalized(_ ssh: [String: [String]]) -> [String: [String]] {
-            guard !extraDefaultIdentityFiles.isEmpty, let files = ssh["identityfile"] else { return ssh }
-            var ssh = ssh
-            ssh["identityfile"] = files.filter { !extraDefaultIdentityFiles.contains($0) }
-            return ssh
-        }
-    }
-
-    static let olderSSH: OlderSSH = {
-        guard let fixture = try? Fixture(),
-              let path = try? fixture.write("config", "Host probe\n  User u%h\nHost jump\n  ProxyJump none\n  ProxyCommand nc x\n"),
-              let probe = try? sshG(config: path, alias: "probe"),
-              let jump = try? sshG(config: path, alias: "jump") else { return OlderSSH() }
-        return OlderSSH(
-            expandsUser: probe["user"] == ["uprobe"],
-            extraDefaultIdentityFiles: Set(probe["identityfile"] ?? []).subtracting(SSHConfigEvaluator.defaultIdentityFiles),
-            proxyJumpNoneKeepsProxyCommand: jump["proxycommand"] == ["nc x"])
-    }()
-
-    @Test func theInstalledSSHIsUnderstood() {
-        // On OpenSSH 10 (this Mac, the evaluator's model) nothing differs.
-        let version = Self.sshVersion()
-        if version.hasPrefix("OpenSSH_1") {
-            #expect(Self.olderSSH.expandsUser)
-            #expect(Self.olderSSH.extraDefaultIdentityFiles.isEmpty)
-            #expect(Self.olderSSH.proxyJumpNoneKeepsProxyCommand)
-        }
-        // Whatever the version, only the known extras are ever dropped.
-        #expect(Self.olderSSH.extraDefaultIdentityFiles.isSubset(of: ["~/.ssh/id_xmss", "~/.ssh/id_dsa"]), "\(version)")
-    }
-
-    @Test func olderSSHAdjustmentsAreNarrow() {
-        let older = OlderSSH(expandsUser: false, extraDefaultIdentityFiles: ["~/.ssh/id_xmss", "~/.ssh/id_dsa"],
-                             proxyJumpNoneKeepsProxyCommand: false)
-        let answer = ["identityfile": SSHConfigEvaluator.defaultIdentityFiles + ["~/.ssh/id_xmss", "~/.ssh/id_dsa"], "port": ["22"]]
-        #expect(older.normalized(answer) == ["identityfile": SSHConfigEvaluator.defaultIdentityFiles, "port": ["22"]])
-        #expect(older.normalized(["identityfile": ["~/.ssh/mine"]]) == ["identityfile": ["~/.ssh/mine"]])
-        #expect(Self.hasProxyJumpNone("Host a\n  ProxyJump none\n"))
-        #expect(Self.hasProxyJumpNone("Host a\n\tPROXYJUMP=\"NONE\"\r\n"))
-        #expect(!Self.hasProxyJumpNone("Host a\n  ProxyJump none # c\n"))
-        #expect(!Self.hasProxyJumpNone("Host a\n  ProxyJump j1\n  ProxyCommand none\n"))
-    }
-
-    /// Whether a config has a `ProxyJump none` line (any spelling).
-    static func hasProxyJumpNone(_ config: String) -> Bool {
-        config.split(whereSeparator: \.isNewline).contains { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard let end = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" || $0 == "=" }),
-                  trimmed[..<end].lowercased() == "proxyjump" else { return false }
-            let value = trimmed[end...].trimmingCharacters(in: CharacterSet(charactersIn: " \t=\""))
-            return value.lowercased() == "none"
-        }
-    }
-
-    static func sshVersion() -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: sshPath)
-        process.arguments = ["-V"]
-        let err = Pipe()
-        process.standardError = err
-        process.standardOutput = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return "" }
-        let data = err.fileHandleForReading.readDataToEndOfFile()
-        process.waitForExit()
-        return String(decoding: data, as: UTF8.self)
     }
 
     /// Asserts the evaluator agrees with `ssh -G` for every alias.
@@ -184,11 +134,11 @@ struct SSHConfigEvaluatorTests {
 
     // MARK: Differential cases
 
-    @Test func defaults() throws {
+    @Test(.enabled(if: comparesWithSSH)) func defaults() throws {
         try Self.expectAgreement("Host other\n  Port 1\n", aliases: ["a", "Mixed.Case", "10.0.0.1"])
     }
 
-    @Test func firstValueWinsAcrossBlocks() throws {
+    @Test(.enabled(if: comparesWithSSH)) func firstValueWinsAcrossBlocks() throws {
         try Self.expectAgreement("""
             Host web
               HostName web.example.com
@@ -203,7 +153,7 @@ struct SSHConfigEvaluatorTests {
             """, aliases: ["web", "web2", "db"])
     }
 
-    @Test func wildcardsAndNegation() throws {
+    @Test(.enabled(if: comparesWithSSH)) func wildcardsAndNegation() throws {
         try Self.expectAgreement("""
             Host !bastion *.prod
               User prod
@@ -216,7 +166,7 @@ struct SSHConfigEvaluatorTests {
             """, aliases: ["bastion", "api.prod", "db-1", "db-12", "skip", "Ab", "ab"])
     }
 
-    @Test func hostIsCaseSensitiveButMatchHostIsNot() throws {
+    @Test(.enabled(if: comparesWithSSH)) func hostIsCaseSensitiveButMatchHostIsNot() throws {
         try Self.expectAgreement("""
             Host MIXED
               Port 1
@@ -227,7 +177,7 @@ struct SSHConfigEvaluatorTests {
             """, aliases: ["MiXeD", "MIXED", "mixed"])
     }
 
-    @Test func matchCriteria() throws {
+    @Test(.enabled(if: comparesWithSSH)) func matchCriteria() throws {
         let user = NSUserName()
         try Self.expectAgreement("""
             Host a
@@ -249,7 +199,7 @@ struct SSHConfigEvaluatorTests {
             """, aliases: ["a", "b", "c"])
     }
 
-    @Test func finalPass() throws {
+    @Test(.enabled(if: comparesWithSSH)) func finalPass() throws {
         try Self.expectAgreement("""
             Host Ab
               HostName Real.Example
@@ -269,7 +219,7 @@ struct SSHConfigEvaluatorTests {
             """, aliases: ["Ab", "ab"])
     }
 
-    @Test func tags() throws {
+    @Test(.enabled(if: comparesWithSSH)) func tags() throws {
         try Self.expectAgreement("""
             Host a
               Tag work
@@ -280,7 +230,7 @@ struct SSHConfigEvaluatorTests {
             """, aliases: ["a", "b"])
     }
 
-    @Test func includesGlobsNestedAndInsideBlocks() throws {
+    @Test(.enabled(if: comparesWithSSH)) func includesGlobsNestedAndInsideBlocks() throws {
         let fixture = try Fixture()
         let dir = fixture.path
         try fixture.write("inc/20-b.conf", "Host b\n  Port 2002\nHost *\n  User from-b\n")
@@ -299,7 +249,7 @@ struct SSHConfigEvaluatorTests {
             """, aliases: ["a", "b", "c", "d", "e"], fixture: fixture)
     }
 
-    @Test func includeInInactiveBlockNeverMatches() throws {
+    @Test(.enabled(if: comparesWithSSH)) func includeInInactiveBlockNeverMatches() throws {
         let fixture = try Fixture()
         try fixture.write("x.conf", "Host *\n  Port 4444\n")
         try Self.expectAgreement("""
@@ -310,7 +260,7 @@ struct SSHConfigEvaluatorTests {
             """, aliases: ["a"], fixture: fixture)
     }
 
-    @Test func tokens() throws {
+    @Test(.enabled(if: comparesWithSSH)) func tokens() throws {
         try Self.expectAgreement("""
             Host Tok
               HostName %h.Example.COM
@@ -325,7 +275,7 @@ struct SSHConfigEvaluatorTests {
             """, aliases: ["Tok", "env"])
     }
 
-    @Test func syntaxVariants() throws {
+    @Test(.enabled(if: comparesWithSSH)) func syntaxVariants() throws {
         try Self.expectAgreement(
             "host a\r\n" +
             "HOSTNAME=b.example\r\n" +
@@ -342,7 +292,7 @@ struct SSHConfigEvaluatorTests {
             aliases: ["a", "b"])
     }
 
-    @Test func proxyPrecedence() throws {
+    @Test(.enabled(if: comparesWithSSH)) func proxyPrecedence() throws {
         for config in [
             "Host a\n  ProxyJump j\n  ProxyCommand nc %h %p\n",
             "Host a\n  ProxyCommand nc %h %p\n  ProxyJump j\n",
@@ -359,14 +309,11 @@ struct SSHConfigEvaluatorTests {
             "Host a\n  ProxyJump j1,ssh://u@j2:2200\n",
             "Host a\n  ProxyJump j1#c\n  User u%j\n",
         ] {
-            if config == "Host a\n  ProxyJump none\n  ProxyCommand nc x\n", !Self.olderSSH.proxyJumpNoneKeepsProxyCommand {
-                continue
-            }
             try Self.expectAgreement(config, aliases: ["a"])
         }
     }
 
-    @Test func forwards() throws {
+    @Test(.enabled(if: comparesWithSSH)) func forwards() throws {
         try Self.expectAgreement("""
             Host a
               LocalForward 8080 localhost:80
@@ -383,7 +330,7 @@ struct SSHConfigEvaluatorTests {
             """, aliases: ["a"])
     }
 
-    @Test func identityFilesAccumulateWithoutDuplicates() throws {
+    @Test(.enabled(if: comparesWithSSH)) func identityFilesAccumulateWithoutDuplicates() throws {
         try Self.expectAgreement("""
             Host a
               IdentityFile ~/.ssh/one
@@ -398,7 +345,7 @@ struct SSHConfigEvaluatorTests {
             """, aliases: ["a", "b", "none"])
     }
 
-    @Test func portServiceNamesAndForwardAgentForms() throws {
+    @Test(.enabled(if: comparesWithSSH)) func portServiceNamesAndForwardAgentForms() throws {
         try Self.expectAgreement("""
             Host a
               Port https
@@ -417,35 +364,27 @@ struct SSHConfigEvaluatorTests {
     /// Seeded random configs from a grammar of everything above, compared
     /// with `ssh -G` for several aliases each. Configs ssh rejects are
     /// skipped (and counted: most must be accepted).
-    @Test func randomConfigsAgreeWithSSH() throws {
+    @Test(.enabled(if: comparesWithSSH)) func randomConfigsAgreeWithSSH() throws {
         // RELAY_SSHCFG_FUZZ_CASES / _SEED run a bigger or different batch.
         let environment = ProcessInfo.processInfo.environment
         let cases = environment["RELAY_SSHCFG_FUZZ_CASES"].flatMap(Int.init) ?? 220
         var rng = SplitMix64(seed: environment["RELAY_SSHCFG_FUZZ_SEED"].flatMap(UInt64.init) ?? 0x5EED_C0F1)
-        var compared = 0, rejected = 0, skipped = 0
+        var compared = 0, rejected = 0
         var failures: [String] = []
-        var failingKeys: [String: Int] = [:]
         for index in 0..<cases {
             let fixture = try Fixture()
             let config = try ConfigGrammar.config(&rng, fixture: fixture)
-            // Behaviour that changed in OpenSSH 10 (see OlderSSH).
-            if !Self.olderSSH.proxyJumpNoneKeepsProxyCommand, Self.hasProxyJumpNone(config) {
-                skipped += 1
-                continue
-            }
             let path = try fixture.write("config", config)
             for alias in ConfigGrammar.aliases {
                 guard let ssh = try Self.sshG(config: path, alias: alias) else { rejected += 1; continue }
                 compared += 1
                 let diffs = Self.differences(Self.evaluate(config: path, alias: alias), ssh)
-                for diff in diffs { failingKeys[String(diff.prefix { $0 != ":" }), default: 0] += 1 }
                 if !diffs.isEmpty, failures.count < 5 {
                     failures.append("case \(index) alias \(alias): \(diffs.joined(separator: "; "))\n\(config)")
                 }
             }
         }
-        #expect(failures.isEmpty, "differing keys \(failingKeys)\n\(failures.joined(separator: "\n\n"))")
-        #expect(skipped < cases / 2, "skipped \(skipped) of \(cases)")
+        #expect(failures.isEmpty, "\(failures.joined(separator: "\n\n"))")
         #expect(compared > rejected * 4, "compared \(compared), ssh rejected \(rejected)")
     }
 
