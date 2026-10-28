@@ -26,9 +26,11 @@ enum GitHubLoginProgress: Equatable {
 }
 
 /// The device-flow token's home: a generic-password item in the user's
-/// login keychain. Never lands on disk anywhere else.
+/// login keychain, named per variant ("Relay GitHub", "Relay Dev GitHub")
+/// so the dev build never reads, overwrites or signs out the real app's
+/// token. Never lands on disk anywhere else.
 enum GitHubTokenStore {
-    private static let service = "Relay GitHub"
+    private static let service = "\(AppVariant.dataDirectoryName) GitHub"
     private static let account = "github.com"
 
     private static var baseQuery: [String: Any] {
