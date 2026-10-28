@@ -129,6 +129,17 @@ enum HostKeyDevHook {
                     number: request["number"] as? Int ?? 1)
                 result["pr"] = "\(status)"
 
+            case "githubToken":
+                // Stands in for finishing (or signing out of) the device
+                // flow: saves the token where a login does, then rechecks.
+                if request["signOut"] as? Bool == true {
+                    model.signOutGitHub()
+                } else {
+                    GitHubTokenStore.save(try string(request, "token"))
+                    await model.recheckGitHubAuth()
+                }
+                result["github"] = "\(model.gitHub)"
+
             case "grant":
                 // Stands in for picking the folder in the open panel (the
                 // path must be one this build's sandbox exempts).
