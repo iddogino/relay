@@ -122,7 +122,12 @@ let package = Package(
         // Libghostty manual I/O, from the C API up to full terminals over SSH.
         .testTarget(
             name: "RelayGhosttyIOTests",
-            dependencies: ["RelayGhosttyIO", "GhosttyKit", "RelaySSH", "RelayTestSupport"],
+            dependencies: [
+                "RelayGhosttyIO", "GhosttyKit", "RelaySSH",
+                // Only the macOS suites run SSH servers; ManualIOSurfaceTests
+                // also runs on the iOS Simulator.
+                .target(name: "RelayTestSupport", condition: .when(platforms: [.macOS])),
+            ],
             path: "Tests/RelayGhosttyIOTests",
             // The terminal probe the tests run (read from source, not bundled).
             exclude: ["Fixtures"],

@@ -1,3 +1,5 @@
+// macOS only: these run local programs and SSH servers.
+#if os(macOS)
 import AppKit
 import Foundation
 import GhosttyKit
@@ -242,3 +244,5 @@ extension GhosttyIOSuites.TerminalProtocolTests {
         try await closeAll(probes)
     }
 }
+
+#endif

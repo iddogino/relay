@@ -1,4 +1,3 @@
-import AppKit
 import Darwin
 import Foundation
 import GhosttyKit
@@ -8,7 +7,8 @@ import RelaySSH
 
 /// The patched libghostty's manual I/O mode, through its C API: real
 /// surfaces whose program output is fed in and whose writes, sizes, and
-/// exits come out through the callbacks.
+/// exits come out through the callbacks. This suite also runs on the iOS
+/// Simulator (the iOS CI job); the rest of the target is macOS only.
 /// libghostty's state is process-wide, and the end-to-end suite's fake
 /// server runs its programs as this process's children, which the process
 /// checks here would see: the Ghostty suites run one at a time.
@@ -47,12 +47,15 @@ struct ManualIOSurfaceTests {
     // MARK: Creation
 
     @Test func aManualSurfaceRunsNoProcessAndReportsItsSize() async throws {
+        #if os(macOS)
         let before = Self.childPIDs()
+        #endif
         let surface = try manualSurface()
         try await GhosttyTestHost.shared.waitUntil("a size report") { surface.sizes.last == surface.gridSize }
         let size = try #require(surface.gridSize)
         #expect(size.columns > 20 && size.rows > 5)
         #expect(surface.io?.size == size)
+        #if os(macOS)
         // No login wrapper, no shell: nothing an exec surface starts. (Other
         // suites may start unrelated helpers meanwhile.)
         // An exec surface's child is the setuid login(1), whose name this
@@ -60,6 +63,7 @@ struct ManualIOSurfaceTests {
         // servers' programs) have readable names.
         let spawned = Self.childPIDs().subtracting(before).map(Self.processName)
         #expect(!spawned.contains { $0.isEmpty || $0 == "login" }, "\(spawned)")
+        #endif
         // And libghostty knows of no process for it.
         #expect(ghostty_surface_foreground_pid(try #require(surface.surface)) == 0)
         try await surface.free()
@@ -105,6 +109,29 @@ struct ManualIOSurfaceTests {
         try await surface.waitForScreen("hello world")
         #expect(surface.screenLines.first == "hello world")
         #expect(surface.screenLines.dropFirst().first == "second line")
+        try await surface.free()
+    }
+
+    @Test func fedOutputReachesTheRenderedFrame() async throws {
+        let surface = try manualSurface()
+        surface.feed("\u{1B}[41m\(String(repeating: " ", count: 20))\u{1B}[0m\r\n\u{1B}[44m\(String(repeating: " ", count: 20))\u{1B}[0m")
+        let isRed = TestSurface.isRed, isBlue = TestSurface.isBlue
+        try await GhosttyTestHost.shared.waitUntil("the bars to be drawn", screen: {
+            "cells: \(String(describing: surface.renderedCell(column: 5, row: 0))) \(String(describing: surface.renderedCell(column: 5, row: 1)))"
+        }) {
+            isRed(surface.renderedCell(column: 5, row: 0)) && isBlue(surface.renderedCell(column: 5, row: 1))
+        }
+        #expect(isRed(surface.renderedCell(column: 19, row: 0)) && !isRed(surface.renderedCell(column: 25, row: 0)))
+        try await surface.free()
+    }
+
+    @Test func fontsAreSizedInPoints() async throws {
+        // Ghostty's built-in font (JetBrains Mono) advances 0.6 em, so a
+        // 13 pt font's cells are 7.8 pt wide: 15–16 px at the test's scale
+        // of 2. At 96 dpi (iOS before patch 0002) they'd be about 21 px.
+        let surface = try manualSurface()
+        let cell = try #require(surface.cellSize)
+        #expect((15...16).contains(cell.width), "cell \(cell)")
         try await surface.free()
     }
 
@@ -354,6 +381,7 @@ struct ManualIOSurfaceTests {
 
     // MARK: Exec mode is unchanged
 
+    #if os(macOS)
     @Test func execSurfacesStillRunTheirCommand() async throws {
         let before = Self.childPIDs()
         let surface = TestSurface(mode: .exec(command: "/bin/sh -c 'echo exec-mode-ok; sleep 5'"))
@@ -378,6 +406,7 @@ struct ManualIOSurfaceTests {
         #expect(!surface.closed)
         try await surface.free()
     }
+    #endif
 
     // MARK: Teardown and threads
 
@@ -501,6 +530,7 @@ struct ManualIOSurfaceTests {
 
     // MARK: Helpers
 
+    #if os(macOS)
     static func processName(_ pid: pid_t) -> String {
         var buffer = [CChar](repeating: 0, count: 256)
         proc_name(pid, &buffer, UInt32(buffer.count))
@@ -520,6 +550,7 @@ struct ManualIOSurfaceTests {
             .filter { $0.kp_eproc.e_ppid == me && $0.kp_proc.p_stat != SZOMB }
             .map { $0.kp_proc.p_pid })
     }
+    #endif
 }
 
 }

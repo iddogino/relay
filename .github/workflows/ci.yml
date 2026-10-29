@@ -101,6 +101,23 @@ jobs:
           xcodebuild build -scheme RelayKit -destination 'generic/platform=iOS Simulator' ARCHS=arm64 -derivedDataPath .build/xcode -quiet
           xcodebuild build -scheme RelayKit -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO -derivedDataPath .build/xcode -quiet
 
+      # libghostty's iOS slice at run time: the manual I/O surface suite
+      # (creating, feeding, rendering with Metal, resizing, tearing down) on
+      # a simulator — the newest iOS runtime's first iPhone.
+      - name: libghostty surface tests on the iOS Simulator
+        run: |
+          DEVICE="$(xcrun simctl list devices available --json | python3 -c '
+          import json, re, sys
+          runtimes = json.load(sys.stdin)["devices"]
+          def version(runtime): return [int(n) for n in re.findall(r"\d+", runtime.rsplit(".", 1)[-1])]
+          for runtime in sorted((r for r in runtimes if ".iOS-" in r), key=version, reverse=True):
+              for device in runtimes[runtime]:
+                  if device["name"].startswith("iPhone"):
+                      print(device["udid"]); sys.exit()
+          sys.exit("no iPhone simulator")
+          ')"
+          xcodebuild test -scheme RelayGhosttyIOTests -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath .build/xcode -quiet
+
   # RelaySyntaxHighlighter is a standalone, pure-Swift package (no AppKit, no
   # libghostty) — so its Prism fixture suite runs on a cheap Linux runner,
   # which also guards against swift-corelibs-foundation's NSRegularExpression

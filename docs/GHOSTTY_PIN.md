@@ -24,8 +24,8 @@ Scripts/build-app.sh                     # builds Relay.app (links the xcframewo
 The default build has this Mac's architecture only, which is all the Mac
 app's development builds need. `--universal` adds the slices the iOS app
 links (`ios-arm64` and an arm64-only `ios-arm64-simulator`) and an x86_64
-Mac slice; the `ios` CI job builds it and compiles the package's `RelayKit`
-product for iOS.
+Mac slice; the `ios` CI job builds it, compiles the package's `RelayKit`
+product for iOS, and runs the manual I/O surface suite on the iOS Simulator.
 
 The script verifies the checked-out commit matches the pin and refuses to
 build anything else.
@@ -60,6 +60,16 @@ re-applies a changed patch set from a clean checkout).
   enables them by itself only for macOS), and sizes fonts at 72 dpi on iOS as
   on macOS (iOS got 96, a third too large). Relay owns this build path now:
   nothing upstream checks it.
+
+  On iOS, libghostty renders into a layer it adds to the view's layer, and
+  it discards frames that don't match that layer's size, which UIKit
+  doesn't maintain: the embedding view sizes it on layout.
+
+  Tests: `ManualIOSurfaceTests` (all but its exec-mode test) also runs on the
+  iOS Simulator, including a rendered-frame check and the font size:
+  `xcodebuild test -scheme RelayGhosttyIOTests -destination 'platform=iOS Simulator,name=<an iPhone>'`
+  (the `ios` CI job). The target's other suites run local programs and are
+  macOS only.
 
 ### Zig
 
