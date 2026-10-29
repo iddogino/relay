@@ -3,8 +3,13 @@ description: >
   Select the newest installed Xcode, then restore the pinned
   GhosttyKit.xcframework from cache — or build it from source on a cache miss.
   The cache key is derived from Scripts/build-libghostty.sh and Relay's
-  patches (patches/ghostty), so bumping the Ghostty pin, the Zig toolchain,
-  or a patch automatically invalidates it.
+  patches (patches/ghostty, patches/zig), so bumping the Ghostty pin, the Zig
+  toolchain, or a patch automatically invalidates it.
+
+inputs:
+  universal:
+    description: Also build the x86_64 Mac, iOS and iOS Simulator slices (build-libghostty.sh --universal).
+    default: "false"
 
 runs:
   using: composite
@@ -26,9 +31,9 @@ runs:
         path: |
           Vendor/ghostty/macos/GhosttyKit.xcframework
           Vendor/ghostty/zig-out/share
-        key: ghosttykit-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/build-libghostty.sh', 'patches/ghostty/**') }}
+        key: ghosttykit-${{ inputs.universal == 'true' && 'universal' || 'native' }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/build-libghostty.sh', 'patches/ghostty/**', 'patches/zig/**') }}
 
     - name: Build libghostty from source
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
-      run: ./Scripts/build-libghostty.sh
+      run: ./Scripts/build-libghostty.sh ${{ inputs.universal == 'true' && '--universal' || '' }}

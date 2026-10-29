@@ -9,16 +9,23 @@ Metal renderer), built from official source and linked statically as
 | Upstream | https://github.com/ghostty-org/ghostty |
 | Pinned ref | upstream `main`, the "tip" nightly of 2026-10-23 (v1.3.1 is still the latest release) |
 | Pinned commit | `22f100c6367045bb5fc86172f837047dee2f7670` |
-| Zig toolchain | `0.17.0` (exact, SHA-256-verified; fetched locally by the build script) |
+| Zig toolchain | `0.17.0` (exact, SHA-256-verified; fetched locally by the build script, which patches its standard library) |
 | License | MIT (Ghostty branding/icons are **not** used by Relay) |
 
 ## Reproducing the build
 
 ```sh
-Scripts/build-libghostty.sh          # fetches the pinned commit and Zig 0.17.0, applies patches, builds
-Scripts/build-libghostty.sh --test   # the patches' Zig unit tests instead of a build
-Scripts/build-app.sh                 # builds Relay.app (links the xcframework)
+Scripts/build-libghostty.sh              # fetches the pinned commit and Zig 0.17.0, applies patches, builds
+Scripts/build-libghostty.sh --universal  # also the x86_64 Mac, iOS and iOS Simulator slices
+Scripts/build-libghostty.sh --test       # the patches' Zig unit tests instead of a build
+Scripts/build-app.sh                     # builds Relay.app (links the xcframework)
 ```
+
+The default build has this Mac's architecture only, which is all the Mac
+app's development builds need. `--universal` adds the slices the iOS app
+links (`ios-arm64` and an arm64-only `ios-arm64-simulator`) and an x86_64
+Mac slice; the `ios` CI job builds it and compiles the package's `RelayKit`
+product for iOS.
 
 The script verifies the checked-out commit matches the pin and refuses to
 build anything else.
@@ -44,6 +51,28 @@ re-applies a changed patch set from a clean checkout).
   terminals over SSH against an in-process server and a real `sshd`
   (`TerminalOverSSHTests.swift`).
 
+- **0002 — iOS build.** Upstream stopped building the full libghostty for
+  iOS on 2026-08-12 (ghostty-org/ghostty#13760; only libghostty-vt is still
+  compiled for iOS), though the iOS code paths remain (the Metal renderer on
+  a `UIView`, `GHOSTTY_PLATFORM_IOS`, `NullPty`). This restores the iOS slices
+  of `-Dxcframework-target=universal` that commit removed, passes `-fblocks`
+  to translate-c for iOS (the iOS SDK's headers declare blocks, and Aro
+  enables them by itself only for macOS), and sizes fonts at 72 dpi on iOS as
+  on macOS (iOS got 96, a third too large). Relay owns this build path now:
+  nothing upstream checks it.
+
+### Zig
+
+`patches/zig/*.patch` are applied to the fetched toolchain's standard
+library, with a stamp in it the same way (a toolchain patched with a
+different set is fetched again).
+
+- **0001 — `std.Io.Threaded` on iOS.** In Zig 0.17.0, `NullFile` has no `fd`
+  on iOS, yet `spawnDarwin` reads it, so any iOS build that uses
+  `Io.Threaded` (libghostty does, in `src/global.zig`) fails to compile.
+  Zig's master branch has the same fix. Drop the patch once the Zig pin
+  includes it.
+
 To change a patch: edit `Vendor/ghostty` (after one script run), then
 regenerate it with `git -C Vendor/ghostty add -N <new files>` and
 `git -C Vendor/ghostty diff` (keeping the patch's description header).
@@ -58,7 +87,9 @@ An upstream bump must be a deliberate change:
    `Scripts/build-libghostty.sh`, and this file.
 2. Delete `Vendor/ghostty`, re-run `Scripts/build-libghostty.sh`. If a
    patch no longer applies, rebase it onto the new pin (and re-run
-   `--test`).
+   `--test`). Build `--universal` too: the iOS slices are Relay's to keep
+   building. With a new Zig version, check whether `patches/zig` is still
+   needed (or still applies).
 3. Re-check the embedding surface used by Relay (the C API in
    `include/ghostty.h` is still evolving): `Sources/Relay/Ghostty/*` is the
    only code that may need updating.

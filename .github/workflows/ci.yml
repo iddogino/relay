@@ -74,7 +74,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: Vendor/toolchain
-          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/build-libghostty.sh') }}
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/build-libghostty.sh', 'patches/zig/**') }}
 
       - name: Run patch unit tests
         run: ./Scripts/build-libghostty.sh --test
