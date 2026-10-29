@@ -79,6 +79,28 @@ jobs:
       - name: Run patch unit tests
         run: ./Scripts/build-libghostty.sh --test
 
+  # The package's RelayKit product (everything below the Mac app's AppKit
+  # layer) is what the iOS app builds on. This keeps it compiling for iOS,
+  # against libghostty's iOS slices, which nothing upstream builds anymore
+  # (docs/GHOSTTY_PIN.md, patch 0002).
+  ios:
+    name: iOS build (RelayKit)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GhosttyKit with iOS slices (cached)
+        uses: ./.github/actions/ghosttykit
+        with:
+          universal: "true"
+
+      # The simulator slice is arm64 only, as upstream built it.
+      - name: Build RelayKit for the iOS Simulator and devices
+        run: |
+          xcodebuild build -scheme RelayKit -destination 'generic/platform=iOS Simulator' ARCHS=arm64 -derivedDataPath .build/xcode -quiet
+          xcodebuild build -scheme RelayKit -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO -derivedDataPath .build/xcode -quiet
+
   # RelaySyntaxHighlighter is a standalone, pure-Swift package (no AppKit, no
   # libghostty) — so its Prism fixture suite runs on a cheap Linux runner,
   # which also guards against swift-corelibs-foundation's NSRegularExpression

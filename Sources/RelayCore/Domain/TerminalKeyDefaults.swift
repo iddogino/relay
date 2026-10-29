@@ -1,4 +1,5 @@
 import Foundation
+import RelaySSH
 
 /// Keybinds Relay adds to the user's Ghostty configuration.
 public enum TerminalKeyDefaults {
@@ -11,7 +12,7 @@ public enum TerminalKeyDefaults {
 
     /// The user's Ghostty config files, in the places Ghostty reads them on
     /// macOS (files they include with `config-file` aren't followed).
-    public static func userConfigFiles(home: URL = FileManager.default.homeDirectoryForCurrentUser,
+    public static func userConfigFiles(home: URL = URL(fileURLWithPath: UserHome.path),
                                        environment: [String: String] = ProcessInfo.processInfo.environment) -> [URL] {
         let xdg = environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
             ?? home.appendingPathComponent(".config")

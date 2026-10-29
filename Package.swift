@@ -4,7 +4,14 @@ import PackageDescription
 let package = Package(
     name: "Relay",
     platforms: [
-        .macOS(.v15)
+        .macOS(.v15),
+        .iOS(.v18),
+    ],
+    products: [
+        // Everything below the Mac app's AppKit layer, for the iOS app to
+        // build on (with libghostty's iOS slices:
+        // Scripts/build-libghostty.sh --universal).
+        .library(name: "RelayKit", targets: ["RelayCore", "RelaySSH", "RelayGhosttyIO", "GhosttyKit"]),
     ],
     dependencies: [
         // Auto-updates. The framework is embedded into the bundle (and its
@@ -145,12 +152,13 @@ let package = Package(
     ]
 )
 
-/// What linking libghostty needs on macOS.
+/// What linking libghostty needs.
 var ghosttyLinkerSettings: [LinkerSetting] {
     [
         .linkedLibrary("c++"),
-        .linkedFramework("AppKit"),
-        .linkedFramework("Carbon"),
+        .linkedFramework("AppKit", .when(platforms: [.macOS])),
+        .linkedFramework("Carbon", .when(platforms: [.macOS])),
+        .linkedFramework("UIKit", .when(platforms: [.iOS])),
         .linkedFramework("Metal"),
         .linkedFramework("MetalKit"),
         .linkedFramework("CoreText"),
