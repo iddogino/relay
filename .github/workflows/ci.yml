@@ -116,7 +116,16 @@ jobs:
                       print(device["udid"]); sys.exit()
           sys.exit("no iPhone simulator")
           ')"
-          xcodebuild test -scheme RelayGhosttyIOTests -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath .build/xcode -quiet
+          xcodebuild test -scheme RelayGhosttyIOTests -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath .build/xcode -resultBundlePath .build/ios-tests.xcresult -quiet
+          # -quiet hides the results, and a run with no tests passes too.
+          xcrun xcresulttool get test-results summary --path .build/ios-tests.xcresult --compact | python3 -c '
+          import json, sys
+          summary = json.load(sys.stdin)
+          device = summary["devicesAndConfigurations"][0]["device"]
+          print("%s: %d passed, %d failed, %d skipped on %s (iOS %s)" % (summary["result"], summary["passedTests"],
+                summary["failedTests"], summary["skippedTests"], device["modelName"], device["osVersion"]))
+          sys.exit(0 if summary["result"] == "Passed" and summary["passedTests"] > 0 else 1)
+          '
 
   # RelaySyntaxHighlighter is a standalone, pure-Swift package (no AppKit, no
   # libghostty) — so its Prism fixture suite runs on a cheap Linux runner,
