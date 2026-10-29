@@ -1,0 +1,184 @@
+Relay patch 0002: build GhosttyKit's iOS slices again.
+
+Upstream stopped building the full libghostty for iOS on 2026-08-12
+(ghostty-org/ghostty#13760, commit 7a171895dd: only libghostty-vt is
+still compiled for iOS). The iOS code paths themselves are still there
+(the Metal renderer on a UIView, GHOSTTY_PLATFORM_IOS, NullPty), so
+this restores what that commit removed from the build: the ios-arm64
+and ios-arm64-simulator slices of `-Dxcframework-target=universal`,
+their Metal library, and iOS's deployment target. Relay's iOS app
+links them.
+
+It also passes -fblocks to translate-c for iOS: Aro turns Blocks on by
+itself only for macOS, and the iOS SDK's CoreGraphics headers declare
+block typedefs.
+
+And it sizes fonts on iOS as on macOS: font.face.default_dpi was 72 only
+on macOS, so iOS (in points, like macOS) got 96 and fonts a third too
+large.
+
+Needs Zig's own iOS fix (patches/zig/0001-ios-null-file.patch).
+
+diff --git a/pkg/macos/build.zig b/pkg/macos/build.zig
+index 6374055..4d164be 100644
+--- a/pkg/macos/build.zig
++++ b/pkg/macos/build.zig
+@@ -74,6 +74,9 @@ pub fn build(b: *std.Build) !void {
+         ) } },
+         .target = target,
+         .optimize = optimize,
++        // Aro only turns Blocks on by itself for macOS; the iOS SDK's
++        // CoreGraphics headers declare block typedefs too.
++        .extra_args = if (target.result.os.tag == .ios) &.{"-fblocks"} else &.{},
+     });
+ 
+     const lib = b.addLibrary(.{
+diff --git a/src/build/Config.zig b/src/build/Config.zig
+index 2415729..ace23f3 100644
+--- a/src/build/Config.zig
++++ b/src/build/Config.zig
+@@ -134,17 +134,6 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
+             result = b.resolveTargetQuery(query);
+         }
+ 
+-        // The full Ghostty build no longer supports iOS; Fail early
+-        // with a clear message rather than partway through the build.
+-        if (result.result.os.tag == .ios and !emit_lib_vt) {
+-            std.log.err(
+-                "iOS is not a supported target for the full Ghostty build; " ++
+-                    "only libghostty-vt supports iOS (-Demit-lib-vt)",
+-                .{},
+-            );
+-            return error.UnsupportedTarget;
+-        }
+-
+         // If we have no minimum OS version, we set the default based on
+         // our tag. Not all tags have a minimum so this may be null.
+         if (result.query.os_version_min == null) {
+@@ -824,6 +813,13 @@ pub fn osVersionMin(tag: std.Target.Os.Tag) ?std.Target.Query.OsVersion {
+             .patch = 0,
+         } },
+ 
++        // The full Ghostty path compiles metal shaders that require iOS 14.
++        .ios => .{ .semver = .{
++            .major = 14,
++            .minor = 0,
++            .patch = 0,
++        } },
++
+         // This should never happen currently. If we add a new target then
+         // we should add a new case here.
+         else => null,
+@@ -834,8 +830,7 @@ pub fn osVersionMin(tag: std.Target.Os.Tag) ?std.Target.Query.OsVersion {
+ ///
+ /// This should only be used for Darwin targets.
+ pub fn osVersionMinLibVt(tag: std.Target.Os.Tag) ?std.Target.Query.OsVersion {
+-    // lib-vt is the only thing we still build for iOS, so its deployment
+-    // target lives here rather than in osVersionMin.
++    // lib-vt has no newer deployment target requirement.
+     if (tag == .ios) return .{ .semver = .{ .major = 13, .minor = 0, .patch = 0 } };
+     return osVersionMin(tag);
+ }
+diff --git a/src/build/GhosttyXCFramework.zig b/src/build/GhosttyXCFramework.zig
+index 14ec25a..c944340 100644
+--- a/src/build/GhosttyXCFramework.zig
++++ b/src/build/GhosttyXCFramework.zig
+@@ -24,6 +24,35 @@ pub fn init(
+         Config.genericMacOSTarget(b, null),
+     ));
+ 
++    // iOS
++    const ios = try GhosttyLib.initStatic(b, &try deps.retarget(
++        b,
++        b.resolveTargetQuery(.{
++            .cpu_arch = .aarch64,
++            .os_tag = .ios,
++            .os_version_min = Config.osVersionMin(.ios),
++            .abi = null,
++        }),
++    ));
++
++    // iOS Simulator
++    const ios_sim = try GhosttyLib.initStatic(b, &try deps.retarget(
++        b,
++        b.resolveTargetQuery(.{
++            .cpu_arch = .aarch64,
++            .os_tag = .ios,
++            .os_version_min = Config.osVersionMin(.ios),
++            .abi = .simulator,
++
++            // We force the Apple CPU model because the simulator
++            // doesn't support the generic CPU model as of Zig 0.14 due
++            // to missing "altnzcv" instructions, which is false. This
++            // surely can't be right but we can fix this if/when we get
++            // back to running simulator builds.
++            .cpu_model = .{ .explicit = &std.Target.aarch64.cpu.apple_a17 },
++        }),
++    ));
++
+     // Generate a headers directory with only ghostty.h and the module
+     // map. We can't use include/ directly because it also contains the
+     // libghostty-vt headers under include/ghostty/, which would trigger
+@@ -46,6 +75,16 @@ pub fn init(
+                     .headers = headers,
+                     .dsym = macos_universal.dsym,
+                 },
++                .{
++                    .library = ios.output,
++                    .headers = headers,
++                    .dsym = ios.dsym,
++                },
++                .{
++                    .library = ios_sim.output,
++                    .headers = headers,
++                    .dsym = ios_sim.dsym,
++                },
+             },
+ 
+             .native => &.{.{
+diff --git a/src/build/MetallibStep.zig b/src/build/MetallibStep.zig
+index 81c7a4a..fcf3055 100644
+--- a/src/build/MetallibStep.zig
++++ b/src/build/MetallibStep.zig
+@@ -24,10 +24,20 @@ output: LazyPath,
+ pub fn create(b: *std.Build, opts: Options) ?*MetallibStep {
+     const sdk = switch (opts.target.result.os.tag) {
+         .macos => "macosx",
++        .ios => switch (opts.target.result.abi) {
++            // The iOS simulator uses the same SDK for Metal as the device,
++            // but the minimum version tag causes different behaviors.
++            .simulator => "iphoneos",
++            else => "iphoneos",
++        },
+         else => return null,
+     };
+     const platform_version_arg = switch (opts.target.result.os.tag) {
+         .macos => "-mmacos-version-min",
++        .ios => switch (opts.target.result.abi) {
++            .simulator => "-mios-simulator-version-min",
++            else => "-mios-version-min",
++        },
+         else => null,
+     };
+ 
+@@ -37,6 +47,7 @@ pub fn create(b: *std.Build, opts: Options) ?*MetallibStep {
+         b.fmt("{f}", .{v.semver})
+     else switch (opts.target.result.os.tag) {
+         .macos => "10.14",
++        .ios => "11.0",
+         else => unreachable,
+     };
+ 
+diff --git a/src/font/face.zig b/src/font/face.zig
+index f56fe92..fa7a9f0 100644
+--- a/src/font/face.zig
++++ b/src/font/face.zig
+@@ -26,7 +26,7 @@ pub const Face = switch (options.backend) {
+ /// If a DPI can't be calculated, this DPI is used. This is probably
+ /// wrong on modern devices so it is highly recommended you get the DPI
+ /// using whatever platform method you can.
+-pub const default_dpi = if (builtin.target.os.tag == .macos) 72 else 96;
++pub const default_dpi = if (builtin.target.os.tag.isDarwin()) 72 else 96;
+ 
+ /// These are the flags to customize how freetype loads fonts. This is
+ /// only non-void if the freetype backend is enabled.

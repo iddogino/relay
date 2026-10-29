@@ -1,3 +1,5 @@
+// macOS only: these run local programs and SSH servers.
+#if os(macOS)
 import AppKit
 import CryptoKit
 import Foundation
@@ -628,3 +630,5 @@ struct TerminalProtocolTests {
     }
 }
 }
+
+#endif

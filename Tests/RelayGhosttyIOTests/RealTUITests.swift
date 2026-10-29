@@ -1,3 +1,5 @@
+// macOS only: these run local programs and SSH servers.
+#if os(macOS)
 import AppKit
 import Foundation
 import GhosttyKit
@@ -398,3 +400,5 @@ struct RealTUITests {
     }
 }
 }
+
+#endif

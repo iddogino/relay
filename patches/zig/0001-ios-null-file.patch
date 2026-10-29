@@ -1,0 +1,21 @@
+Relay patch for Zig 0.17.0's standard library: std.Io.Threaded on iOS.
+
+Io.Threaded.NullFile has no `fd` on iOS, yet spawnDarwin (which iOS
+compiles too, via the Threaded vtable) reads it, so any iOS build
+that uses Io.Threaded fails to compile. libghostty does
+(src/global.zig). Zig's master branch fixed it the same way: iOS gets
+the POSIX NullFile. Drop this patch once the Zig pin includes the fix.
+
+Applied by Scripts/build-libghostty.sh to the toolchain it fetches.
+
+--- a/lib/std/Io/Threaded.zig
++++ b/lib/std/Io/Threaded.zig
+@@ -354,7 +354,7 @@
+             }
+         }
+     },
+-    .wasi, .ios, .tvos, .visionos, .watchos => struct {
++    .wasi, .tvos, .visionos, .watchos => struct {
+         fn deinit(this: @This()) void {
+             _ = this;
+         }

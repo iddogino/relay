@@ -2,13 +2,22 @@
 # Builds the pinned libghostty (GhosttyKit.xcframework) from vendored source,
 # with Relay's patches (patches/ghostty/) applied. See docs/GHOSTTY_PIN.md.
 #
-#   Scripts/build-libghostty.sh          build the xcframework
-#   Scripts/build-libghostty.sh --test   run the patches' Zig unit tests instead
+#   Scripts/build-libghostty.sh              build the xcframework (this Mac's arch)
+#   Scripts/build-libghostty.sh --universal  also x86_64 Macs, iOS and the iOS Simulator
+#   Scripts/build-libghostty.sh --test       run the patches' Zig unit tests instead
 set -euo pipefail
 cd "$(dirname "$0")/.."
+ROOT="$(pwd)"
 
 MODE="build"
-if [ "${1:-}" = "--test" ]; then MODE="test"; fi
+XCFRAMEWORK_TARGET="native"
+for arg in "$@"; do
+  case "$arg" in
+    --test) MODE="test" ;;
+    --universal) XCFRAMEWORK_TARGET="universal" ;;
+    *) echo "error: unknown option $arg" >&2; exit 2 ;;
+  esac
+done
 
 # Pinned to an upstream main commit (the "tip" nightly of 2026-10-23):
 # v1.3.1 is still the latest release, and the pty-less backend work
@@ -51,7 +60,15 @@ if [ "$(cat "$PATCH_STAMP" 2>/dev/null || true)" != "$PATCH_SUM" ]; then
   echo "$PATCH_SUM" > "$PATCH_STAMP"
 fi
 
-# 2. Fetch the exact Zig toolchain (kept local to the repo; not installed system-wide).
+# 2. Fetch the exact Zig toolchain (kept local to the repo; not installed
+# system-wide). Relay patches its standard library (patches/zig/); a stamp
+# records the patch set, and a toolchain carrying a different one is
+# fetched again.
+ZIG_STAMP="$ZIG_DIR/.relay-patches"
+ZIG_PATCH_SUM="$(cat patches/zig/*.patch | shasum -a 256 | cut -d' ' -f1)"
+if [ -f "$ZIG_STAMP" ] && [ "$(cat "$ZIG_STAMP")" != "$ZIG_PATCH_SUM" ]; then
+  rm -rf "$ZIG_DIR"
+fi
 if [ ! -x "$ZIG" ]; then
   mkdir -p Vendor/toolchain
   TARBALL="zig-aarch64-macos-${ZIG_VERSION}.tar.xz"
@@ -64,14 +81,21 @@ if [ ! -x "$ZIG" ]; then
   tar -xf "Vendor/toolchain/${TARBALL}" -C Vendor/toolchain
   rm "Vendor/toolchain/${TARBALL}"
 fi
+if [ ! -f "$ZIG_STAMP" ]; then
+  for patch in patches/zig/*.patch; do
+    echo "Applying $patch"
+    patch -p1 -s --forward -d "$ZIG_DIR" < "$patch"
+  done
+  echo "$ZIG_PATCH_SUM" > "$ZIG_STAMP"
+fi
 
 # 3a. Or run the patches' unit tests (every test whose name mentions Manual).
 if [ "$MODE" = "test" ]; then
-  (cd "$GHOSTTY_DIR" && "$(pwd)/../../$ZIG" build test -Dtest-filter=Manual --summary all)
+  (cd "$GHOSTTY_DIR" && "$ROOT/$ZIG" build test -Dtest-filter=Manual --summary all)
   exit 0
 fi
 
-# 3. Build the xcframework (native arch, optimized).
-(cd "$GHOSTTY_DIR" && "$(pwd)/../../$ZIG" build -Demit-macos-app=false -Dxcframework-target=native -Doptimize=ReleaseFast)
+# 3. Build the xcframework (optimized).
+(cd "$GHOSTTY_DIR" && "$ROOT/$ZIG" build -Demit-macos-app=false -Dxcframework-target="$XCFRAMEWORK_TARGET" -Doptimize=ReleaseFast)
 
 echo "Built $GHOSTTY_DIR/macos/GhosttyKit.xcframework"

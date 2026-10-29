@@ -1,3 +1,5 @@
+// macOS only: these run local programs and SSH servers.
+#if os(macOS)
 import AppKit
 import Foundation
 import GhosttyKit
@@ -134,12 +136,7 @@ struct LiveTerminalTests {
             command: "printf '\\033[2J\\033[H\\033[41m%20s\\033[0m\\n\\033[44m%20s\\033[0m\\n' '' ''; echo RENDER-$((1+1)); sleep 30")
         let surface = terminal.surface
         try await surface.waitForScreen("RENDER-2", timeout: .seconds(30))
-        func isRed(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool {
-            p.map { Int($0.r) > Int($0.g) + 50 && Int($0.r) > Int($0.b) + 50 } ?? false
-        }
-        func isBlue(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool {
-            p.map { Int($0.b) > Int($0.r) + 30 && Int($0.b) > Int($0.g) + 10 } ?? false
-        }
+        let isRed = TestSurface.isRed, isBlue = TestSurface.isBlue
         try await GhosttyTestHost.shared.waitUntil("the bars to be drawn") {
             isRed(surface.renderedCell(column: 5, row: 0)) && isBlue(surface.renderedCell(column: 5, row: 1))
         }
@@ -420,3 +417,5 @@ struct LiveTerminalTests {
     }
 }
 }
+
+#endif

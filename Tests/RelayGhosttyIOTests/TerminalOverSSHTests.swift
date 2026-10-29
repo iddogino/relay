@@ -1,3 +1,5 @@
+// macOS only: these run local programs and SSH servers.
+#if os(macOS)
 import AppKit
 import Darwin
 import Foundation
@@ -227,14 +229,7 @@ struct TerminalOverSSHTests {
             command: "printf '\\033[2J\\033[H\\033[41m%20s\\033[0m\\n\\033[44m%20s\\033[0m\\n' '' ''; echo RENDER-$((1+1)); sleep 30")
         let surface = terminal.surface
         try await surface.waitForScreen("RENDER-2")
-        // The palette's red and blue, not exact values: a clearly dominant
-        // channel.
-        func isRed(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool {
-            p.map { Int($0.r) > Int($0.g) + 50 && Int($0.r) > Int($0.b) + 50 } ?? false
-        }
-        func isBlue(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool {
-            p.map { Int($0.b) > Int($0.r) + 30 && Int($0.b) > Int($0.g) + 10 } ?? false
-        }
+        let isRed = TestSurface.isRed, isBlue = TestSurface.isBlue
         try await GhosttyTestHost.shared.waitUntil("the bars to be drawn", timeout: .seconds(10), screen: {
             "cells: \(String(describing: surface.renderedCell(column: 5, row: 0))) \(String(describing: surface.renderedCell(column: 5, row: 1)))"
         }) {
@@ -563,3 +558,5 @@ final class EndLog: @unchecked Sendable {
     var end: SSHTerminalEnd? { lock.withLock { _end } }
     var error: Error? { lock.withLock { _error } }
 }
+
+#endif

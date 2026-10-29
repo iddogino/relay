@@ -74,10 +74,58 @@ jobs:
         uses: actions/cache@v4
         with:
           path: Vendor/toolchain
-          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/build-libghostty.sh') }}
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/build-libghostty.sh', 'patches/zig/**') }}
 
       - name: Run patch unit tests
         run: ./Scripts/build-libghostty.sh --test
+
+  # The package's RelayKit product (everything below the Mac app's AppKit
+  # layer) is what the iOS app builds on. This keeps it compiling for iOS,
+  # against libghostty's iOS slices, which nothing upstream builds anymore
+  # (docs/GHOSTTY_PIN.md, patch 0002).
+  ios:
+    name: iOS build (RelayKit)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GhosttyKit with iOS slices (cached)
+        uses: ./.github/actions/ghosttykit
+        with:
+          universal: "true"
+
+      # The simulator slice is arm64 only, as upstream built it.
+      - name: Build RelayKit for the iOS Simulator and devices
+        run: |
+          xcodebuild build -scheme RelayKit -destination 'generic/platform=iOS Simulator' ARCHS=arm64 -derivedDataPath .build/xcode -quiet
+          xcodebuild build -scheme RelayKit -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO -derivedDataPath .build/xcode -quiet
+
+      # libghostty's iOS slice at run time: the manual I/O surface suite
+      # (creating, feeding, rendering with Metal, resizing, tearing down) on
+      # a simulator — the newest iOS runtime's first iPhone.
+      - name: libghostty surface tests on the iOS Simulator
+        run: |
+          DEVICE="$(xcrun simctl list devices available --json | python3 -c '
+          import json, re, sys
+          runtimes = json.load(sys.stdin)["devices"]
+          def version(runtime): return [int(n) for n in re.findall(r"\d+", runtime.rsplit(".", 1)[-1])]
+          for runtime in sorted((r for r in runtimes if ".iOS-" in r), key=version, reverse=True):
+              for device in runtimes[runtime]:
+                  if device["name"].startswith("iPhone"):
+                      print(device["udid"]); sys.exit()
+          sys.exit("no iPhone simulator")
+          ')"
+          xcodebuild test -scheme RelayGhosttyIOTests -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath .build/xcode -resultBundlePath .build/ios-tests.xcresult -quiet
+          # -quiet hides the results, and a run with no tests passes too.
+          xcrun xcresulttool get test-results summary --path .build/ios-tests.xcresult --compact | python3 -c '
+          import json, sys
+          summary = json.load(sys.stdin)
+          device = summary["devicesAndConfigurations"][0]["device"]
+          print("%s: %d passed, %d failed, %d skipped on %s (iOS %s)" % (summary["result"], summary["passedTests"],
+                summary["failedTests"], summary["skippedTests"], device["modelName"], device["osVersion"]))
+          sys.exit(0 if summary["result"] == "Passed" and summary["passedTests"] > 0 else 1)
+          '
 
   # RelaySyntaxHighlighter is a standalone, pure-Swift package (no AppKit, no
   # libghostty) — so its Prism fixture suite runs on a cheap Linux runner,

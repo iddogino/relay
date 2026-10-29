@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Foundation
 import GhosttyKit
 import IOSurface
@@ -7,9 +11,9 @@ import RelaySSH
 
 /// A headless libghostty app for tests: one process-wide app with a fixed
 /// configuration (the user's Ghostty config is never loaded), surfaces on
-/// offscreen views, and callbacks recorded for assertions. Everything here
-/// runs on the main actor, like an embedding app; `waitUntil` pumps the
-/// app loop.
+/// offscreen views (NSView, or UIView on iOS), and callbacks recorded for
+/// assertions. Everything here runs on the main actor, like an embedding
+/// app; `waitUntil` pumps the app loop.
 @MainActor
 final class GhosttyTestHost {
     static let shared = GhosttyTestHost()
@@ -18,7 +22,9 @@ final class GhosttyTestHost {
     private let config: ghostty_config_t
 
     private init() {
+        #if os(macOS)
         _ = NSApplication.shared
+        #endif
         precondition(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS)
         let config = ghostty_config_new()!
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("relay-ghostty-test-\(getpid())")
@@ -115,7 +121,11 @@ final class GhosttyTestHost {
 /// `ManualTerminalIO`) or running a local command (exec mode).
 @MainActor
 final class TestSurface {
+    #if os(macOS)
     let view: NSView
+    #else
+    let view: UIView
+    #endif
     private(set) var surface: ghostty_surface_t?
     let io: ManualTerminalIO?
     /// Bytes the terminal wrote (manual mode), in order.
@@ -145,11 +155,18 @@ final class TestSurface {
     init(mode: Mode, width: Double = 800, height: Double = 480, waitAfterCommand: Bool = false, captureIO: Bool = true,
          app: ghostty_app_t? = nil) {
         let app = app ?? GhosttyTestHost.shared.app
-        view = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         var config = ghostty_surface_config_new()
+        #if os(macOS)
+        view = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         config.platform_tag = GHOSTTY_PLATFORM_MACOS
         config.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(
             nsview: Unmanaged.passUnretained(view).toOpaque()))
+        #else
+        view = UIView(frame: CGRect(x: 0, y: 0, width: width, height: height))
+        config.platform_tag = GHOSTTY_PLATFORM_IOS
+        config.platform = ghostty_platform_u(ios: ghostty_platform_ios_s(
+            uiview: Unmanaged.passUnretained(view).toOpaque()))
+        #endif
         config.scale_factor = 2
         config.font_size = 0
         config.context = GHOSTTY_SURFACE_CONTEXT_WINDOW
@@ -192,6 +209,7 @@ final class TestSurface {
             TestSurface.live[UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())] = self
             ghostty_surface_set_content_scale(created, 2, 2)
             ghostty_surface_set_size(created, UInt32(width * 2), UInt32(height * 2))
+            sizeRenderLayer(width: width, height: height)
             ghostty_surface_set_focus(created, true)
         }
     }
@@ -319,6 +337,16 @@ final class TestSurface {
     func setSize(width: Double, height: Double) {
         guard let surface else { return }
         ghostty_surface_set_size(surface, UInt32(width * 2), UInt32(height * 2))
+        sizeRenderLayer(width: width, height: height)
+    }
+
+    /// On iOS, sizes the render layer as an embedding view does on layout:
+    /// UIKit doesn't resize sublayers, and libghostty discards frames that
+    /// don't match its layer's size. (On macOS it's the view's own layer.)
+    private func sizeRenderLayer(width: Double, height: Double) {
+        #if !os(macOS)
+        renderLayer?.frame = CGRect(x: 0, y: 0, width: width, height: height)
+        #endif
     }
 
     var gridSize: SSHTerminalSize? {
@@ -337,12 +365,22 @@ final class TestSurface {
 
     // MARK: Reading
 
+    /// The layer libghostty presents frames on: the view's own layer on
+    /// macOS; on iOS, where a view's layer is fixed, one it adds to it.
+    private var renderLayer: CALayer? {
+        #if os(macOS)
+        view.layer
+        #else
+        view.layer.sublayers?.last
+        #endif
+    }
+
     /// A pixel of the last frame libghostty's Metal renderer presented, as
     /// (red, green, blue). libghostty presents frames as an IOSurface set
-    /// as the view's layer contents; this reads it back. Coordinates are in
-    /// the surface's pixels (points × scale), origin top-left.
+    /// as the render layer's contents; this reads it back. Coordinates are
+    /// in the surface's pixels (points × scale), origin top-left.
     func renderedPixel(x: Int, y: Int) -> (r: UInt8, g: UInt8, b: UInt8)? {
-        guard let contents = view.layer?.contents,
+        guard let contents = renderLayer?.contents,
               CFGetTypeID(contents as CFTypeRef) == IOSurfaceGetTypeID() else { return nil }
         let surface = unsafeBitCast(contents as AnyObject, to: IOSurfaceRef.self)
         let width = IOSurfaceGetWidth(surface), height = IOSurfaceGetHeight(surface)
@@ -353,6 +391,16 @@ final class TestSurface {
         let pixel = row.advanced(by: x * 4).assumingMemoryBound(to: UInt8.self)
         // BGRA.
         return (pixel[2], pixel[1], pixel[0])
+    }
+
+    /// The palette's red and blue in rendered pixels, not exact values: a
+    /// clearly dominant channel.
+    nonisolated static func isRed(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool {
+        p.map { Int($0.r) > Int($0.g) + 50 && Int($0.r) > Int($0.b) + 50 } ?? false
+    }
+
+    nonisolated static func isBlue(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool {
+        p.map { Int($0.b) > Int($0.r) + 30 && Int($0.b) > Int($0.g) + 10 } ?? false
     }
 
     /// The centre of a cell, in surface pixels.
