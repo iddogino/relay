@@ -140,8 +140,10 @@ notarized and stapled.
 
 - `Sources/RelayCore` — domain model, `RuntimeProvider` abstraction, the
   SSH+tmux provider, persistence. No AppKit, no libghostty.
-- `Sources/Relay` — the app: SwiftUI UI, the libghostty adapter
-  (`Ghostty/`), and the attach/reconnect controller.
+- `Sources/RelayUI` — the app's UI and model: SwiftUI views, the
+  libghostty adapter (`Ghostty/`), and the attach/reconnect controller.
+- `Sources/Relay` — the Mac app shell: presents `RelayUI` and adds Sparkle
+  auto-updates.
 - Sessions you visit stay **warm**: the last 4 viewed sessions keep their
   ssh attachment and terminal state in the background, so switching between
   them is instant, their scrollback survives, and their sidebar titles stay

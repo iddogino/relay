@@ -101,14 +101,14 @@ An upstream bump must be a deliberate change:
    building. With a new Zig version, check whether `patches/zig` is still
    needed (or still applies).
 3. Re-check the embedding surface used by Relay (the C API in
-   `include/ghostty.h` is still evolving): `Sources/Relay/Ghostty/*` is the
+   `include/ghostty.h` is still evolving): `Sources/RelayUI/Ghostty/*` is the
    only code that may need updating.
 4. Run the terminal smoke tests: unit tests, `Scripts/live-e2e.sh`, and the
    manual UX smoke test (spec §25) before shipping.
 
 ## Isolation rules
 
-All libghostty C API usage lives in `Sources/Relay/Ghostty/`
+All libghostty C API usage lives in `Sources/RelayUI/Ghostty/`
 (`GhosttyRuntime.swift`, `TerminalSurfaceView.swift`, `GhosttyInput.swift`)
 and `Sources/RelayGhosttyIO/` (manual I/O). No Ghostty C types may leak into
 `RelayCore` or the SwiftUI layer.
