@@ -71,6 +71,18 @@ if [ -d "$SHARE/terminfo" ]; then
   rsync -a --delete "$SHARE/terminfo" "$APP/Contents/Resources/"
 fi
 
+# The syntax highlighter's grammars (a SwiftPM resource bundle), where it
+# looks for them in an app: Contents/Resources, as Xcode puts them. Without
+# the bundle's ad hoc build signature; the app's signature covers it. The
+# bundle's layout depends on the build system, so look for a grammar
+# anywhere in it.
+GRAMMARS="RelaySyntaxHighlighter_RelaySyntaxHighlighter.bundle"
+rsync -a --exclude _CodeSignature ".build/$CONFIG/$GRAMMARS" "$APP/Contents/Resources/"
+if [ -z "$(find "$APP/Contents/Resources/$GRAMMARS" -path '*/Grammars/swift.json')" ]; then
+  echo "error: $GRAMMARS has no grammars." >&2
+  exit 1
+fi
+
 # App icon. Resources/Relay.icon (Icon Composer) compiles into the layered
 # macOS 26+ icon — light/dark/tinted appearances — plus the flattened .icns
 # actool derives for older systems. actool understands .icon only from
