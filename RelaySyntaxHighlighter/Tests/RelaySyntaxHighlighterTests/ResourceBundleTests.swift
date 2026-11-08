@@ -6,7 +6,7 @@ import Testing
 /// Where an app finds its grammars: in its resources, or nowhere — never
 /// through SwiftPM's `Bundle.module`, which stops an app that doesn't have
 /// them where it looks. The apps here are folders laid out the way
-/// Scripts/build-app.sh builds Relay.app.
+/// Xcode builds Relay.app.
 struct ResourceBundleTests {
     static let bundleName = "RelaySyntaxHighlighter_RelaySyntaxHighlighter.bundle"
 

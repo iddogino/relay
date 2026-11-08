@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Checks a Relay.app built from App/project.yml: what makes it Relay.
 
-  Scripts/check-app.py <scheme> <configuration> <path to .app>
+  Scripts/check-app.py <scheme> <configuration> <path to .app> [--distribution]
 
 The bundle ID, Keychain group and iCloud container must be the ones every
-Relay build shares (the direct download's included), or the app launches
-fine but can't see the user's SSH keys and passwords, or syncs somewhere
-else. The entitlements are read from the file Xcode signs with, with its
-build settings: an unsigned build (CI) has none of its own.
+Relay build shares, or the app launches fine but can't see the user's SSH
+keys and passwords, or syncs somewhere else. The direct download must also
+keep its update feed and key, or installed copies stop updating.
+
+The entitlements are read from the file Xcode signs with, with its build
+settings: an unsigned build (CI) has none of its own. With --distribution,
+the app must be signed as a release is (Developer ID, notarizable), and its
+signature's entitlements are checked instead.
 """
 import json
 import os
@@ -17,12 +21,20 @@ import subprocess
 import sys
 
 BUNDLE_ID = "com.iddogino.Relay"
-KEYCHAIN_GROUP = "HL9SP7TJ3J.com.iddogino.Relay"
+TEAM = "HL9SP7TJ3J"
+KEYCHAIN_GROUP = f"{TEAM}.{BUNDLE_ID}"
 CLOUDKIT_CONTAINER = "iCloud.com.iddogino.Relay"
+SPARKLE_FEED = "https://raw.githubusercontent.com/iddogino/relay/main/appcast.xml"
+SPARKLE_KEY = "83fVWPb/G/hc2hYzYyoKW7eB/abuYzTSIJJYvMwIdvA="
 RESOURCES = ["Assets.car", "Relay.icns", "ghostty", "terminfo"]
 GRAMMARS = "RelaySyntaxHighlighter_RelaySyntaxHighlighter.bundle"
+STORE, DIRECT = "Relay", "Relay Direct"
 
-scheme, configuration, app = sys.argv[1:4]
+args = [a for a in sys.argv[1:] if a != "--distribution"]
+distribution = "--distribution" in sys.argv
+scheme, configuration, app = args
+if scheme not in (STORE, DIRECT) or (distribution and scheme != DIRECT):
+    sys.exit(f"usage: {sys.argv[0]} '{STORE}'|'{DIRECT}' <configuration> <app> [--distribution: {DIRECT} only]")
 failures = []
 
 
@@ -31,25 +43,32 @@ def check(condition, message):
         failures.append(message)
 
 
-output = subprocess.run(
-    ["xcodebuild", "-showBuildSettings", "-json", "-project", "App/Relay.xcodeproj",
-     "-scheme", scheme, "-configuration", configuration],
-    check=True, capture_output=True, text=True).stdout
-settings = next(t["buildSettings"] for t in json.loads(output) if t["target"] == scheme)
-
-
-def expand(value):
-    if isinstance(value, str):
-        return re.sub(r"\$\((\w+)\)", lambda m: settings.get(m.group(1), ""), value)
-    if isinstance(value, list):
-        return [expand(v) for v in value]
-    return value
+def run(*command):
+    return subprocess.run(command, capture_output=True, text=True)
 
 
 with open(os.path.join(app, "Contents", "Info.plist"), "rb") as f:
     info = plistlib.load(f)
-with open(os.path.join("App", settings["CODE_SIGN_ENTITLEMENTS"]), "rb") as f:
-    entitlements = {key: expand(value) for key, value in plistlib.load(f).items()}
+
+if distribution:
+    signed = run("codesign", "-d", "--entitlements", "-", "--xml", app)
+    entitlements = plistlib.loads(signed.stdout.encode()) if signed.returncode == 0 and signed.stdout else {}
+else:
+    output = subprocess.run(
+        ["xcodebuild", "-showBuildSettings", "-json", "-project", "App/Relay.xcodeproj",
+         "-scheme", scheme, "-configuration", configuration],
+        check=True, capture_output=True, text=True).stdout
+    settings = next(t["buildSettings"] for t in json.loads(output) if t["target"] == scheme)
+
+    def expand(value):
+        if isinstance(value, str):
+            return re.sub(r"\$\((\w+)\)", lambda m: settings.get(m.group(1), ""), value)
+        if isinstance(value, list):
+            return [expand(v) for v in value]
+        return value
+
+    with open(os.path.join("App", settings["CODE_SIGN_ENTITLEMENTS"]), "rb") as f:
+        entitlements = {key: expand(value) for key, value in plistlib.load(f).items()}
 
 check(info.get("CFBundleIdentifier") == BUNDLE_ID, f"bundle ID {info.get('CFBundleIdentifier')}")
 
@@ -74,14 +93,59 @@ check(any(path.endswith("/Grammars") and "swift.json" in files
           for path, _, files in os.walk(os.path.join(resources, GRAMMARS))),
       f"no grammars in {GRAMMARS}")
 
-# The App Store app: sandboxed, and the App Store updates it.
-check(entitlements.get("com.apple.security.app-sandbox") is True, "not sandboxed")
-check("SUFeedURL" not in info, "has a Sparkle feed")
-check(not os.path.exists(os.path.join(app, "Contents", "Frameworks", "Sparkle.framework")), "embeds Sparkle")
+sparkle = os.path.join(app, "Contents", "Frameworks", "Sparkle.framework")
+sandboxed = entitlements.get("com.apple.security.app-sandbox") is True
+if scheme == STORE:
+    # The App Store app: sandboxed, and the App Store updates it.
+    check(sandboxed, "not sandboxed")
+    check("SUFeedURL" not in info and "SUPublicEDKey" not in info, "has a Sparkle feed or key")
+    check(not os.path.exists(sparkle), "embeds Sparkle")
+    summary = "sandboxed, no Sparkle"
+else:
+    # The direct download: Sparkle updates it, from the feed and with the
+    # key every installed copy already has.
+    check(not sandboxed, "sandboxed")
+    check(info.get("SUFeedURL") == SPARKLE_FEED, f"Sparkle feed {info.get('SUFeedURL')}")
+    check(info.get("SUPublicEDKey") == SPARKLE_KEY, f"Sparkle key {info.get('SUPublicEDKey')}")
+    check(os.path.exists(os.path.join(sparkle, "Versions", "B", "Sparkle")), "doesn't embed Sparkle")
+    summary = "Sparkle feed and key"
+
+if distribution:
+    # As notarization requires, and as Sparkle checks an update against
+    # the installed copy: Developer ID and a secure timestamp on every
+    # piece of code, the hardened runtime on every executable, the release
+    # environments.
+    verify = run("codesign", "--verify", "--deep", "--strict", app)
+    check(verify.returncode == 0, f"signature doesn't verify: {verify.stderr.strip()}")
+    libraries = [os.path.join(app, "Contents", "Frameworks", name)
+                 for name in sorted(os.listdir(os.path.join(app, "Contents", "Frameworks")))]
+    executables = [app] + [os.path.join(sparkle, "Versions", "B", name) for name in ("Autoupdate", "Updater.app")]
+    xpc = os.path.join(sparkle, "Versions", "B", "XPCServices")
+    if os.path.isdir(xpc):
+        executables += [os.path.join(xpc, name) for name in sorted(os.listdir(xpc))]
+    for code in executables + libraries:
+        name = os.path.relpath(code, os.path.dirname(app))
+        details = run("codesign", "-dvv", code).stderr
+        check(f"Authority=Developer ID Application: " in details and f"TeamIdentifier={TEAM}" in details,
+              f"{name}: not signed with the Developer ID certificate")
+        check("Timestamp=" in details, f"{name}: no secure timestamp")
+        if code in executables:
+            check(re.search(r"flags=0x[0-9a-f]+\([^)]*runtime", details) is not None,
+                  f"{name}: no hardened runtime")
+    check(entitlements.get("com.apple.developer.icloud-container-environment") == "Production",
+          f"iCloud environment {entitlements.get('com.apple.developer.icloud-container-environment')}")
+    check(entitlements.get("com.apple.developer.aps-environment") == "production",
+          f"push environment {entitlements.get('com.apple.developer.aps-environment')}")
+    check(not entitlements.get("com.apple.security.get-task-allow"), "debuggable (get-task-allow)")
+    profile = run("security", "cms", "-D", "-i", os.path.join(app, "Contents", "embedded.provisionprofile"))
+    profile_app_id = (plistlib.loads(profile.stdout.encode()).get("Entitlements", {})
+                      .get("com.apple.application-identifier") if profile.returncode == 0 else None)
+    check(profile_app_id == KEYCHAIN_GROUP, f"embedded profile is for {profile_app_id}")
+    summary += "; Developer ID, hardened runtime, timestamped, Production"
 
 if failures:
     for failure in failures:
         print(f"::error::{scheme} ({configuration}): {failure}")
     sys.exit(1)
 print(f"{scheme} ({configuration}) {info.get('CFBundleShortVersionString')}: bundle ID, "
-      "Keychain group, iCloud container, resources OK; sandboxed, no Sparkle")
+      f"Keychain group, iCloud container, resources OK; {summary}")

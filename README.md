@@ -96,37 +96,34 @@ never see prereleases unless **Relay ▸ Receive Early Builds** is on.
 
 ## Building
 
-Requirements: macOS 15+, Xcode 26 (Swift 6). No third-party dependencies
-besides pinned libghostty (built from source, see
+Requirements: macOS 15+, Xcode 26 (Swift 6),
+[XcodeGen](https://github.com/yonaskolb/XcodeGen). No third-party
+dependencies besides pinned libghostty (built from source, see
 [docs/GHOSTTY_PIN.md](docs/GHOSTTY_PIN.md)).
+
+Both apps build from one Xcode project, generated from `App/project.yml`:
+**Relay Direct**, the app distributed here (Sparkle updates, Developer ID),
+and **Relay**, the App Store app (the same UI in the App Sandbox, without
+Sparkle). Run builds Relay Dev (`com.iddogino.Relay.dev`), which installs
+next to Relay with its own data, Keychain group and preferences, and never
+updates itself.
 
 ```sh
 Scripts/build-libghostty.sh   # once: fetch pinned Ghostty + Zig, build GhosttyKit
-Scripts/build-app.sh          # build build/Relay.app (release)
-```
-
-A build syncs with iCloud when it's signed with a provisioning profile that
-includes Relay's container, `iCloud.com.iddogino.Relay` (see
-`Scripts/build-app.sh`). Relay Dev, with a development profile for
-`com.iddogino.Relay.dev`, syncs in CloudKit's Development environment, so
-it never sees a release's data:
-
-```sh
-RELAY_VARIANT=dev CODESIGN_IDENTITY="Apple Development: …" \
-  RELAY_PROVISIONING_PROFILE=path/to/profile.provisionprofile Scripts/build-app.sh
-```
-
-That is the app distributed here, with Sparkle updates. The App Store app
-is the same UI in the App Sandbox, without Sparkle, built from an Xcode
-project that [XcodeGen](https://github.com/yonaskolb/XcodeGen) generates
-from `App/project.yml`. It syncs through the same container; its Relay
-Dev, too, in the Development environment:
-
-```sh
 brew install xcodegen
 xcodegen --spec App/project.yml
-open App/Relay.xcodeproj      # Run builds Relay Dev; Archive builds Relay
+open App/Relay.xcodeproj
 ```
+
+Relay Dev signs with your development profile for `com.iddogino.Relay.dev`
+(Xcode manages it). With iCloud on that App ID, it syncs through Relay's
+container, `iCloud.com.iddogino.Relay`, in CloudKit's Development
+environment, so it never sees a release's data.
+
+`Scripts/archive-app.sh` builds `build/Relay.app` as a release ships it:
+archived and exported Developer ID-signed. It needs the Developer ID
+certificate and the "Relay Developer ID" profile, as the release workflow
+has them.
 
 ## Testing
 
@@ -137,8 +134,8 @@ Scripts/live-e2e.sh     # live acceptance run against your two configured remote
 Scripts/live-e2e-cleanup.sh   # independent cleanup if a run crashed
 ```
 
-CI runs `swift test` and packages Relay.app on every PR and push to `main`,
-and builds the App Store app. The pinned GhosttyKit build is cached,
+CI runs `swift test` on every PR and push to `main`, and builds both apps,
+checking each with `Scripts/check-app.py`. The pinned GhosttyKit build is cached,
 so only the first run after a pin bump pays the from-source build.
 
 ## Releasing
@@ -151,7 +148,8 @@ git tag v0.1.0-rc.1 && git push origin v0.1.0-rc.1
 ```
 
 The [release workflow](.github/workflows/release.yml) tests, builds and
-Developer ID-signs `Relay.app` (hardened runtime), packages a
+Developer ID-signs `Relay.app` (hardened runtime, with
+`Scripts/archive-app.sh`), checks it, packages a
 drag-to-Applications DMG, and publishes a GitHub release with the DMG and
 SHA-256 checksums attached — marked *prerelease* automatically for channel
 tags. It then EdDSA-signs the DMG and commits an updated
@@ -160,19 +158,18 @@ tags. It then EdDSA-signs the DMG and commits an updated
 copies pick the release up through Sparkle; rc tags land on the `rc`
 channel, stable tags on the default channel. Required repository secrets:
 `MACOS_CERTIFICATE_P12` (base64 `.p12` with a Developer ID Application
-identity), `MACOS_CERTIFICATE_PASSWORD`, and `SPARKLE_ED_PRIVATE_KEY`
-(Sparkle `generate_keys -x` export). Optional: `APPLE_ID`,
+identity), `MACOS_CERTIFICATE_PASSWORD`, `MACOS_PROVISIONING_PROFILE`
+(base64 of the "Relay Developer ID" profile, which grants the Keychain
+group and iCloud), and `SPARKLE_ED_PRIVATE_KEY` (Sparkle `generate_keys -x`
+export). Optional: `APPLE_ID`,
 `APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD` — when set, the DMG is also
 notarized and stapled.
 
-Releases sync with iCloud once the `MACOS_PROVISIONING_PROFILE` secret
-holds a Developer ID profile with iCloud — until then they build without
-it, and the workflow warns. That takes, once: iCloud (CloudKit, with the
+iCloud sync needs, once: iCloud (CloudKit, with the
 `iCloud.com.iddogino.Relay` container) and Push Notifications on the
-`com.iddogino.Relay` App ID; a regenerated Developer ID profile in the
-secret; and Relay's record types (`Host`, `Project`, `ProjectOrder`, made by
-Relay Dev in the Development environment) deployed to Production in the
-CloudKit Console.
+`com.iddogino.Relay` App ID, in the Developer ID profile; and Relay's
+record types (`Host`, `Project`, `ProjectOrder`, made by Relay Dev in the
+Development environment) deployed to Production in the CloudKit Console.
 
 ## Design notes
 
@@ -187,11 +184,10 @@ CloudKit Console.
   still uses comes back. What sync knows is saved in state.json beside the
   items. CKSyncEngine fetches only when pushed, so Relay also catches up
   itself at launch and when it comes forward.
-- `Sources/Relay` — the Mac app shell: presents `RelayUI` and adds Sparkle
-  auto-updates.
-- `App/` — the App Store app's shell (an XcodeGen project): presents
-  `RelayUI` in the App Sandbox. Debug builds are Relay Dev, with its own
-  container, Keychain group and data.
+- `App/` — the apps (an XcodeGen project), both presenting `RelayUI`:
+  `Direct/` adds Sparkle auto-updates; `Store/` is the App Store app, in
+  the App Sandbox. Debug builds are Relay Dev, with its own Keychain group
+  and data.
 - Sessions you visit stay **warm**: the last 4 viewed sessions keep their
   ssh attachment and terminal state in the background, so switching between
   them is instant, their scrollback survives, and their sidebar titles stay

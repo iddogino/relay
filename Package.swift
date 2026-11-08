@@ -12,13 +12,10 @@ let package = Package(
         // build on (with libghostty's iOS slices:
         // Scripts/build-libghostty.sh --universal).
         .library(name: "RelayKit", targets: ["RelayCore", "RelaySSH", "RelayGhosttyIO", "GhosttyKit"]),
-        // The app's UI, for the App Store app (App/project.yml) to present.
+        // The app's UI, for the apps (App/project.yml) to present.
         .library(name: "RelayUI", targets: ["RelayUI"]),
     ],
     dependencies: [
-        // Auto-updates. The framework is embedded into the bundle (and its
-        // nested executables signed) by Scripts/build-app.sh.
-        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6"),
         // Diff-viewer syntax highlighting. Standalone by design (own
         // manifest, Linux-testable) so it can be swapped out — see
         // RelaySyntaxHighlighter/PORTING.md.
@@ -83,22 +80,6 @@ let package = Package(
             ],
             path: "Sources/RelayUI",
             linkerSettings: ghosttyLinkerSettings
-        ),
-
-        // The macOS app distributed outside the App Store: RelayUI plus
-        // Sparkle auto-updates. Built into Relay.app by Scripts/build-app.sh.
-        .executableTarget(
-            name: "Relay",
-            dependencies: [
-                "RelayUI",
-                "RelayCore",
-                .product(name: "Sparkle", package: "Sparkle"),
-            ],
-            path: "Sources/Relay",
-            linkerSettings: [
-                // Sparkle.framework is embedded at Contents/Frameworks.
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
-            ]
         ),
 
         // Running local programs — for tests and the E2E harness only. The
