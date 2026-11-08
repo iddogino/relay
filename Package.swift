@@ -68,22 +68,35 @@ let package = Package(
             path: "Sources/RelayCore"
         ),
 
-        // The macOS app.
-        .executableTarget(
-            name: "Relay",
+        // The app's UI and the model behind it: windows, menus, settings,
+        // and the libghostty terminal views. App shells present it.
+        .target(
+            name: "RelayUI",
             dependencies: [
                 "RelayCore",
                 "RelaySSH",
                 "GhosttyKit",
                 "RelayGhosttyIO",
-                .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "RelaySyntaxHighlighter", package: "RelaySyntaxHighlighter"),
+            ],
+            path: "Sources/RelayUI",
+            linkerSettings: ghosttyLinkerSettings
+        ),
+
+        // The macOS app distributed outside the App Store: RelayUI plus
+        // Sparkle auto-updates. Built into Relay.app by Scripts/build-app.sh.
+        .executableTarget(
+            name: "Relay",
+            dependencies: [
+                "RelayUI",
+                "RelayCore",
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/Relay",
             linkerSettings: [
                 // Sparkle.framework is embedded at Contents/Frameworks.
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
-            ] + ghosttyLinkerSettings
+            ]
         ),
 
         // Running local programs — for tests and the E2E harness only. The

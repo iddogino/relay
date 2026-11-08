@@ -55,7 +55,7 @@ struct ProjectEditorContext: Identifiable {
 /// one SSH concept here is the host list Relay owns (`SSHHostRegistry`).
 @MainActor
 @Observable
-final class AppModel {
+public final class AppModel {
     let provider: any RuntimeProvider
     /// Warm terminal attachments, one per recently-visited session (LRU,
     /// capped). The selected session's controller is what the detail view

@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import RelayCore
+import RelayUI
 import Sparkle
 
 /// Owns the Sparkle updater for the app's lifetime and applies the release
