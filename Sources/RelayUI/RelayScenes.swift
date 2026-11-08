@@ -65,6 +65,7 @@ public struct RelayScenes<AppMenuCommands: Commands>: Scene {
     }
 
     public var body: some Scene {
+        #if os(macOS)
         Window("Relay", id: "main") {
             MainWindowView(model: model)
                 .frame(minWidth: 760, minHeight: 480)
@@ -84,78 +85,103 @@ public struct RelayScenes<AppMenuCommands: Commands>: Scene {
         }
         .commands {
             appMenuCommands
-            CommandGroup(replacing: .newItem) {
-                Button("New Session…") {
-                    if let project = model.selectedProject ?? model.projects.first {
-                        model.newSessionProject = project
-                    }
-                }
-                .keyboardShortcut("n", modifiers: .command)
-                .disabled(model.projects.isEmpty)
-            }
-            CommandGroup(after: .toolbar) {
-                Button("Refresh") {
-                    Task {
-                        await model.refreshRemotes()
-                        if let project = model.selectedProject {
-                            await model.refreshSessions(for: project)
-                        }
-                    }
-                }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-            }
-            CommandGroup(after: .sidebar) {
-                Picker("Appearance", selection: Binding(
-                    get: { model.appearance },
-                    set: { model.appearance = $0 })) {
-                    ForEach(AppearancePreference.allCases) { preference in
-                        Text(preference.displayName).tag(preference)
-                    }
+            commands
+        }
+        #else
+        // One window: the app has one selection. Settings is a sheet.
+        WindowGroup {
+            MainWindowView(model: model)
+        }
+        .commands {
+            appMenuCommands
+            commands
+        }
+        #endif
+    }
+
+    /// The menus: the Mac's menu bar, and iPad's (and its ⌘ shortcuts).
+    @CommandsBuilder private var commands: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New Session…") {
+                if let project = model.selectedProject ?? model.projects.first {
+                    model.newSessionProject = project
                 }
             }
-            CommandMenu("Session") {
-                // Tab-style switching: sessions in sidebar order. The menu
-                // is what registers ⌘1–⌘9 app-wide (the terminal surface
-                // hands ⌘-equivalents to the main menu first).
-                Menu("Switch to Session") {
-                    let ordered = Array(model.shortcutOrderedSessions.prefix(9))
-                    if ordered.isEmpty {
-                        Text("No Sessions")
-                    }
-                    ForEach(Array(ordered.enumerated()), id: \.element.id) { index, session in
-                        Button(sessionMenuLabel(session)) {
-                            model.selectSession(number: index + 1)
-                        }
-                        .keyboardShortcut(
-                            KeyEquivalent(Character("\(index + 1)")),
-                            modifiers: .command)
-                    }
-                }
-
-                Divider()
-
-                Button("Archive Session…") {
-                    if let session = model.selectedSession {
-                        Task { await model.archiveSession(session) }
+            .keyboardShortcut("n", modifiers: .command)
+            .disabled(model.projects.isEmpty)
+        }
+        #if os(iOS)
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") { model.settingsPresented = true }
+                .keyboardShortcut(",", modifiers: .command)
+        }
+        #endif
+        CommandGroup(after: .toolbar) {
+            Button("Refresh") {
+                Task {
+                    await model.refreshRemotes()
+                    if let project = model.selectedProject {
+                        await model.refreshSessions(for: project)
                     }
                 }
-                .keyboardShortcut("e", modifiers: [.command, .shift])
-                .disabled(model.selectedSession == nil)
-
-                Button("Reconnect") {
-                    model.attachment.retryNow()
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+        }
+        #if os(macOS)
+        CommandGroup(after: .sidebar) {
+            Picker("Appearance", selection: Binding(
+                get: { model.appearance },
+                set: { model.appearance = $0 })) {
+                ForEach(AppearancePreference.allCases) { preference in
+                    Text(preference.displayName).tag(preference)
                 }
-                .disabled(model.selectedSession == nil)
-
-                Divider()
-
-                Button("Kill Session…") {
-                    if let session = model.selectedSession {
-                        model.confirmKillSession = session
+            }
+        }
+        #endif
+        CommandMenu("Session") {
+            // Tab-style switching: sessions in sidebar order. The menu
+            // is what registers ⌘1–⌘9 app-wide (the terminal surface
+            // hands ⌘-equivalents to the main menu first).
+            Menu("Switch to Session") {
+                let ordered = Array(model.shortcutOrderedSessions.prefix(9))
+                if ordered.isEmpty {
+                    Text("No Sessions")
+                }
+                ForEach(Array(ordered.enumerated()), id: \.element.id) { index, session in
+                    Button(sessionMenuLabel(session)) {
+                        model.selectSession(number: index + 1)
                     }
+                    .keyboardShortcut(
+                        KeyEquivalent(Character("\(index + 1)")),
+                        modifiers: .command)
                 }
-                .disabled(model.selectedSession == nil)
+            }
 
+            Divider()
+
+            Button("Archive Session…") {
+                if let session = model.selectedSession {
+                    Task { await model.archiveSession(session) }
+                }
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .disabled(model.selectedSession == nil)
+
+            Button("Reconnect") {
+                model.attachment.retryNow()
+            }
+            .disabled(model.selectedSession == nil)
+
+            Divider()
+
+            Button("Kill Session…") {
+                if let session = model.selectedSession {
+                    model.confirmKillSession = session
+                }
+            }
+            .disabled(model.selectedSession == nil)
+
+            if !Platform.isPhone {
                 Divider()
 
                 // How many recently-visited sessions keep their ssh
@@ -168,22 +194,22 @@ public struct RelayScenes<AppMenuCommands: Commands>: Scene {
                     }
                 }
             }
-            CommandMenu("GitHub") {
-                // Disabled status line: where PR badges get their API access.
-                Text(gitHubStatusLine)
-                Divider()
-                if case .connected = model.gitHub {
-                    Button("Sign Out of GitHub") {
-                        model.signOutGitHub()
-                    }
-                } else {
-                    Button("Log In to GitHub…") {
-                        model.gitHubLoginPresented = true
-                    }
+        }
+        CommandMenu("GitHub") {
+            // Disabled status line: where PR badges get their API access.
+            Text(gitHubStatusLine)
+            Divider()
+            if case .connected = model.gitHub {
+                Button("Sign Out of GitHub") {
+                    model.signOutGitHub()
                 }
-                Button("Recheck Connection") {
-                    Task { await model.recheckGitHubAuth() }
+            } else {
+                Button("Log In to GitHub…") {
+                    model.gitHubLoginPresented = true
                 }
+            }
+            Button("Recheck Connection") {
+                Task { await model.recheckGitHubAuth() }
             }
         }
     }

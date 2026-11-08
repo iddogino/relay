@@ -99,10 +99,11 @@ public final class RelayKeySetup: Sendable {
 
     public func run(_ request: Request) async throws -> Outcome {
         // The host must be reachable as set up (jump hosts, no ProxyCommand)
-        // before a key is made or imported.
+        // before a key is made or imported. (Its own sign-in is a stand-in
+        // here, allowed even where there's no agent.)
         var route = request.host
         route.auth = .automatic
-        _ = try target(for: route, password: nil)
+        _ = try target(for: route, password: nil, allowsAgent: true)
         let key = try resolveKey(request)
         var host = request.host
         host.auth = .storedKey(id: key.id)
@@ -117,11 +118,13 @@ public final class RelayKeySetup: Sendable {
         return Outcome(host: host, key: key, added: true)
     }
 
-    private func target(for host: SSHHost, password: String?) throws -> SSHTarget {
+    private func target(
+        for host: SSHHost, password: String?, allowsAgent: Bool = BuiltInSSHRouter.agentAvailable
+    ) throws -> SSHTarget {
         let store = store
         switch BuiltInSSHRouter.connection(
             for: host, hosts: hosts, password: { $0 == host.alias ? password : nil },
-            hasStoredKey: { store.signingKey(id: $0) != nil }) {
+            hasStoredKey: { store.signingKey(id: $0) != nil }, allowsAgent: allowsAgent) {
         case .ready(let target):
             return target
         case .needsSetup(let reason):

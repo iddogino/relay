@@ -3,7 +3,8 @@ import RelaySSH
 
 /// Settings ▸ Terminal: whether terminals use the user's Ghostty config,
 /// and a plain-text editor for the config files in effect (Relay's own
-/// terminal config, and the Ghostty ones when used).
+/// terminal config, and the Ghostty ones when used). On iOS, which has no
+/// Ghostty config of the user's: the text size, and Relay's config.
 struct TerminalSettingsView: View {
     @State private var useGhostty = TerminalConfig.useGhosttyFiles
     @State private var grant = FolderGrants.ghostty
@@ -13,12 +14,57 @@ struct TerminalSettingsView: View {
     @State private var savedText = ""
     @State private var loadError: String?
     @State private var diagnostics: [String] = GhosttyRuntime.lastDiagnostics
+    #if os(iOS)
+    @State private var fontSize = TerminalFontSize.current
+    #endif
 
     init(selecting file: URL? = nil) {
         _selected = State(initialValue: file ?? TerminalConfig.relayConfigFile)
     }
 
     var body: some View {
+        #if os(iOS)
+        Form {
+            Section {
+                Stepper(value: $fontSize, in: TerminalFontSize.range, step: 1) {
+                    LabeledContent("Text Size", value: "\(Int(fontSize)) pt")
+                }
+            } footer: {
+                Text("Pinch a terminal to resize its text (or \u{2318}+ and \u{2318}\u{2212} with a keyboard).")
+            }
+            Section {
+                TextEditor(text: $text)
+                    .font(.system(.footnote, design: .monospaced))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .frame(minHeight: 200)
+            } header: {
+                Text("Terminal Config")
+            } footer: {
+                if let loadError {
+                    Label(loadError, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                } else if !diagnostics.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(diagnostics, id: \.self) { message in
+                            Label(message, systemImage: "exclamationmark.triangle")
+                        }
+                    }
+                    .foregroundStyle(.orange)
+                } else {
+                    Text("Ghostty config syntax (ghostty.org/docs/config): a theme, colors, the cursor\u{2026} Saving applies it to every terminal.")
+                }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { save() }
+                    .disabled(text == savedText)
+            }
+        }
+        .onAppear { load() }
+        .onChange(of: fontSize) { TerminalFontSize.current = fontSize }
+        #else
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
                 Toggle(isOn: Binding(get: { useGhostty }, set: { setUseGhostty($0) })) {
@@ -87,6 +133,7 @@ struct TerminalSettingsView: View {
         .frame(width: 560, height: 500)
         .onAppear { refreshFiles(); load() }
         .onChange(of: selected) { load() }
+        #endif
     }
 
     private var ghosttyCaption: String {

@@ -1,8 +1,8 @@
 # Relay's two apps, both presenting the package's RelayUI:
 #
-# - Relay: the App Store app, in the App Sandbox, without Sparkle (the App
-#   Store updates it). Mac only for now; iPad and iPhone will join this
-#   target.
+# - Relay: the App Store app — Mac, iPhone and iPad, one target (one bundle
+#   ID: one purchase). On the Mac, in the App Sandbox, without Sparkle (the
+#   App Store updates it).
 # - Relay Direct: the Mac app distributed here, Developer ID-signed and
 #   notarized (Scripts/archive-app.sh, .github/workflows/release.yml), with
 #   Sparkle updates. Not sandboxed.
@@ -24,6 +24,7 @@ name: Relay
 options:
   deploymentTarget:
     macOS: "15.0"
+    iOS: "18.0"
   # Xcode resolves the package's dependencies itself: at the versions
   # Package.resolved pins, as `swift build` does. Runs in this folder.
   postGenCommand: >-
@@ -36,7 +37,8 @@ settings:
     # RELAY_VERSION and RELAY_BUILD_NUMBER).
     MARKETING_VERSION: 1.0.0
     CURRENT_PROJECT_VERSION: 1
-    # libghostty is built for Apple silicon (Scripts/build-libghostty.sh).
+    # libghostty is built for Apple silicon (Scripts/build-libghostty.sh;
+    # --universal for iOS and the iOS Simulator).
     ARCHS: arm64
     SWIFT_VERSION: "6.0"
 packages:
@@ -101,18 +103,31 @@ targetTemplates:
 targets:
   Relay:
     templates: [RelayApp]
+    platform: auto
+    supportedDestinations: [macOS, iOS]
     sources:
       - Store/RelayApp.swift
     info:
       properties:
         RelayDevHookDirectory: $(RELAY_DEV_HOOK_DIRECTORY)
     settings:
+      base:
+        # iPhone and iPad.
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: false
+        # The generated Info.plist above is the Mac's; iOS has its own.
+        INFOPLIST_FILE[sdk=iphoneos*]: iOS/Info.plist
+        INFOPLIST_FILE[sdk=iphonesimulator*]: iOS/Info.plist
       configs:
         Debug:
           CODE_SIGN_ENTITLEMENTS: Store/RelayDev.entitlements
+          CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]: iOS/RelayDev.entitlements
+          CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]: iOS/RelayDev.entitlements
           RELAY_DEV_HOOK_DIRECTORY: /private/tmp/relay-dev-hook/
         Release:
           CODE_SIGN_ENTITLEMENTS: Store/Relay.entitlements
+          CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]: iOS/Relay.entitlements
+          CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]: iOS/Relay.entitlements
   Relay Direct:
     templates: [RelayApp]
     sources:
@@ -143,6 +158,22 @@ targets:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: Developer ID Application
           PROVISIONING_PROFILE_SPECIFIER: Relay Developer ID
+  # Drives the iPhone and iPad app the way a person does (Scripts/ios-ui-tests.sh).
+  RelayUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - UITests
+    dependencies:
+      - target: Relay
+    settings:
+      base:
+        TEST_TARGET_NAME: Relay
+        PRODUCT_BUNDLE_IDENTIFIER: com.iddogino.Relay.uitests
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "6.0"
 schemes:
   Relay:
     build:
@@ -150,6 +181,10 @@ schemes:
         Relay: all
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - RelayUITests
     archive:
       config: Release
   Relay Direct:

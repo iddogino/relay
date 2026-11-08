@@ -63,6 +63,17 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
         return nil
     }
 
+    /// Whether hosts can sign in with an SSH agent or the default keys here:
+    /// always on a Mac; on iOS, which has neither, only when an agent's
+    /// socket reaches the app (in the Simulator, from the Mac).
+    public static var agentAvailable: Bool {
+        #if os(iOS)
+        ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] != nil
+        #else
+        true
+        #endif
+    }
+
     /// Resolves `host` (and its jump hosts, each a Relay host) into a
     /// target. Pure apart from the lookups; unit-tested.
     static func connection(
@@ -70,6 +81,7 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
         hosts: (String) -> SSHHost?,
         password: (String) -> String?,
         hasStoredKey: (String) -> Bool,
+        allowsAgent: Bool = agentAvailable,
         visited: [String] = []
     ) -> Connection {
         // Problems are reported about the host the user picked; a jump
@@ -85,9 +97,17 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
         let credentials: SSHTarget.Credentials
         switch host.auth {
         case .automatic:
+            guard allowsAgent else {
+                return .needsSetup("\(subject) signs in with a Mac\u{2019}s SSH agent or keys. Sign in with a Relay key or a password to connect from here.")
+            }
             credentials = .automatic
         case .keyFile(let path, let certificatePath):
             let file = UserHome.expand(path)
+            #if os(iOS)
+            guard FileManager.default.isReadableFile(atPath: file) else {
+                return .needsSetup("\(subject) signs in with a key file on a Mac (\(path)). Sign in with a Relay key or a password to connect from here.")
+            }
+            #endif
             guard FileManager.default.isReadableFile(atPath: file) else {
                 if UserHome.isSandboxed {
                     return .needsSetup("Relay can\u{2019}t read \(possessive) key file (\(path)). Give Relay access to your .ssh folder in Settings \u{25B8} Hosts.")
@@ -120,7 +140,9 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
             guard let jump = hosts(jumpAlias) else {
                 return .needsSetup("\(subject)\u{2019}s jump host \u{201C}\(jumpAlias)\u{201D} isn\u{2019}t in Relay.")
             }
-            switch connection(for: jump, hosts: hosts, password: password, hasStoredKey: hasStoredKey, visited: visited + [host.alias]) {
+            switch connection(
+                for: jump, hosts: hosts, password: password, hasStoredKey: hasStoredKey,
+                allowsAgent: allowsAgent, visited: visited + [host.alias]) {
             case .needsSetup(let reason):
                 return .needsSetup(reason)
             case .ready(var hop):

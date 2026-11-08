@@ -1,4 +1,6 @@
+#if os(macOS)
 import AppKit
+#endif
 import SwiftUI
 import RelayCore
 
@@ -32,28 +34,29 @@ struct SyncSettingsView: View {
                         Text(problem.message)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer()
+                        #if os(macOS)
                         if problem.opensSystemSettings {
                             Button("Open System Settings") {
                                 if let url = URL(string: "x-apple.systempreferences:com.apple.systempreferences.AppleIDSettings") {
-                                    NSWorkspace.shared.open(url)
+                                    Platform.open(url)
                                 }
                             }
                         }
+                        #endif
                     }
                 }
             }
             Section {
-                Text("Terminal and notification settings, the sidebar\u{2019}s layout, and Relay keys kept in this Mac\u{2019}s Secure Enclave.")
+                Text("Terminal and notification settings, the sidebar\u{2019}s layout, and Relay keys kept in this \(Platform.deviceKind)\u{2019}s Secure Enclave.")
                     .foregroundStyle(.secondary)
             } header: {
-                Text("Stays on this Mac")
+                Text("Stays on this \(Platform.deviceKind)")
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460)
-        .fixedSize(horizontal: false, vertical: true)
+        .settingsPaneWidth(460)
         .task { await sync.refreshAvailability() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: Platform.didBecomeActiveNotification)) { _ in
             Task { await sync.refreshAvailability() }
         }
     }
@@ -107,7 +110,7 @@ struct SyncSettingsView: View {
         case .noAccount:
             return Problem(message: "Sign in to iCloud to sync your hosts and projects.", opensSystemSettings: true)
         case .restricted:
-            return Problem(message: "iCloud is restricted on this Mac (by Screen Time or device management), so Relay can\u{2019}t sync.")
+            return Problem(message: "iCloud is restricted on this \(Platform.deviceKind) (by Screen Time or device management), so Relay can\u{2019}t sync.")
         case .temporarilyUnavailable:
             return Problem(message: "iCloud needs your attention before Relay can sync.", opensSystemSettings: true)
         case .unknown(let reason):

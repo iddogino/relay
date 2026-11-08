@@ -1,4 +1,6 @@
+#if os(macOS)
 import AppKit
+#endif
 import CryptoKit
 import SwiftUI
 import RelayCore
@@ -12,18 +14,15 @@ import RelaySSH
 /// taking over the keyboard.
 @MainActor
 enum HostKeyDevHook {
-    static let notification = Notification.Name("com.iddogino.Relay.dev.keys")
-    private static var observer: NSObjectProtocol?
+    static let notification = "com.iddogino.Relay.dev.keys"
+    private static var installed = false
 
     static func installIfDevBuild(model: AppModel) {
-        guard AppVariant.bundleIdentifier.hasSuffix(".dev"), observer == nil else { return }
-        observer = DistributedNotificationCenter.default().addObserver(
-            forName: notification, object: nil, queue: .main
-        ) { [weak model] _ in
-            MainActor.assumeIsolated {
-                guard let model else { return }
-                Task { await run(model) }
-            }
+        guard AppVariant.bundleIdentifier.hasSuffix(".dev"), !installed else { return }
+        installed = true
+        DevNotifications.observe(notification) { [weak model] in
+            guard let model else { return }
+            Task { await run(model) }
         }
     }
 
@@ -229,6 +228,16 @@ enum HostKeyDevHook {
                 model.selectedSessionID = session.id
                 result["selected"] = true
 
+            case "killSession":
+                // Test cleanup: a session this tooling created, by name.
+                let project = try projectNamed(model, request)
+                let name = try string(request, "name")
+                guard let session = model.sessions[project.id]?.first(where: { $0.displayName == name }) else {
+                    throw HookError("no session \(name)")
+                }
+                await model.killSession(session)
+                result["killed"] = !(model.sessions[project.id]?.contains { $0.id == session.id } ?? false)
+
             case "sessions":
                 let project = try projectNamed(model, request)
                 result["sessions"] = try await model.provider.listSessions(for: project).map {
@@ -260,6 +269,7 @@ enum HostKeyDevHook {
                     result["size"] = data.count
                 }
 
+            #if os(macOS)
             case "showSettings":
                 NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
                 result["shown"] = true
@@ -355,6 +365,7 @@ enum HostKeyDevHook {
                     window.orderOut(nil)
                 }
                 result["shots"] = written
+            #endif
 
             default:
                 throw HookError("unknown op \(op)")

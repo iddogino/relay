@@ -1,5 +1,10 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Observation
+import SwiftUI
 import RelayCore
 import RelaySSH
 
@@ -32,10 +37,22 @@ enum AppearancePreference: String, CaseIterable, Identifiable {
     @MainActor
     func apply() {
         UserDefaults.standard.set(rawValue, forKey: Self.defaultsKey)
+        #if os(macOS)
         switch self {
         case .system: NSApp.appearance = nil
         case .light: NSApp.appearance = NSAppearance(named: .aqua)
         case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+        #endif
+        // iOS: the root view applies `colorScheme`.
+    }
+
+    /// The scheme a view forces, nil for the system's.
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
         }
     }
 }
@@ -160,6 +177,10 @@ public final class AppModel {
     var createSheetPresented = false
     var confirmKillSession: RemoteSession?
     var confirmRemoveProject: Project?
+    /// iOS: Settings, as a sheet (the Mac has a Settings window).
+    var settingsPresented = false
+    /// iOS: a host to set up for this device (from the session list).
+    var hostToSetUp: SSHHost?
 
     private var restoredSelection: SessionID?
 
@@ -179,7 +200,9 @@ public final class AppModel {
         // Clamped on read so a hand-edited default can't disable attachment
         // (0/missing means unset) or leak connections without bound.
         let storedCap = UserDefaults.standard.integer(forKey: Self.warmAttachmentCapKey)
-        self.warmAttachmentCap = storedCap == 0
+        // An iPhone shows one terminal at a time, so it keeps one
+        // connection: the session on screen (or last on screen).
+        self.warmAttachmentCap = Platform.isPhone ? 1 : storedCap == 0
             ? Self.warmAttachmentCapDefault
             : max(1, min(storedCap, 16))
 
@@ -200,7 +223,7 @@ public final class AppModel {
         }
 
         NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
+            forName: Platform.didBecomeActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -209,17 +232,20 @@ public final class AppModel {
             }
         }
 
+        #if os(macOS)
         // ⌘-held tracking for the sidebar's ⌘1–⌘9 badges. Local monitors
         // run on the main thread; the resign observer clears a stuck flag
-        // when the release lands in another app (⌘-Tab away).
+        // when the release lands in another app (⌘-Tab away). (iPadOS
+        // shows its own shortcut overlay while ⌘ is held.)
         NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             MainActor.assumeIsolated {
                 self?.commandKeyHeld = event.modifierFlags.contains(.command)
             }
             return event
         }
+        #endif
         NotificationCenter.default.addObserver(
-            forName: NSApplication.willResignActiveNotification,
+            forName: Platform.willResignActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -265,7 +291,7 @@ public final class AppModel {
         case .web(let url):
             openTerminalURL(url)
         case .email(let url):
-            NSWorkspace.shared.open(url)
+            Platform.open(url)
         case .remoteFile(let path):
             previewRemoteFile(path)
         case nil:
@@ -280,12 +306,12 @@ public final class AppModel {
     func openTerminalURL(_ url: URL) {
         guard LocalhostURLRewriter.isRewritable(url),
               let project = attachment.project else {
-            NSWorkspace.shared.open(url)
+            Platform.open(url)
             return
         }
         let alias = project.workspace.opaqueID
         let host = SSHHostNameResolver.browserHost(alias: alias, host: hosts.first { $0.alias == alias })
-        NSWorkspace.shared.open(LocalhostURLRewriter.rewrite(url, remoteHost: host) ?? url)
+        Platform.open(LocalhostURLRewriter.rewrite(url, remoteHost: host) ?? url)
     }
 
     // MARK: Remote file preview
@@ -784,7 +810,7 @@ public final class AppModel {
     /// reconciliation (rows appearing/disappearing) stays with the explicit
     /// refresh paths, so this background sweep never surprises the user.
     private func refreshSessionTitles() async {
-        guard NSApp.windows.contains(where: { $0.isVisible }) else { return }
+        guard Platform.hasVisibleWindow else { return }
         for project in projects {
             guard !sessionsLoading.contains(project.id), !isRemoteMissing(project) else { continue }
             let fresh: [RemoteSession]
@@ -1136,7 +1162,7 @@ public final class AppModel {
     /// Idempotent.
     func syncAgentMonitors() {
         var desired = Set<WorkspaceRef>()
-        for project in projects where !isRemoteMissing(project) {
+        for project in projects where !isRemoteMissing(project) && !connectionsSuspended {
             desired.insert(project.workspace)
         }
         for (workspace, task) in agentMonitorTasks where !desired.contains(workspace) {
@@ -1302,7 +1328,7 @@ public final class AppModel {
     private var prPollTask: Task<Void, Never>?
     private var prPollTaskInterval: Duration = .zero
     /// Mirrors app activation; PR polling pauses while false.
-    private var isAppActive = NSApplication.shared.isActive
+    private(set) var isAppActive = Platform.isAppActive
 
     /// True while a PR-status fetch is in flight (the popover's refresh
     /// button shows a spinner).
@@ -1800,6 +1826,80 @@ public final class AppModel {
         }
         knownHostsCache = nil
     }
+
+    // MARK: iOS app lifecycle
+
+    /// iOS: whether the app's connections are down while it's in the
+    /// background (it can't keep them: iOS suspends it).
+    private(set) var connectionsSuspended = false
+
+    #if os(iOS)
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var suspendTask: Task<Void, Never>?
+    /// How long connections outlive a trip to the background, so a quick
+    /// switch to another app and back finds the terminal still connected.
+    private static let backgroundGrace: Duration = .seconds(25)
+
+    func scenePhaseChanged(to phase: ScenePhase) {
+        switch phase {
+        case .background:
+            // No drawing in the background (iOS refuses GPU work there).
+            for controller in attachmentPool.values { controller.setPresented(false) }
+            guard !connectionsSuspended, suspendTask == nil else { return }
+            backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Relay connections") { [weak self] in
+                MainActor.assumeIsolated { self?.suspendConnections() }
+            }
+            suspendTask = Task { [weak self] in
+                try? await Task.sleep(for: Self.backgroundGrace)
+                guard !Task.isCancelled else { return }
+                self?.suspendConnections()
+            }
+        case .active:
+            suspendTask?.cancel()
+            suspendTask = nil
+            endBackgroundTask()
+            resumeConnections()
+        default:
+            break
+        }
+    }
+
+    /// Ends every connection — terminals (the remote sessions keep
+    /// running), monitors, the SSH client's pooled ones — keeping the
+    /// selection to reconnect to.
+    private func suspendConnections() {
+        suspendTask?.cancel()
+        suspendTask = nil
+        if !connectionsSuspended {
+            ghosttyLogger.info("in the background: closing connections")
+            connectionsSuspended = true
+            for id in warmOrder.reversed() { dropAttachment(for: id) }
+            syncAgentMonitors()
+            syncLoadMonitor()
+            if let pool = builtInSSH?.pool { Task { await pool.closeAll() } }
+        }
+        endBackgroundTask()
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
+    }
+
+    /// Back on screen: reconnects the session on screen, or shows the one
+    /// still connected again.
+    private func resumeConnections() {
+        if connectionsSuspended {
+            ghosttyLogger.info("back from the background: reconnecting")
+            connectionsSuspended = false
+            syncAgentMonitors()
+        }
+        guard let session = selectedSession,
+              let project = projects.first(where: { $0.id == session.projectID }) else { return }
+        warmAttachment(for: session, project: project)
+    }
+    #endif
 
     // MARK: Persistence
 

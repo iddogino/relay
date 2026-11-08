@@ -1,4 +1,6 @@
+#if os(macOS)
 import AppKit
+#endif
 import SwiftUI
 
 /// Device-flow login: shows the user code to enter at
@@ -8,6 +10,62 @@ struct GitHubLoginSheet: View {
     @Bindable var model: AppModel
 
     var body: some View {
+        #if os(iOS)
+        NavigationStack {
+            List {
+                Section {
+                    switch model.gitHubLogin {
+                    case nil:
+                        Text("Relay shows pull-request status — checks and mergeability — via the GitHub API. Sign in with a one-time code at github.com; Relay never sees your password, and keeps the sign-in in your keychain.")
+                            .foregroundStyle(.secondary)
+                        Button("Get Login Code") { model.beginGitHubLogin() }
+                    case .requesting:
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Requesting a login code…")
+                                .foregroundStyle(.secondary)
+                        }
+                    case .waiting(let code, let url):
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Enter this code at \(url.absoluteString.replacingOccurrences(of: "https://", with: "")):")
+                                .foregroundStyle(.secondary)
+                            Text(code)
+                                .font(.system(.title, design: .monospaced, weight: .semibold))
+                                .tracking(2)
+                                .textSelection(.enabled)
+                        }
+                        Button {
+                            copyCode(code)
+                            Platform.open(url)
+                        } label: {
+                            Label("Copy Code & Open GitHub", systemImage: "arrow.up.forward.square")
+                        }
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Waiting for authorization…")
+                                .foregroundStyle(.secondary)
+                        }
+                    case .failed(let message):
+                        Label(message, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Button("Try Again") { model.beginGitHubLogin() }
+                    }
+                }
+            }
+            .navigationTitle("Sign In to GitHub")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        model.cancelGitHubLogin()
+                        model.gitHubLoginPresented = false
+                    }
+                }
+            }
+        }
+        // Any exit path (swipe down, success, Cancel) stops the poll loop.
+        .onDisappear { model.cancelGitHubLogin() }
+        #else
         VStack(alignment: .leading, spacing: 14) {
             Text("Log In to GitHub")
                 .font(.title3.weight(.semibold))
@@ -46,6 +104,7 @@ struct GitHubLoginSheet: View {
         .frame(width: 460)
         // Any exit path (Esc, success, Cancel) stops the poll loop.
         .onDisappear { model.cancelGitHubLogin() }
+        #endif
     }
 
     private var intro: some View {
@@ -85,7 +144,7 @@ struct GitHubLoginSheet: View {
             HStack(spacing: 12) {
                 Button("Open GitHub…") {
                     copyCode(code)
-                    NSWorkspace.shared.open(url)
+                    Platform.open(url)
                 }
                 .buttonStyle(.borderedProminent)
                 HStack(spacing: 6) {
@@ -99,7 +158,6 @@ struct GitHubLoginSheet: View {
     }
 
     private func copyCode(_ code: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(code, forType: .string)
+        Platform.copy(code)
     }
 }

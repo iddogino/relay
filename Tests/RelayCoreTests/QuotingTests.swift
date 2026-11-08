@@ -147,3 +147,18 @@ struct RemotePathTests {
         #expect(script.contains("RTERM_FILE_BEGIN"))
     }
 }
+
+@Suite struct TerminalLocaleTests {
+    @Test func languageAndRegion() {
+        #expect(TerminalLocale.lang(for: Locale(identifier: "en_US")) == "en_US.UTF-8")
+        #expect(TerminalLocale.lang(for: Locale(identifier: "fr_CA")) == "fr_CA.UTF-8")
+        #expect(TerminalLocale.lang(for: Locale(identifier: "he_IL")) == "he_IL.UTF-8")
+    }
+
+    @Test func missingPartsFallBackToUSEnglish() {
+        #expect(TerminalLocale.lang(for: Locale(identifier: "en")) == "en_US.UTF-8")
+        #expect(TerminalLocale.lang(for: Locale(identifier: "")) == "en_US.UTF-8")
+        // Regions that aren't a country code (UN M.49 areas).
+        #expect(TerminalLocale.lang(for: Locale(identifier: "es_419")) == "en_US.UTF-8")
+    }
+}

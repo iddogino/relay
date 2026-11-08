@@ -4,13 +4,19 @@ import Foundation
 /// `NSHomeDirectory()` and `~` expansion give the app's container instead,
 /// which holds no `.ssh`; paths a user typed or a config names (`~/.ssh/…`)
 /// mean the real one, which the app reads once the user grants it access.
+/// On iOS, where the app has only its container, it's the container (also
+/// in the Simulator, whose apps could otherwise read the Mac's home).
 public enum UserHome {
     public static let path: String = {
+        #if os(iOS)
+        return NSHomeDirectory()
+        #else
         if let entry = getpwuid(getuid()), let dir = entry.pointee.pw_dir {
             let path = String(cString: dir)
             if !path.isEmpty { return path }
         }
         return NSHomeDirectory()
+        #endif
     }()
 
     /// Whether this process runs in the App Sandbox (where the real home

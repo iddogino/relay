@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import GhosttyKit
 import RelayGhosttyIO
@@ -781,3 +782,4 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 }
+#endif

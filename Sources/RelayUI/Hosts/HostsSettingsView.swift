@@ -16,6 +16,71 @@ struct HostsSettingsView: View {
     }
 
     var body: some View {
+        content
+            .sheet(item: $editor) { request in
+                HostEditorSheet(model: model, mode: request.mode) { saved in
+                    selection = saved.alias
+                }
+            }
+            .confirmationDialog(
+                "Remove \(confirmRemove?.alias ?? "")?",
+                isPresented: Binding(get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } }),
+                presenting: confirmRemove
+            ) { host in
+                Button("Remove", role: .destructive) {
+                    Task { await model.removeHost(host) }
+                }
+            } message: { _ in
+                Text("Relay forgets this host's settings (and any saved password). Nothing changes on the machine itself.")
+            }
+    }
+
+    #if os(iOS)
+    /// A list of hosts: tap one to edit it, swipe to remove it.
+    private var content: some View {
+        List {
+            Section {
+                ForEach(model.hosts) { host in
+                    Button {
+                        edit(host)
+                    } label: {
+                        HostRow(
+                            host: host, projectCount: model.projects(on: host).count,
+                            key: model.relayKey(for: host), problem: model.connectionProblem(host))
+                    }
+                    .foregroundStyle(.primary)
+                    .swipeActions {
+                        if model.projects(on: host).isEmpty {
+                            Button("Remove", role: .destructive) { confirmRemove = host }
+                        }
+                    }
+                }
+            } footer: {
+                if !model.hosts.isEmpty {
+                    Text("Relay connects with exactly these settings. A host in use by a project can\u{2019}t be removed.")
+                }
+            }
+        }
+        .overlay {
+            if model.hosts.isEmpty {
+                ContentUnavailableView(
+                    "No Hosts",
+                    systemImage: "server.rack",
+                    description: Text("Add a machine you reach over SSH."))
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    editor = EditorRequest(mode: .create)
+                } label: {
+                    Label("Add Host", systemImage: "plus")
+                }
+            }
+        }
+    }
+    #else
+    private var content: some View {
         VStack(alignment: .leading, spacing: 8) {
             List(model.hosts, selection: $selection) { host in
                 HostRow(
@@ -78,23 +143,8 @@ struct HostsSettingsView: View {
         }
         .padding(20)
         .frame(width: 560, height: 500)
-        .sheet(item: $editor) { request in
-            HostEditorSheet(model: model, mode: request.mode) { saved in
-                selection = saved.alias
-            }
-        }
-        .confirmationDialog(
-            "Remove \(confirmRemove?.alias ?? "")?",
-            isPresented: Binding(get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } }),
-            presenting: confirmRemove
-        ) { host in
-            Button("Remove", role: .destructive) {
-                Task { await model.removeHost(host) }
-            }
-        } message: { _ in
-            Text("Relay forgets this host's settings (and any saved password). Nothing changes on the machine itself.")
-        }
     }
+    #endif
 
     private var removeHelp: String {
         guard let host = selectedHost else { return "Remove Host" }

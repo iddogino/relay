@@ -17,7 +17,7 @@ struct PRBadge: View {
 
     var body: some View {
         Button {
-            NSWorkspace.shared.open(pr.url)
+            Platform.open(pr.url)
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "arrow.triangle.pull")
@@ -61,7 +61,7 @@ struct PRBadge: View {
         case .merged:
             dot(.purple)
         case .closed:
-            dot(Color(nsColor: .tertiaryLabelColor))
+            dot(Color.tertiaryLabelText)
         }
     }
 
@@ -149,12 +149,12 @@ struct PRChecksPopover: View {
 
             Divider()
             Button {
-                NSWorkspace.shared.open(prURL)
+                Platform.open(prURL)
             } label: {
                 Label("Open in GitHub", systemImage: "arrow.up.forward.square")
                     .font(.system(size: 11))
             }
-            .buttonStyle(.link)
+            .linkButtonStyle()
         }
         .padding(14)
         .frame(width: 380)
@@ -194,9 +194,9 @@ private struct CheckRow: View {
                 .lineLimit(1)
             if let url = check.detailsURL {
                 Button("Details") {
-                    NSWorkspace.shared.open(url)
+                    Platform.open(url)
                 }
-                .buttonStyle(.link)
+                .linkButtonStyle()
                 .font(.system(size: 11))
             }
         }

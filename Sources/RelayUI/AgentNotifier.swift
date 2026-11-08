@@ -1,8 +1,10 @@
+#if os(macOS)
 import AppKit
+#endif
 import RelayCore
 @preconcurrency import UserNotifications
 
-/// macOS notifications for agent alerts (see `AgentAlertTracker`): one per
+/// System notifications for agent alerts (see `AgentAlertTracker`): one per
 /// session at a time, replaced by the next, removed once the session is
 /// looked at. Clicking one brings Relay forward on that session.
 /// Permission is asked the first time there is something to say.
@@ -96,7 +98,9 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
               let uuid = UUID(uuidString: string)
         else { return }
         await MainActor.run {
+            #if os(macOS)
             NSApp.activate()
+            #endif
             onOpen?(SessionID(uuid: uuid))
         }
     }

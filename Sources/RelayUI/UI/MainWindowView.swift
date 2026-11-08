@@ -1,8 +1,14 @@
 import SwiftUI
 import RelayCore
 
+/// The window: projects and sessions in the sidebar, the selected
+/// session's terminal beside it. On iPhone the split collapses to a stack:
+/// the session list, then one terminal.
 struct MainWindowView: View {
     @Bindable var model: AppModel
+    #if os(iOS)
+    @Environment(\.scenePhase) private var scenePhase
+    #endif
 
     var body: some View {
         NavigationSplitView {
@@ -11,11 +17,26 @@ struct MainWindowView: View {
         } detail: {
             TerminalDetailView(model: model)
         }
+        #if os(macOS)
         // Closing the window is a detach-only operation: the local ssh
         // attachment ends, the remote session keeps running.
         .background(WindowCloseObserver {
             model.windowDidClose()
         })
+        #else
+        .preferredColorScheme(model.appearance.colorScheme)
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            model.scenePhaseChanged(to: phase)
+        }
+        .sheet(isPresented: $model.settingsPresented) {
+            SettingsSheet(model: model)
+        }
+        .sheet(item: $model.hostToSetUp) { host in
+            HostEditorSheet(model: model, mode: .edit(host)) { _ in
+                Task { await model.refreshAll() }
+            }
+        }
+        #endif
         .alert(item: $model.alert) { alert in
             Alert(
                 title: Text(alert.title),
@@ -80,6 +101,7 @@ struct MainWindowView: View {
     }
 }
 
+#if os(macOS)
 /// Invokes `onClose` when this view's own window closes.
 private struct WindowCloseObserver: NSViewRepresentable {
     let onClose: () -> Void
@@ -117,3 +139,4 @@ private struct WindowCloseObserver: NSViewRepresentable {
         view.onClose = onClose
     }
 }
+#endif

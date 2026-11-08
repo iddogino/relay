@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import GhosttyKit
 
@@ -109,3 +110,4 @@ extension NSEvent {
         return characters
     }
 }
+#endif

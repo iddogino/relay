@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import GhosttyKit
 import os.log
 import RelayCore
@@ -24,9 +28,13 @@ final class GhosttyRuntime {
     var urlOpener: ((String) -> Void)?
 
     private init() {
+        #if os(macOS)
         // Ensure NSApp exists — this runs from App.init, before SwiftUI
         // creates the shared application.
         _ = NSApplication.shared
+        #else
+        Self.prepareIOSEnvironment()
+        #endif
 
         if ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) != GHOSTTY_SUCCESS {
             initError = "ghostty_init failed"
@@ -60,17 +68,18 @@ final class GhosttyRuntime {
         }
         self.app = app
 
-        ghostty_app_set_focus(app, NSApp.isActive)
-        syncColorScheme()
+        ghostty_app_set_focus(app, Platform.isAppActive)
         TerminalSnapshots.installIfDevBuild()
 
         let center = NotificationCenter.default
         center.addObserver(
             self, selector: #selector(applicationDidBecomeActive),
-            name: NSApplication.didBecomeActiveNotification, object: nil)
+            name: Platform.didBecomeActiveNotification, object: nil)
         center.addObserver(
             self, selector: #selector(applicationDidResignActive),
-            name: NSApplication.didResignActiveNotification, object: nil)
+            name: Platform.didResignActiveNotification, object: nil)
+        #if os(macOS)
+        syncColorScheme()
         center.addObserver(
             self, selector: #selector(keyboardSelectionDidChange),
             name: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil)
@@ -78,9 +87,33 @@ final class GhosttyRuntime {
         appearanceObservation = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
             Task { @MainActor in self?.syncColorScheme() }
         }
+        #else
+        center.addObserver(
+            self, selector: #selector(keyboardSelectionDidChange),
+            name: UITextInputMode.currentInputModeDidChangeNotification, object: nil)
+        #endif
     }
 
+    #if os(macOS)
     private var appearanceObservation: NSKeyValueObservation?
+    #else
+    /// iOS has no LANG, and libghostty finds no home folder there: the
+    /// locale the remote programs get (the Mac forwards its own), and the
+    /// app's container for the files libghostty looks for.
+    private static func prepareIOSEnvironment() {
+        if ProcessInfo.processInfo.environment["LANG"] == nil {
+            setenv("LANG", TerminalLocale.lang(for: Locale.current), 1)
+        }
+        let home = NSHomeDirectory()
+        for (name, folder) in [("XDG_CONFIG_HOME", "Library/Application Support"),
+                               ("XDG_DATA_HOME", "Library/Application Support"),
+                               ("XDG_STATE_HOME", "Library/Application Support"),
+                               ("XDG_CACHE_HOME", "Library/Caches")]
+        where ProcessInfo.processInfo.environment[name] == nil {
+            setenv(name, (home as NSString).appendingPathComponent(folder), 1)
+        }
+    }
+    #endif
 
     // MARK: Configuration
 
@@ -152,10 +185,30 @@ final class GhosttyRuntime {
         ghostty_app_tick(app)
     }
 
+    #if os(iOS)
+    /// The terminal background the configuration (its theme) sets.
+    var configuredBackground: UIColor? {
+        guard let config else { return nil }
+        var color = ghostty_config_color_s()
+        let key = "background"
+        guard ghostty_config_get(config, &color, key, UInt(key.utf8.count)) else { return nil }
+        return UIColor(red: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: 1)
+    }
+    #endif
+
+    #if os(macOS)
     private func syncColorScheme() {
         guard let app else { return }
         let isDark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-        ghostty_app_set_color_scheme(app, isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
+        setColorScheme(dark: isDark)
+    }
+    #endif
+
+    /// The app's light/dark appearance, for `?`-conditional theme config.
+    /// (On iOS the terminal views report it as their traits change.)
+    func setColorScheme(dark: Bool) {
+        guard let app else { return }
+        ghostty_app_set_color_scheme(app, dark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
     }
 
     // MARK: App notifications
@@ -217,12 +270,18 @@ final class GhosttyRuntime {
             return true
 
         case GHOSTTY_ACTION_MOUSE_VISIBILITY:
+            #if os(macOS)
             let visible = action.action.mouse_visibility == GHOSTTY_MOUSE_VISIBLE
             DispatchQueue.main.async { NSCursor.setHiddenUntilMouseMoves(!visible) }
+            #endif
             return true
 
         case GHOSTTY_ACTION_RING_BELL:
+            #if os(macOS)
             DispatchQueue.main.async { NSSound.beep() }
+            #else
+            DispatchQueue.main.async { view?.ringBell() }
+            #endif
             return true
 
         case GHOSTTY_ACTION_OPEN_URL:
@@ -236,7 +295,7 @@ final class GhosttyRuntime {
                     if let opener = GhosttyRuntime.shared.urlOpener {
                         opener(urlString)
                     } else if let url = URL(string: urlString) {
-                        NSWorkspace.shared.open(url)
+                        Platform.open(url)
                     }
                 }
             }
@@ -255,11 +314,19 @@ final class GhosttyRuntime {
         case GHOSTTY_ACTION_COLOR_CHANGE:
             let change = action.action.color_change
             guard change.kind == GHOSTTY_ACTION_COLOR_KIND_BACKGROUND else { return true }
+            #if os(macOS)
             let color = NSColor(
                 srgbRed: CGFloat(change.r) / 255,
                 green: CGFloat(change.g) / 255,
                 blue: CGFloat(change.b) / 255,
                 alpha: 1)
+            #else
+            let color = UIColor(
+                red: CGFloat(change.r) / 255,
+                green: CGFloat(change.g) / 255,
+                blue: CGFloat(change.b) / 255,
+                alpha: 1)
+            #endif
             DispatchQueue.main.async { view?.terminalBackgroundColor = color }
             return true
 
@@ -280,7 +347,9 @@ final class GhosttyRuntime {
 
     /// Serves a clipboard read (paste, OSC 52, Kitty clipboard). Relay's
     /// clipboard is text-only: `text/plain` is served when requested, and
-    /// listed when a listing is asked for.
+    /// listed when a listing is asked for. On iOS, where reading the
+    /// pasteboard outside a paste the user started asks them first, the
+    /// terminal view pastes itself and programs can't read it.
     fileprivate nonisolated static func onReadClipboard(
         _ userdata: UnsafeMutableRawPointer?,
         location: ghostty_clipboard_e,
@@ -290,6 +359,10 @@ final class GhosttyRuntime {
     ) -> ghostty_clipboard_read_result_e {
         guard location == GHOSTTY_CLIPBOARD_STANDARD else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
         guard let view = surfaceView(from: userdata) else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
+        #if os(iOS)
+        _ = view
+        return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
+        #else
         let wantsText = mimes.contains("text/plain")
         let string = NSPasteboard.general.string(forType: .string)
         let contents = wantsText ? string.map { [("text/plain", Data($0.utf8))] } ?? [] : []
@@ -307,6 +380,7 @@ final class GhosttyRuntime {
             DispatchQueue.main.async { complete() }
         }
         return GHOSTTY_CLIPBOARD_READ_STARTED
+        #endif
     }
 
     fileprivate nonisolated static func onConfirmReadClipboard(
@@ -417,12 +491,10 @@ final class GhosttyRuntime {
             if confirm, let view {
                 view.confirmClipboard(contents: text, isPaste: false) { confirmed in
                     guard confirmed else { return }
-                    NSPasteboard.general.declareTypes([.string], owner: nil)
-                    NSPasteboard.general.setString(text, forType: .string)
+                    Platform.copy(text)
                 }
             } else {
-                NSPasteboard.general.declareTypes([.string], owner: nil)
-                NSPasteboard.general.setString(text, forType: .string)
+                Platform.copy(text)
             }
         }
     }

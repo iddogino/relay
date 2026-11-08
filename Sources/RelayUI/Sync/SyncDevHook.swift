@@ -1,4 +1,6 @@
+#if os(macOS)
 import AppKit
+#endif
 import CloudKit
 import RelayCore
 import RelaySSH
@@ -11,18 +13,15 @@ import SwiftUI
 /// notification: only the one given a request answers.
 @MainActor
 enum SyncDevHook {
-    static let notification = Notification.Name("com.iddogino.Relay.dev.sync")
-    private static var observer: NSObjectProtocol?
+    static let notification = "com.iddogino.Relay.dev.sync"
+    private static var installed = false
 
     static func installIfDevBuild(model: AppModel) {
-        guard AppVariant.bundleIdentifier.hasSuffix(".dev"), observer == nil else { return }
-        observer = DistributedNotificationCenter.default().addObserver(
-            forName: notification, object: nil, queue: .main
-        ) { [weak model] _ in
-            MainActor.assumeIsolated {
-                guard let model else { return }
-                Task { await run(model) }
-            }
+        guard AppVariant.bundleIdentifier.hasSuffix(".dev"), !installed else { return }
+        installed = true
+        DevNotifications.observe(notification) { [weak model] in
+            guard let model else { return }
+            Task { await run(model) }
         }
     }
 
@@ -102,6 +101,7 @@ enum SyncDevHook {
                 }
                 model.moveProjects(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
 
+            #if os(macOS)
             case "render":
                 // Settings ▸ iCloud as drawn, for each named availability
                 // ("current" leaves it as it is), into window-shots/.
@@ -125,6 +125,7 @@ enum SyncDevHook {
                 }
                 await model.cloudSync.refreshAvailability()
                 result["shots"] = written
+            #endif
 
             case "deleteCloudData":
                 // Test cleanup: deletes Relay's zone (all synced records) in
@@ -200,6 +201,7 @@ enum SyncDevHook {
         result["dataDirectory"] = AppVariant.dataDirectory.path
     }
 
+    #if os(macOS)
     /// Draws `view` in an invisible window, as the Settings window would.
     private static func render(_ view: some View, to url: URL, onAppear: () -> Void = {}) async throws {
         let hosting = NSHostingView(rootView: view)
@@ -223,6 +225,7 @@ enum SyncDevHook {
         frame.cacheDisplay(in: frame.bounds, to: rep)
         try rep.representation(using: .png, properties: [:])?.write(to: url)
     }
+    #endif
 
     private static func string(_ request: [String: Any], _ key: String) throws -> String {
         guard let value = request[key] as? String, !value.isEmpty else { throw HookError("missing \(key)") }

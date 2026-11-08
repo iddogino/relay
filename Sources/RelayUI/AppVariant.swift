@@ -1,6 +1,10 @@
 import Foundation
 import Security
+#if os(macOS)
 import SystemConfiguration
+#else
+import UIKit
+#endif
 
 /// Which build this is. The dev variant ("Relay Dev", App/project.yml's
 /// Debug configuration) installs alongside the real app: its own bundle ID
@@ -50,17 +54,29 @@ public enum AppVariant {
     /// isn't entitled to. nil: this build can't sync.
     static let cloudKitContainer: String? = {
         guard let container = Bundle.main.object(forInfoDictionaryKey: "RelayCloudKitContainer") as? String,
-              !container.isEmpty,
-              let task = SecTaskCreateFromSelf(nil),
+              !container.isEmpty else { return nil }
+        #if os(iOS)
+        // iOS builds are always signed for it (no ad-hoc builds), and
+        // can't read their entitlements.
+        return container
+        #else
+        guard let task = SecTaskCreateFromSelf(nil),
               let entitled = SecTaskCopyValueForEntitlement(
                 task, "com.apple.developer.icloud-container-identifiers" as CFString, nil) as? [String],
               entitled.contains(container) else { return nil }
         return container
+        #endif
     }()
 
-    /// This Mac's name, as in System Settings ▸ General ▸ Sharing.
+    /// This device's name: the Mac's, as in System Settings ▸ General ▸
+    /// Sharing; on iOS, the model ("iPhone"), all apps may know.
+    @MainActor
     static var computerName: String {
+        #if os(macOS)
         SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
+        #else
+        UIDevice.current.name
+        #endif
     }
 
     /// Relay's own known_hosts: host keys trusted in Relay (the user's

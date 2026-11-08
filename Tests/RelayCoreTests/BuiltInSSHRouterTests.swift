@@ -48,6 +48,21 @@ struct BuiltInSSHRouterTests {
             host: "r.example", port: 22, username: NSUserName(), credentials: .storedKey(id: "K1"))))
     }
 
+    /// iOS has no SSH agent: a host that signs in with one (set up on a
+    /// Mac) needs setup there — also as another host's jump host.
+    @Test func withoutAnAgentItsHostsNeedSetup() throws {
+        let agent = SSHHost(alias: "box", hostname: "10.0.0.5")
+        let noAgent = BuiltInSSHRouter.connection(
+            for: agent, hosts: { _ in nil }, password: { _ in nil }, hasStoredKey: { _ in false }, allowsAgent: false)
+        #expect(try #require(Self.reason(noAgent)).contains("SSH agent"))
+
+        let behind = SSHHost(alias: "inner", hostname: "10.0.0.6", auth: .password, proxyJump: "box")
+        let throughIt = BuiltInSSHRouter.connection(
+            for: behind, hosts: { $0 == "box" ? agent : nil }, password: { _ in "pw" }, hasStoredKey: { _ in false },
+            allowsAgent: false)
+        #expect(try #require(Self.reason(throughIt)).contains("jump host \u{201C}box\u{201D}"))
+    }
+
     @Test func saysWhatAHostNeedsWhenItCantConnect() throws {
         let noPassword = SSHHost(alias: "pw", hostname: "h", auth: .password)
         #expect(try #require(Self.reason(Self.connection(noPassword))).contains("No password"))

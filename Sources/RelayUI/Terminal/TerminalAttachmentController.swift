@@ -1,4 +1,7 @@
+#if os(macOS)
 import AppKit
+#endif
+import Foundation
 import RelayGhosttyIO
 import Observation
 import RelayCore
@@ -78,11 +81,13 @@ final class TerminalAttachmentController {
 
     init(provider: any RuntimeProvider) {
         self.provider = provider
+        #if os(macOS)
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
             selector: #selector(systemDidWake),
             name: NSWorkspace.didWakeNotification,
             object: nil)
+        #endif
     }
 
     // MARK: Public API
@@ -276,8 +281,7 @@ final class TerminalAttachmentController {
                 guard gen == self.generation else {
                     // The user switched sessions mid-upload: don't type into
                     // an unrelated terminal — hand the result over instead.
-                    NSPasteboard.general.declareTypes([.string], owner: nil)
-                    NSPasteboard.general.setString(String(pasteText.dropLast()), forType: .string)
+                    Platform.copy(String(pasteText.dropLast()))
                     self.showDropNotice("Upload to \(alias) finished after the session changed — remote path copied to the clipboard.")
                     return
                 }
@@ -431,6 +435,7 @@ final class TerminalAttachmentController {
         }
     }
 
+    #if os(macOS)
     @objc private func systemDidWake(_ note: Notification) {
         // Make reconnect-after-sleep feel immediate.
         switch phase {
@@ -440,4 +445,5 @@ final class TerminalAttachmentController {
             break
         }
     }
+    #endif
 }

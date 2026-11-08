@@ -1,4 +1,7 @@
+#if os(macOS)
 import AppKit
+#endif
+import Foundation
 import Observation
 import RelaySSH
 
@@ -36,6 +39,7 @@ final class FolderGrant {
 
     /// Resolves the saved bookmark (at launch) and starts accessing it.
     private func restore() {
+        #if os(macOS)
         guard UserHome.isSandboxed, let data = UserDefaults.standard.data(forKey: defaultsKey) else { return }
         var stale = false
         guard let url = try? URL(
@@ -48,6 +52,7 @@ final class FolderGrant {
         if stale, let fresh = try? url.bookmarkData(options: [.withSecurityScope]) {
             UserDefaults.standard.set(fresh, forKey: defaultsKey)
         }
+        #endif
     }
 
     /// Asks the user to pick the folder (starting at the default one).
@@ -55,6 +60,7 @@ final class FolderGrant {
     @discardableResult
     func requestAccess() async -> Bool {
         guard UserHome.isSandboxed else { return true }
+        #if os(macOS)
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -65,6 +71,10 @@ final class FolderGrant {
         panel.prompt = "Allow Access"
         guard await panel.begin() == .OK, let url = panel.url else { return false }
         return grant(url)
+        #else
+        // iOS has no folders of the user's for Relay to read.
+        return false
+        #endif
     }
 
     /// Records access to `url` — a folder the user just picked (or, in dev
@@ -72,6 +82,7 @@ final class FolderGrant {
     @discardableResult
     func grant(_ url: URL) -> Bool {
         guard UserHome.isSandboxed else { return true }
+        #if os(macOS)
         guard let data = try? url.bookmarkData(options: [.withSecurityScope]) else { return false }
         revoke()
         UserDefaults.standard.set(data, forKey: defaultsKey)
@@ -80,6 +91,9 @@ final class FolderGrant {
         }
         grantedFolder = url
         return true
+        #else
+        return false
+        #endif
     }
 
     func revoke() {
