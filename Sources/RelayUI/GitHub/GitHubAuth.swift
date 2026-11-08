@@ -1,5 +1,4 @@
 import Foundation
-import Security
 import RelayCore
 
 /// How the app is (or isn't) able to talk to the GitHub API. Shown in the
@@ -25,48 +24,25 @@ enum GitHubLoginProgress: Equatable {
     case failed(String)
 }
 
-/// The device-flow token's home: a generic-password item in the user's
-/// login keychain, named per variant ("Relay GitHub", "Relay Dev GitHub")
-/// so the dev build never reads, overwrites or signs out the real app's
-/// token. Never lands on disk anywhere else.
+/// The device-flow token's home: a Keychain item named per variant ("Relay
+/// GitHub", "Relay Dev GitHub") so the dev build never reads, overwrites
+/// or signs out the real app's token. Synced through iCloud Keychain while
+/// Sync with iCloud is on, so signing in (or out) on one device does on
+/// all of them (see KeychainSecrets). Never lands on disk anywhere else.
 enum GitHubTokenStore {
-    private static let service = "\(AppVariant.dataDirectoryName) GitHub"
-    private static let account = "github.com"
-
-    private static var baseQuery: [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-    }
+    static let secrets = KeychainSecrets(
+        service: "\(AppVariant.dataDirectoryName) GitHub", accessGroup: AppVariant.keychainAccessGroup)
+    static let account = "github.com"
 
     static func load() -> String? {
-        var query = baseQuery
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data,
-              let token = String(data: data, encoding: .utf8),
-              !token.isEmpty else {
-            return nil
-        }
-        return token
+        secrets.load(account: account)
     }
 
     static func save(_ token: String) {
-        let data = Data(token.utf8)
-        let status = SecItemUpdate(
-            baseQuery as CFDictionary,
-            [kSecValueData as String: data] as CFDictionary)
-        guard status == errSecItemNotFound else { return }
-        var query = baseQuery
-        query[kSecValueData as String] = data
-        SecItemAdd(query as CFDictionary, nil)
+        secrets.save(token, account: account)
     }
 
     static func delete() {
-        SecItemDelete(baseQuery as CFDictionary)
+        secrets.delete(account: account)
     }
 }

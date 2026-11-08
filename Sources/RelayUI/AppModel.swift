@@ -95,6 +95,34 @@ public final class AppModel {
     private(set) var hosts: [SSHHost] = []
     /// Relay's SSH client, with its keys and trusted host keys.
     let builtInSSH: BuiltInSSHRouter?
+    /// The hosts and projects in iCloud (Settings ▸ iCloud).
+    let cloudSync: CloudSync
+    /// The known_hosts files, read for the host keys hosts sync with.
+    /// Dropped when trust changes and when the app comes forward.
+    private var knownHostsCache: KnownHosts?
+
+    /// Sync with iCloud, a per-device choice: on unless turned off here.
+    /// Covers the hosts and projects (CloudKit) and the secrets that go
+    /// with them — host passwords, the GitHub sign-in (iCloud Keychain).
+    var syncEnabled: Bool = AppModel.syncEnabledDefault {
+        didSet {
+            guard syncEnabled != oldValue else { return }
+            UserDefaults.standard.set(syncEnabled, forKey: Self.syncDefaultsKey)
+            GitHubTokenStore.secrets.syncChanged(enabled: syncEnabled)
+            SSHPasswordStore.secrets.syncChanged(enabled: syncEnabled)
+            builtInSSH?.hostsChanged()
+            if syncEnabled {
+                cloudSync.start()
+            } else {
+                cloudSync.stop()
+            }
+        }
+    }
+    nonisolated static let syncDefaultsKey = "syncWithICloud"
+    /// The stored choice (registered as on), readable off the main actor.
+    nonisolated static var syncEnabledDefault: Bool {
+        UserDefaults.standard.object(forKey: syncDefaultsKey) as? Bool ?? true
+    }
 
     // Remotes: the provider's view of the host list.
     private(set) var remotes: [WorkspaceDescriptor] = []
@@ -139,12 +167,14 @@ public final class AppModel {
         provider: any RuntimeProvider,
         store: ProjectStore = ProjectStore(),
         hostRegistry: SSHHostRegistry? = nil,
-        builtInSSH: BuiltInSSHRouter? = nil
+        builtInSSH: BuiltInSSHRouter? = nil,
+        cloudSync: CloudSync = CloudSync(containerIdentifier: nil)
     ) {
         self.provider = provider
         self.store = store
         self.hostRegistry = hostRegistry
         self.builtInSSH = builtInSSH
+        self.cloudSync = cloudSync
         self.idleAttachment = TerminalAttachmentController(provider: provider)
         // Clamped on read so a hand-edited default can't disable attachment
         // (0/missing means unset) or leak connections without bound.
@@ -156,6 +186,10 @@ public final class AppModel {
         // When a session ends we keep its sidebar row until the user acts
         // (Remove From Sidebar / New Session) or a refresh reconciles it away,
         // so the "session ended" state is visible rather than vanishing.
+
+        cloudSync.onStateChange = { [weak self] in self?.persist() }
+        cloudSync.onRemoteChanges = { [weak self] in self?.applySyncChanges($0) }
+        cloudSync.onCloudDataDeleted = { [weak self] in self?.syncEnabled = false }
 
         Task { await self.bootstrap() }
         Task { await self.recheckGitHubAuth() }
@@ -306,15 +340,22 @@ public final class AppModel {
             collapsedProjects = state.collapsedProjectIDs
             restoredSelection = state.lastSelectedSessionID
             loadedHosts = state.hosts
+            cloudSync.restore(state.sync)
         } catch ProjectStoreError.corruptState(let backupPath) {
+            cloudSync.restore(nil)
             alert = AppAlert(
                 title: "Settings Reset",
                 message: "Relay's local configuration was unreadable and has been moved to:\n\(backupPath)\n\nYour remote sessions are unaffected."
             )
         } catch {
             alert = AppAlert(title: "Couldn't Load Settings", message: error.localizedDescription)
+            cloudSync.restore(nil)
         }
         await loadHosts(loadedHosts)
+        // Record the hosts and projects for sync (the first launch with
+        // sync: all of them), keeping the selection to restore on disk.
+        persist(lastSelected: restoredSelection)
+        if syncEnabled { cloudSync.start() }
         await refreshRemotes()
         // All projects are visible (expanded) in the sidebar, so reconcile
         // each once at launch; restore the last-selected session when found
@@ -338,6 +379,14 @@ public final class AppModel {
 
     private func applicationDidActivate() {
         isAppActive = true
+        // Known hosts, saved passwords and the GitHub sign-in may have
+        // changed meanwhile (in a terminal, or synced from another device).
+        knownHostsCache = nil
+        builtInSSH?.hostsChanged()
+        cloudSync.fetchIfStale()
+        if case .notConnected = gitHub, GitHubTokenStore.load() != nil {
+            Task { await recheckGitHubAuth() }
+        }
         // Back on the session: its notification has been seen.
         if let id = selectedSessionID { agentNotifier.clear(id) }
         Task { await refreshRemotes() }
@@ -449,6 +498,9 @@ public final class AppModel {
         guard let file = builtInSSH?.trustedHostsFile else { return }
         try KnownHosts.trust(host: host.hostname, port: host.port ?? 22, presentedKey: presentedKey, in: file)
         builtInSSH?.hostsChanged()
+        // The host's record now carries the key to the other devices.
+        knownHostsCache = nil
+        persist()
     }
 
     /// The keys in a saved host's authorized_keys.
@@ -1622,19 +1674,131 @@ public final class AppModel {
     }
 
     func removeProject(_ project: Project) {
-        if let session = selectedSession, session.projectID == project.id {
+        forgetProject(project.id)
+        persist()
+    }
+
+    /// Everything Relay keeps about a project, gone (not saved yet).
+    private func forgetProject(_ id: ProjectID) {
+        if let session = selectedSession, session.projectID == id {
             selectedSessionID = nil
         }
-        for (id, controller) in attachmentPool where controller.session?.projectID == project.id {
-            dropAttachment(for: id)
+        for (sessionID, controller) in attachmentPool where controller.session?.projectID == id {
+            dropAttachment(for: sessionID)
         }
-        let sessionIDs = Set((sessions[project.id] ?? []).map(\.id))
-        projects.removeAll { $0.id == project.id }
-        sessions[project.id] = nil
-        sessionErrors[project.id] = nil
-        tombstones.removeAll { $0.projectID == project.id }
+        let sessionIDs = Set((sessions[id] ?? []).map(\.id))
+        projects.removeAll { $0.id == id }
+        sessions[id] = nil
+        sessionErrors[id] = nil
+        tombstones.removeAll { $0.projectID == id }
         sessionOrder.removeAll { sessionIDs.contains($0) }
+    }
+
+    // MARK: iCloud sync
+
+    /// What syncs: each host (with the host keys trusted for it), each
+    /// project, and the projects' order. Sessions don't — they're
+    /// discovered on the hosts — nor does anything about this device's
+    /// window (selection, collapsed projects, session order).
+    private func syncItems() -> [SyncItem] {
+        var items: [SyncItem] = []
+        if hostRegistry != nil {
+            let known = knownHostsForSync()
+            items += hosts.map { host in
+                .host(SyncedHost(host: host, trustedHostKeys: known.trustedKeys(host: host.hostname, port: host.port ?? 22)))
+            }
+        }
+        items += projects.map(SyncItem.project)
+        items.append(.projectOrder(SyncedProjectOrder(projects: projects.map(\.id))))
+        return items
+    }
+
+    /// The user's known_hosts and Relay's own: a host trusted either way
+    /// is trusted on the other devices too.
+    private func knownHostsForSync() -> KnownHosts {
+        if let knownHostsCache { return knownHostsCache }
+        let files = KnownHosts.defaultFiles + [builtInSSH?.trustedHostsFile].compactMap { $0 }
+        let known = KnownHosts.load(files: files)
+        knownHostsCache = known
+        return known
+    }
+
+    /// Applies hosts and projects changed on another device, then saves
+    /// (which records them as they now are — not a change to send back).
+    func applySyncChanges(_ changes: [SyncState.Change]) {
+        var hostsChanged = false
+        var projectsToRefresh: [Project] = []
+        for change in SyncState.Change.inApplyOrder(changes) {
+            switch change {
+            case .upsert(.host(let synced)):
+                if let index = hosts.firstIndex(where: { $0.alias == synced.host.alias }) {
+                    hosts[index] = synced.host
+                } else {
+                    hosts.append(synced.host)
+                }
+                trustSyncedHostKeys(synced)
+                hostsChanged = true
+            case .remove(.host(let synced)):
+                // A host a project here still uses stays — and goes back
+                // to iCloud with the save below.
+                guard projects(on: synced.host).isEmpty else { continue }
+                hosts.removeAll { $0.alias == synced.host.alias }
+                SSHPasswordStore.delete(alias: synced.host.alias)
+                hostsChanged = true
+            case .upsert(.project(let project)):
+                if let index = projects.firstIndex(where: { $0.id == project.id }) {
+                    let old = projects[index]
+                    projects[index] = project
+                    if old.workspace != project.workspace || old.resolvedPath != project.resolvedPath {
+                        projectsToRefresh.append(project)
+                    }
+                } else {
+                    projects.append(project)
+                    projectsToRefresh.append(project)
+                }
+            case .remove(.project(let project)):
+                forgetProject(project.id)
+            case .upsert(.projectOrder), .remove(.projectOrder):
+                break
+            }
+        }
+        if let order = cloudSync.state.projectOrder {
+            projects = SyncedProjectOrder(projects: order).arrange(projects)
+        }
+        if hostsChanged {
+            hostRegistry?.setHosts(hosts)
+            builtInSSH?.hostsChanged()
+        }
         persist()
+        if hostsChanged {
+            Task { await refreshRemotes() }
+        }
+        for project in projectsToRefresh {
+            Task { await refreshSessions(for: project) }
+        }
+    }
+
+    /// Trusts here the host keys another device trusts for the host —
+    /// except one this device has revoked.
+    private func trustSyncedHostKeys(_ synced: SyncedHost) {
+        guard let file = builtInSSH?.trustedHostsFile, !synced.trustedHostKeys.isEmpty else { return }
+        let known = knownHostsForSync()
+        let port = synced.host.port ?? 22
+        for key in synced.trustedHostKeys {
+            let fields = key.split(separator: " ")
+            guard fields.count == 2, let blob = Data(base64Encoded: String(fields[1])) else { continue }
+            switch known.verify(host: synced.host.hostname, port: port, keyType: String(fields[0]), key: blob) {
+            case .trusted, .revoked:
+                continue
+            case .unknown, .changed:
+                do {
+                    try KnownHosts.trust(host: synced.host.hostname, port: port, presentedKey: key, in: file)
+                } catch {
+                    ghosttyLogger.error("couldn't trust a synced key for \(synced.host.alias, privacy: .public): \(error, privacy: .public)")
+                }
+            }
+        }
+        knownHostsCache = nil
     }
 
     // MARK: Persistence
@@ -1642,13 +1806,21 @@ public final class AppModel {
     private var persistChain: Task<Void, Never>?
 
     func persist() {
+        persist(lastSelected: selectedSessionID)
+    }
+
+    private func persist(lastSelected: SessionID?) {
+        // Every change to the hosts and projects comes through here, so
+        // this is where sync notices them.
+        cloudSync.recordLocal(syncItems())
         let state = PersistedState(
             projects: projects,
             tombstones: tombstones,
-            lastSelectedSessionID: selectedSessionID,
+            lastSelectedSessionID: lastSelected,
             collapsedProjectIDs: collapsedProjects,
             sessionOrder: sessionOrder,
-            hosts: hostRegistry == nil ? nil : hosts
+            hosts: hostRegistry == nil ? nil : hosts,
+            sync: cloudSync.state
         )
         // Chain saves so an older snapshot can never overwrite a newer one.
         persistChain = Task { [store, previous = persistChain] in

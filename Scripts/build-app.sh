@@ -15,7 +15,9 @@
 #                       CODESIGN_IDENTITY its certificate). Embedded, and the
 #                       app gets a Keychain access group: SSH keys can then
 #                       sync through iCloud Keychain. Without it, Relay keys
-#                       are Secure Enclave only.
+#                       are Secure Enclave only. A profile with Relay's
+#                       iCloud container also turns on hosts and projects
+#                       sync.
 #   RELAY_SANDBOX       "1" turns on the App Sandbox (what the Mac App Store
 #                       requires): network client access, files the user
 #                       picks, and bookmarks to them — nothing else.
@@ -161,6 +163,35 @@ if [ -n "$PROFILE" ]; then
 PLIST
   if /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.get-task-allow' "$PROFILE_PLIST" 2>/dev/null | grep -q true; then
     /usr/libexec/PlistBuddy -c "Add :com.apple.security.get-task-allow bool true" "$ENTITLEMENTS"
+  fi
+  # iCloud, for syncing hosts and projects — when the profile allows
+  # Relay's container (both variants share it; development profiles sync
+  # in CloudKit's Development environment, so Relay Dev never sees real
+  # data). CloudKit's sync engine also needs push notifications.
+  CONTAINER="iCloud.com.iddogino.Relay"
+  if /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.icloud-container-identifiers' "$PROFILE_PLIST" 2>/dev/null |
+       grep -qx "[[:space:]]*$CONTAINER"; then
+    # Development profiles name their devices; Developer ID ones cover all.
+    if /usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' "$PROFILE_PLIST" >/dev/null 2>&1; then
+      CLOUDKIT_ENVIRONMENT=Development
+    else
+      CLOUDKIT_ENVIRONMENT=Production
+    fi
+    /usr/libexec/PlistBuddy \
+      -c "Add :com.apple.developer.icloud-container-identifiers array" \
+      -c "Add :com.apple.developer.icloud-container-identifiers:0 string $CONTAINER" \
+      -c "Add :com.apple.developer.icloud-services array" \
+      -c "Add :com.apple.developer.icloud-services:0 string CloudKit" \
+      -c "Add :com.apple.developer.icloud-container-environment string $CLOUDKIT_ENVIRONMENT" \
+      "$ENTITLEMENTS"
+    APS="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.aps-environment' "$PROFILE_PLIST" 2>/dev/null || true)"
+    if [ -n "$APS" ]; then
+      /usr/libexec/PlistBuddy -c "Add :com.apple.developer.aps-environment string $APS" "$ENTITLEMENTS"
+    fi
+    /usr/libexec/PlistBuddy -c "Add :RelayCloudKitContainer string $CONTAINER" "$APP/Contents/Info.plist"
+    echo "iCloud: $CONTAINER ($CLOUDKIT_ENVIRONMENT)"
+  else
+    echo "iCloud: the profile doesn't allow $CONTAINER; this build won't sync"
   fi
   rm -f "$PROFILE_PLIST"
 fi

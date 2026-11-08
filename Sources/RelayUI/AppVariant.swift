@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import SystemConfiguration
 
 /// Which build this is. The dev variant ("Relay Dev", built with
@@ -40,6 +41,20 @@ public enum AppVariant {
     static let keychainAccessGroup: String? = {
         let group = Bundle.main.object(forInfoDictionaryKey: "RelayKeychainAccessGroup") as? String
         return group?.isEmpty == false ? group : nil
+    }()
+
+    /// The iCloud container hosts and projects sync through — named by the
+    /// build script only when the app is signed for it. Checked against
+    /// the signature too: CloudKit stops an app that uses a container it
+    /// isn't entitled to. nil: this build can't sync.
+    static let cloudKitContainer: String? = {
+        guard let container = Bundle.main.object(forInfoDictionaryKey: "RelayCloudKitContainer") as? String,
+              !container.isEmpty,
+              let task = SecTaskCreateFromSelf(nil),
+              let entitled = SecTaskCopyValueForEntitlement(
+                task, "com.apple.developer.icloud-container-identifiers" as CFString, nil) as? [String],
+              entitled.contains(container) else { return nil }
+        return container
     }()
 
     /// This Mac's name, as in System Settings ▸ General ▸ Sharing.

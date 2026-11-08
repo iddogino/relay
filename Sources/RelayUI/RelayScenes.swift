@@ -24,12 +24,18 @@ extension AppModel {
             trustedHostsFile: AppVariant.knownHostsFile.path,
             passwordLookup: { SSHPasswordStore.load(alias: $0) })
         hostRegistry.onHostsChanged = { builtInSSH.hostsChanged() }
+        // Secrets earlier builds kept in the login keychain move to where
+        // they sync from.
+        GitHubTokenStore.secrets.moveFromLoginKeychain()
+        SSHPasswordStore.secrets.moveFromLoginKeychain()
         let model = AppModel(
             provider: SSHTmuxRuntimeProvider(hostRegistry: hostRegistry, builtInSSH: builtInSSH),
             store: ProjectStore(fileURL: AppVariant.dataDirectory.appendingPathComponent("state.json")),
             hostRegistry: hostRegistry,
-            builtInSSH: builtInSSH)
+            builtInSSH: builtInSSH,
+            cloudSync: CloudSync(containerIdentifier: AppVariant.cloudKitContainer))
         HostKeyDevHook.installIfDevBuild(model: model)
+        SyncDevHook.installIfDevBuild(model: model)
         return model
     }
 }
@@ -66,6 +72,8 @@ public struct RelayScenes<AppMenuCommands: Commands>: Scene {
                     .tabItem { Label("Terminal", systemImage: "terminal") }
                 NotificationsSettingsView(notifier: model.agentNotifier)
                     .tabItem { Label("Notifications", systemImage: "bell.badge") }
+                SyncSettingsView(model: model)
+                    .tabItem { Label("iCloud", systemImage: "icloud") }
             }
         }
         .commands {

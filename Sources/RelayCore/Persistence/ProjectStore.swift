@@ -31,6 +31,9 @@ public struct PersistedState: Codable, Sendable {
     /// Relay's host list. nil only in state written before Relay owned its
     /// hosts (they came from `~/.ssh/config`) — the cue to migrate.
     public var hosts: [SSHHost]?
+    /// Where the hosts and projects stand with iCloud (see SyncState).
+    /// Saved in the same file so the two can never disagree.
+    public var sync: SyncState?
 
     public init(
         projects: [Project] = [],
@@ -39,7 +42,8 @@ public struct PersistedState: Codable, Sendable {
         collapsedProjectIDs: Set<ProjectID> = [],
         hiddenWorkspaces: Set<WorkspaceRef> = [],
         sessionOrder: [SessionID] = [],
-        hosts: [SSHHost]? = nil
+        hosts: [SSHHost]? = nil,
+        sync: SyncState? = nil
     ) {
         self.projects = projects
         self.tombstones = tombstones
@@ -48,6 +52,7 @@ public struct PersistedState: Codable, Sendable {
         self.hiddenWorkspaces = hiddenWorkspaces
         self.sessionOrder = sessionOrder
         self.hosts = hosts
+        self.sync = sync
     }
 
     // Every field decodes with a default so state files written by older
@@ -64,6 +69,9 @@ public struct PersistedState: Codable, Sendable {
         // Lossy per record: one unreadable host must never send the whole
         // state file down the corrupt-state path.
         self.hosts = try container.decodeIfPresent([LossyHost].self, forKey: .hosts)?.compactMap(\.host)
+        // Unreadable sync state starts over (iCloud's copies then win)
+        // rather than losing the hosts and projects beside it.
+        self.sync = try? container.decodeIfPresent(SyncState.self, forKey: .sync)
     }
 
     private struct LossyHost: Decodable {
