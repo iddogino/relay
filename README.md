@@ -116,6 +116,18 @@ RELAY_VARIANT=dev CODESIGN_IDENTITY="Apple Development: …" \
   RELAY_PROVISIONING_PROFILE=path/to/profile.provisionprofile Scripts/build-app.sh
 ```
 
+That is the app distributed here, with Sparkle updates. The App Store app
+is the same UI in the App Sandbox, without Sparkle, built from an Xcode
+project that [XcodeGen](https://github.com/yonaskolb/XcodeGen) generates
+from `App/project.yml`. It syncs through the same container; its Relay
+Dev, too, in the Development environment:
+
+```sh
+brew install xcodegen
+xcodegen --spec App/project.yml
+open App/Relay.xcodeproj      # Run builds Relay Dev; Archive builds Relay
+```
+
 ## Testing
 
 ```sh
@@ -125,9 +137,9 @@ Scripts/live-e2e.sh     # live acceptance run against your two configured remote
 Scripts/live-e2e-cleanup.sh   # independent cleanup if a run crashed
 ```
 
-CI runs `swift test` (plus a release-config build) on every PR and push to
-`main`. The pinned GhosttyKit build is cached, so only the first run after a
-pin bump pays the from-source build.
+CI runs `swift test` and packages Relay.app on every PR and push to `main`,
+and builds the App Store app. The pinned GhosttyKit build is cached,
+so only the first run after a pin bump pays the from-source build.
 
 ## Releasing
 
@@ -177,6 +189,9 @@ CloudKit Console.
   itself at launch and when it comes forward.
 - `Sources/Relay` — the Mac app shell: presents `RelayUI` and adds Sparkle
   auto-updates.
+- `App/` — the App Store app's shell (an XcodeGen project): presents
+  `RelayUI` in the App Sandbox. Debug builds are Relay Dev, with its own
+  container, Keychain group and data.
 - Sessions you visit stay **warm**: the last 4 viewed sessions keep their
   ssh attachment and terminal state in the background, so switching between
   them is instant, their scrollback survives, and their sidebar titles stay

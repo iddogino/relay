@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The App Sandbox: network client access, files the user picks, and
+	     bookmarks to them (the ~/.ssh and Ghostty config grants). -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
+	<!-- Relay's SSH keys, synced through iCloud Keychain: the group every
+	     build of this bundle ID shares, the direct download included
+	     (<team>.<bundle ID>, as Info.plist's RelayKeychainAccessGroup). -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(DEVELOPMENT_TEAM).$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	</array>
+	<!-- Syncing hosts and projects (RELAY_CLOUDKIT_CONTAINER, which
+	     Info.plist names too). CloudKit's sync engine also needs push;
+	     exporting for the App Store makes it production. -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>$(RELAY_CLOUDKIT_CONTAINER)</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<key>com.apple.developer.aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>
