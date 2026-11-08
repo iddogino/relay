@@ -57,8 +57,16 @@ jobs:
           RELAY_TEST_REQUIRE_OPENSSH10: "1"
         run: swift test
 
-      - name: Build release binary
-        run: swift build -c release --product Relay
+      # The highlighter's own suite also runs on Linux (below); here it runs
+      # where the app does, including how an app finds its grammars.
+      - name: Run highlighter tests
+        working-directory: RelaySyntaxHighlighter
+        run: swift test
+
+      # Packaged as the release workflow packages it (ad hoc signed), so a
+      # resource missing from Relay.app fails here rather than in a release.
+      - name: Build Relay.app
+        run: ./Scripts/build-app.sh release
 
   # Relay's libghostty patches (patches/ghostty) carry their own Zig unit
   # tests; this runs them against the pinned Ghostty source. The Swift suite
