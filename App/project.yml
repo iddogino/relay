@@ -1,0 +1,80 @@
+# The App Store app: Relay in the App Sandbox, without Sparkle (the App
+# Store updates it). Mac only for now; iPad and iPhone will join this
+# target. It presents the package's RelayUI, as the direct download
+# (Sources/Relay, built by Scripts/build-app.sh) does.
+#
+# The Xcode project is generated, not checked in:
+#   xcodegen --spec App/project.yml && open App/Relay.xcodeproj
+#
+# Debug builds are Relay Dev (com.iddogino.Relay.dev: its own container,
+# Keychain group and data, plus the dev hooks), safe to run next to an
+# installed Relay. Release builds are Relay.
+name: Relay
+options:
+  deploymentTarget:
+    macOS: "15.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: HL9SP7TJ3J
+    # Placeholders, as in Resources/Info.plist: a release sets the version
+    # (build-app.sh's RELAY_VERSION and RELAY_BUILD_NUMBER).
+    MARKETING_VERSION: 1.0.0
+    CURRENT_PROJECT_VERSION: 1
+    # libghostty is built for Apple silicon (Scripts/build-libghostty.sh),
+    # as for the direct download.
+    ARCHS: arm64
+    SWIFT_VERSION: "6.0"
+packages:
+  Relay:
+    path: ..
+targets:
+  Relay:
+    type: application
+    platform: macOS
+    sources:
+      - RelayApp.swift
+      - ../Resources/Relay.icon
+      # Ghostty's runtime resources: themes for user configs, and the
+      # terminfo it uses locally (nothing is installed on hosts).
+      - path: ../Vendor/ghostty/zig-out/share/ghostty
+        type: folder
+        buildPhase: resources
+      - path: ../Vendor/ghostty/zig-out/share/terminfo
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: Relay
+        product: RelayUI
+    settings:
+      base:
+        INFOPLIST_FILE: Info.plist
+        PRODUCT_MODULE_NAME: RelayApp
+        ASSETCATALOG_COMPILER_APPICON_NAME: Relay
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: true
+        # Where hosts and projects sync, as for the direct download:
+        # Info.plist names it, and the entitlements allow it. Relay Dev
+        # shares it, in CloudKit's Development environment (development
+        # signing), so it never sees a release's data.
+        RELAY_CLOUDKIT_CONTAINER: iCloud.com.iddogino.Relay
+      configs:
+        Debug:
+          PRODUCT_NAME: Relay Dev
+          PRODUCT_BUNDLE_IDENTIFIER: com.iddogino.Relay.dev
+          CODE_SIGN_ENTITLEMENTS: RelayDev.entitlements
+          RELAY_DATA_DIRECTORY: Relay Dev
+          RELAY_DEV_HOOK_DIRECTORY: /private/tmp/relay-dev-hook/
+        Release:
+          PRODUCT_NAME: Relay
+          PRODUCT_BUNDLE_IDENTIFIER: com.iddogino.Relay
+          CODE_SIGN_ENTITLEMENTS: Relay.entitlements
+          RELAY_DATA_DIRECTORY: Relay
+schemes:
+  Relay:
+    build:
+      targets:
+        Relay: all
+    run:
+      config: Debug
+    archive:
+      config: Release

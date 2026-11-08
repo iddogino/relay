@@ -12,6 +12,8 @@ let package = Package(
         // build on (with libghostty's iOS slices:
         // Scripts/build-libghostty.sh --universal).
         .library(name: "RelayKit", targets: ["RelayCore", "RelaySSH", "RelayGhosttyIO", "GhosttyKit"]),
+        // The app's UI, for the App Store app (App/project.yml) to present.
+        .library(name: "RelayUI", targets: ["RelayUI"]),
     ],
     dependencies: [
         // Auto-updates. The framework is embedded into the bundle (and its

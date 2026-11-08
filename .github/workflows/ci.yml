@@ -135,6 +135,39 @@ jobs:
           sys.exit(0 if summary["result"] == "Passed" and summary["passedTests"] > 0 else 1)
           '
 
+  # The App Store app (App/project.yml): RelayUI in the App Sandbox, without
+  # Sparkle. Built unsigned; it's signed when archived for upload. macOS 26,
+  # because compiling the Icon Composer icon (Resources/Relay.icon) fails on
+  # the macOS 15 image.
+  app-store:
+    name: App Store app (Xcode)
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GhosttyKit (cached)
+        uses: ./.github/actions/ghosttykit
+
+      - name: Install XcodeGen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install xcodegen
+
+      - name: Build Relay (Release)
+        run: |
+          xcodegen --spec App/project.yml
+          xcodebuild build -project App/Relay.xcodeproj -scheme Relay -configuration Release \
+            -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath .build/xcode-app -quiet
+
+      # What this build exists for: the bundle ID, Keychain group and iCloud
+      # container every Relay build shares (the direct download's
+      # included), sandboxed, without Sparkle, with the resources.
+      - name: Check the bundle
+        run: Scripts/check-app.py Relay Release .build/xcode-app/Build/Products/Release/Relay.app
+
   # RelaySyntaxHighlighter is a standalone, pure-Swift package (no AppKit, no
   # libghostty) — so its Prism fixture suite runs on a cheap Linux runner,
   # which also guards against swift-corelibs-foundation's NSRegularExpression
