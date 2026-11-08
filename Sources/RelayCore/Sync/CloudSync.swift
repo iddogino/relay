@@ -108,19 +108,28 @@ public final class CloudSync {
     /// Sends shortly after the last of a burst of changes. The engine
     /// would send them anyway, but when the system next lets it — which
     /// can be minutes — and the user's other devices should update now.
+    ///
+    /// Detached: a change can come from inside one of the engine's
+    /// callbacks (one applied from iCloud, saved, makes the project order
+    /// change), and a task started there would carry the callback along.
+    /// CloudKit stops the app when that task sends.
     private func sendSoon() {
         guard let engine else { return }
         sendTask?.cancel()
-        sendTask = Task {
+        sendTask = Task.detached {
             try? await Task.sleep(for: .seconds(1.5))
-            guard !Task.isCancelled, engine === self.engine else { return }
-            do {
-                try await engine.sendChanges()
-            } catch is CancellationError {
-                // Stopped.
-            } catch {
-                Self.logger.error("send failed: \(error, privacy: .public)")
-            }
+            await self.send(through: engine)
+        }
+    }
+
+    private func send(through engine: CKSyncEngine) async {
+        guard !Task.isCancelled, engine === self.engine else { return }
+        do {
+            try await engine.sendChanges()
+        } catch is CancellationError {
+            // Stopped.
+        } catch {
+            Self.logger.error("send failed: \(error, privacy: .public)")
         }
     }
 
@@ -161,7 +170,9 @@ public final class CloudSync {
         isRunning = false
         operations = 0
         isSyncing = false
-        Task { await engine.cancelOperations() }
+        // Detached, as in sendSoon: this can run inside a callback
+        // (iCloud's copy found deleted).
+        Task.detached { await engine.cancelOperations() }
         Self.logger.info("sync stopped")
     }
 
