@@ -47,8 +47,11 @@ public struct KnownHosts: Sendable {
     /// known_hosts, never the user's.
     public static func trust(host: String, port: Int, presentedKey: String, in file: String) throws {
         let fields = presentedKey.split(separator: " ")
+        // One line, whatever the key came from (keys arrive synced from
+        // other devices too): a plain algorithm name, base64, a plain host.
         guard fields.count >= 2, Data(base64Encoded: String(fields[1])) != nil,
-              !host.contains(where: { $0.isWhitespace || $0 == "," }) else {
+              fields[0].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "-@.".contains($0)) }),
+              !host.contains(where: { $0.isWhitespace || $0.isNewline || $0 == "," }) else {
             throw CocoaError(.fileWriteInvalidFileName)
         }
         let path = UserHome.expand(file)
@@ -98,6 +101,19 @@ public struct KnownHosts: Sendable {
     /// `[hostname]:port` off port 22.
     public static func lookupName(host: String, port: Int) -> String {
         port == 22 ? host : "[\(host)]:\(port)"
+    }
+
+    /// The keys trusted for host:port, as `<type> <base64>` (sorted, no
+    /// duplicates, revoked keys left out): what another device needs to
+    /// trust the host too.
+    public func trustedKeys(host: String, port: Int) -> [String] {
+        let name = Self.lookupName(host: host, port: port).lowercased()
+        let matching = entries.filter { Self.matches(patterns: $0.patterns, name: name) }
+        let revoked = Set(matching.filter { $0.marker == .revoked }.map(\.key))
+        let keys = matching
+            .filter { $0.marker == .none && !revoked.contains($0.key) }
+            .map { "\($0.keyType) \($0.key.base64EncodedString())" }
+        return Array(Set(keys)).sorted()
     }
 
     /// `keyType`/`key` as in an OpenSSH public key line (algorithm name and

@@ -43,6 +43,12 @@ works without changing the remote machine in any way.
   laptop, lose Wi-Fi, quit the app — the remote work keeps running. Select the
   session again and Relay reattaches. They stay reachable from any terminal
   too: `ssh host`, `tmux attach -t rterm-…`.
+- **Sync with iCloud** (on by default; Settings ▸ iCloud, per device) keeps
+  your hosts, projects and their order, and the host keys you've trusted the
+  same on every device signed in to your Apple Account — end-to-end
+  encrypted — and host passwords and your GitHub sign-in with them, through
+  iCloud Keychain. Sessions need no syncing: every device finds them on the
+  hosts.
 
 Launch commands receive a stable environment: `RTERM_PROJECT_ID`,
 `RTERM_PROJECT_NAME`, `RTERM_PROJECT_PATH`, `RTERM_SESSION_ID`,
@@ -99,6 +105,17 @@ Scripts/build-libghostty.sh   # once: fetch pinned Ghostty + Zig, build GhosttyK
 Scripts/build-app.sh          # build build/Relay.app (release)
 ```
 
+A build syncs with iCloud when it's signed with a provisioning profile that
+includes Relay's container, `iCloud.com.iddogino.Relay` (see
+`Scripts/build-app.sh`). Relay Dev, with a development profile for
+`com.iddogino.Relay.dev`, syncs in CloudKit's Development environment, so
+it never sees a release's data:
+
+```sh
+RELAY_VARIANT=dev CODESIGN_IDENTITY="Apple Development: …" \
+  RELAY_PROVISIONING_PROFILE=path/to/profile.provisionprofile Scripts/build-app.sh
+```
+
 ## Testing
 
 ```sh
@@ -136,12 +153,28 @@ identity), `MACOS_CERTIFICATE_PASSWORD`, and `SPARKLE_ED_PRIVATE_KEY`
 `APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD` — when set, the DMG is also
 notarized and stapled.
 
+Releases sync with iCloud once the `MACOS_PROVISIONING_PROFILE` secret
+holds a Developer ID profile with iCloud — until then they build without
+it, and the workflow warns. That takes, once: iCloud (CloudKit, with the
+`iCloud.com.iddogino.Relay` container) and Push Notifications on the
+`com.iddogino.Relay` App ID; a regenerated Developer ID profile in the
+secret; and Relay's record types (`Host`, `Project`, `ProjectOrder`, made by
+Relay Dev in the Development environment) deployed to Production in the
+CloudKit Console.
+
 ## Design notes
 
 - `Sources/RelayCore` — domain model, `RuntimeProvider` abstraction, the
   SSH+tmux provider, persistence. No AppKit, no libghostty.
 - `Sources/RelayUI` — the app's UI and model: SwiftUI views, the
   libghostty adapter (`Ghostty/`), and the attach/reconnect controller.
+- `Sources/RelayCore/Sync` — iCloud sync: one record per host, project and
+  the project order, in a zone of the private database, each an encrypted
+  envelope sent by CKSyncEngine. Conflicts resolve per item, last writer
+  wins; deletions are tombstones; a host that a project on another device
+  still uses comes back. What sync knows is saved in state.json beside the
+  items. CKSyncEngine fetches only when pushed, so Relay also catches up
+  itself at launch and when it comes forward.
 - `Sources/Relay` — the Mac app shell: presents `RelayUI` and adds Sparkle
   auto-updates.
 - Sessions you visit stay **warm**: the last 4 viewed sessions keep their
