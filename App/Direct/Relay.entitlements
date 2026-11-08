@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Relay's SSH keys and passwords, synced through iCloud Keychain: the
+	     group every build of this bundle ID shares, the App Store app's
+	     included (<team>.<bundle ID>, as Info.plist's
+	     RelayKeychainAccessGroup). -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(DEVELOPMENT_TEAM).$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	</array>
+	<!-- Syncing hosts and projects (RELAY_CLOUDKIT_CONTAINER, which
+	     Info.plist names too). CloudKit's sync engine also needs push.
+	     Exporting for Developer ID makes push production and adds the
+	     Production iCloud environment (Scripts/archive-app.sh). -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>$(RELAY_CLOUDKIT_CONTAINER)</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<key>com.apple.developer.aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

@@ -2,10 +2,10 @@ import Foundation
 import Security
 import SystemConfiguration
 
-/// Which build this is. The dev variant ("Relay Dev", built with
-/// `RELAY_VARIANT=dev Scripts/build-app.sh`) installs alongside the real
-/// app: its own bundle ID (so its own UserDefaults and Keychain items), its
-/// own data folder, and no auto-updates.
+/// Which build this is. The dev variant ("Relay Dev", App/project.yml's
+/// Debug configuration) installs alongside the real app: its own bundle ID
+/// (so its own UserDefaults and Keychain items), its own data folder, and
+/// no auto-updates.
 public enum AppVariant {
     /// Folder under Application Support holding state.json and generated
     /// config files.
@@ -27,10 +27,11 @@ public enum AppVariant {
         return dataDirectory
     }()
 
-    /// Builds without a feed (the dev variant) never check for updates —
-    /// a dev build must not replace itself with a release.
+    /// Builds without a feed (the dev variant: its feed is empty) never
+    /// check for updates — a dev build must not replace itself with a
+    /// release.
     public static let updatesEnabled: Bool =
-        Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil
+        (Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String)?.isEmpty == false
 
     static let bundleIdentifier: String = Bundle.main.bundleIdentifier ?? "com.iddogino.Relay"
 

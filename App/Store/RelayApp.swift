@@ -2,7 +2,7 @@ import SwiftUI
 import RelayUI
 
 /// The App Store app: RelayUI in the App Sandbox. The App Store updates
-/// it, so unlike the direct download (Sources/Relay) it has no updater.
+/// it, so unlike the direct download (App/Direct) it has no updater.
 @main
 struct RelayApp: App {
     @State private var model: AppModel

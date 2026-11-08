@@ -63,11 +63,6 @@ jobs:
         working-directory: RelaySyntaxHighlighter
         run: swift test
 
-      # Packaged as the release workflow packages it (ad hoc signed), so a
-      # resource missing from Relay.app fails here rather than in a release.
-      - name: Build Relay.app
-        run: ./Scripts/build-app.sh release
-
   # Relay's libghostty patches (patches/ghostty) carry their own Zig unit
   # tests; this runs them against the pinned Ghostty source. The Swift suite
   # covers the same code through the C API and end to end.
@@ -135,12 +130,12 @@ jobs:
           sys.exit(0 if summary["result"] == "Passed" and summary["passedTests"] > 0 else 1)
           '
 
-  # The App Store app (App/project.yml): RelayUI in the App Sandbox, without
-  # Sparkle. Built unsigned; it's signed when archived for upload. macOS 26,
-  # because compiling the Icon Composer icon (Resources/Relay.icon) fails on
-  # the macOS 15 image.
-  app-store:
-    name: App Store app (Xcode)
+  # Both apps (App/project.yml), built unsigned as releases build them:
+  # the direct download, and the App Store app (RelayUI in the App Sandbox,
+  # without Sparkle). macOS 26, because compiling the Icon Composer icon
+  # (Resources/Relay.icon) fails on the macOS 15 image.
+  apps:
+    name: Mac apps (Xcode)
     runs-on: macos-26
     timeout-minutes: 60
     steps:
@@ -155,18 +150,21 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: brew install xcodegen
 
-      - name: Build Relay (Release)
+      # What each build exists for: the bundle ID, Keychain group and iCloud
+      # container every Relay build shares, the resources, and what sets
+      # the two apart (Scripts/check-app.py). Both are Relay.app, so each
+      # is checked, then removed, before the next is built.
+      - name: Build and check both apps (Release)
         run: |
           xcodegen --spec App/project.yml
-          xcodebuild build -project App/Relay.xcodeproj -scheme Relay -configuration Release \
-            -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO \
-            -derivedDataPath .build/xcode-app -quiet
-
-      # What this build exists for: the bundle ID, Keychain group and iCloud
-      # container every Relay build shares (the direct download's
-      # included), sandboxed, without Sparkle, with the resources.
-      - name: Check the bundle
-        run: Scripts/check-app.py Relay Release .build/xcode-app/Build/Products/Release/Relay.app
+          APP=.build/xcode-app/Build/Products/Release/Relay.app
+          for scheme in "Relay Direct" Relay; do
+            rm -rf "$APP"
+            xcodebuild build -project App/Relay.xcodeproj -scheme "$scheme" -configuration Release \
+              -destination 'generic/platform=macOS' ARCHS=arm64 CODE_SIGNING_ALLOWED=NO \
+              -derivedDataPath .build/xcode-app -quiet
+            Scripts/check-app.py "$scheme" Release "$APP"
+          done
 
   # RelaySyntaxHighlighter is a standalone, pure-Swift package (no AppKit, no
   # libghostty) — so its Prism fixture suite runs on a cheap Linux runner,

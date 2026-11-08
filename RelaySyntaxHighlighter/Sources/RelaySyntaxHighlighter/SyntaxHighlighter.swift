@@ -17,7 +17,7 @@ public final class GrammarStore: @unchecked Sendable {
     }
 
     /// The module's resource bundle. An app keeps it in its resources
-    /// (Scripts/build-app.sh and Xcode copy it there); anywhere else
+    /// (Xcode copies it there); anywhere else
     /// (`swift test`, Linux), SwiftPM's `Bundle.module` finds it in the
     /// build folder.
     ///
