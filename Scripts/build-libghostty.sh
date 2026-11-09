@@ -89,13 +89,18 @@ if [ ! -f "$ZIG_STAMP" ]; then
   echo "$ZIG_PATCH_SUM" > "$ZIG_STAMP"
 fi
 
+# Ghostty's own UI translations are off: Relay ships none of them (build-app.sh
+# takes only share/ghostty and share/terminfo), and building them needs GNU
+# gettext's msgfmt, which macOS doesn't have.
+ZIG_FLAGS=(-Di18n=false)
+
 # 3a. Or run the patches' unit tests (every test whose name mentions Manual).
 if [ "$MODE" = "test" ]; then
-  (cd "$GHOSTTY_DIR" && "$ROOT/$ZIG" build test -Dtest-filter=Manual --summary all)
+  (cd "$GHOSTTY_DIR" && "$ROOT/$ZIG" build test "${ZIG_FLAGS[@]}" -Dtest-filter=Manual --summary all)
   exit 0
 fi
 
 # 3. Build the xcframework (optimized).
-(cd "$GHOSTTY_DIR" && "$ROOT/$ZIG" build -Demit-macos-app=false -Dxcframework-target="$XCFRAMEWORK_TARGET" -Doptimize=ReleaseFast)
+(cd "$GHOSTTY_DIR" && "$ROOT/$ZIG" build "${ZIG_FLAGS[@]}" -Demit-macos-app=false -Dxcframework-target="$XCFRAMEWORK_TARGET" -Doptimize=ReleaseFast)
 
 echo "Built $GHOSTTY_DIR/macos/GhosttyKit.xcframework"

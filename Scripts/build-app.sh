@@ -71,6 +71,18 @@ if [ -d "$SHARE/terminfo" ]; then
   rsync -a --delete "$SHARE/terminfo" "$APP/Contents/Resources/"
 fi
 
+# tmux builds Relay can install on a host that has none (Scripts/build-tmux.sh).
+# Only gzip'd: no Mach-O in the bundle besides the app's own (the App Store
+# requires every one to be sandboxed) — they're unpacked on the host.
+TMUX_BUNDLE="build/tmux"
+if [ -f "$TMUX_BUNDLE/manifest.json" ]; then
+  mkdir -p "$APP/Contents/Resources/tmux"
+  cp "$TMUX_BUNDLE/manifest.json" "$TMUX_BUNDLE"/*.gz "$APP/Contents/Resources/tmux/"
+  echo "tmux: bundled $(/usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$TMUX_BUNDLE/manifest.json")"
+else
+  echo "tmux: not bundled (run Scripts/build-tmux.sh to include it)"
+fi
+
 # App icon. Resources/Relay.icon (Icon Composer) compiles into the layered
 # macOS 26+ icon — light/dark/tinted appearances — plus the flattened .icns
 # actool derives for older systems. actool understands .icon only from

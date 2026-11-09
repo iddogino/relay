@@ -18,11 +18,16 @@ struct HostEditorSheet: View {
 
     @Bindable var model: AppModel
     let mode: Mode
+    /// Open on the This Mac tab (the project editor's "Add This Mac…").
+    var startOnThisMac = false
     /// Called after a successful save (the project editor selects the new
     /// host with it).
     var onSave: ((SSHHost) -> Void)?
 
-    private enum Tab: Hashable { case importConfig, form }
+    private enum Tab: Hashable { case importConfig, form, thisMac }
+
+    /// Offered while no host is this Mac.
+    private var offersThisMac: Bool { model.thisMacHost == nil }
 
     @State private var tab: Tab = .form
     @State private var alias = ""
@@ -47,6 +52,13 @@ struct HostEditorSheet: View {
     @State private var passphrase = ""
     @State private var setupState: SetupState = .idle
     @State private var testState: TestState = .idle
+    /// Installing tmux from the "no tmux" test result.
+    @State private var tmuxInstall: TmuxInstallState = .idle
+
+    enum TmuxInstallState: Equatable {
+        case idle, installing
+        case failed(String)
+    }
     @State private var saveError: String?
     @Environment(\.dismiss) private var dismiss
 
@@ -85,6 +97,9 @@ struct HostEditorSheet: View {
                 Picker("", selection: $tab) {
                     Text("Import from SSH Config").tag(Tab.importConfig)
                     Text("New Host").tag(Tab.form)
+                    if offersThisMac || tab == .thisMac {
+                        Text("This Mac").tag(Tab.thisMac)
+                    }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -100,8 +115,15 @@ struct HostEditorSheet: View {
                     .frame(height: 300)
             case .form:
                 form
+            case .thisMac:
+                // Brings its own buttons.
+                ThisMacSetupSheet(model: model, embedded: true) { host in
+                    onSave?(host)
+                    dismiss()
+                }
             }
 
+            if tab != .thisMac {
             HStack {
                 if tab == .form {
                     testButton
@@ -124,6 +146,7 @@ struct HostEditorSheet: View {
                 }
             }
             .padding(.top, 16)
+            }
         }
         .padding(20)
         .frame(width: 520)
@@ -189,9 +212,7 @@ struct HostEditorSheet: View {
             case .password:
                 SecureField("Password", text: $password,
                             prompt: Text(hasStoredPassword ? "Saved in Keychain" : ""))
-                Text("Saved in your Keychain. Relay's built-in SSH client signs in with it.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                formCaption("Saved in your Keychain. Relay's built-in SSH client signs in with it.")
             }
         }
         .formStyle(.columns)
@@ -286,11 +307,19 @@ struct HostEditorSheet: View {
                     SecureField("Passphrase", text: $passphrase, prompt: Text("unlocks the key to copy it"))
                 }
             }
-            Text(setupExplanation)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            formCaption(setupExplanation)
         }
+    }
+
+    /// A caption row in the columns form. Its ideal width is capped so it
+    /// wraps: at its one-line width it would widen the form past the sheet,
+    /// shifting every row left and clipping them.
+    private func formCaption(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(idealWidth: 300, maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func storageOption(_ title: String, detail: String) -> some View {
@@ -498,7 +527,21 @@ struct HostEditorSheet: View {
                 notice(systemImage: "checkmark.circle.fill", tint: .green) { Text("Connected — \(version).") }
             case .noTmux:
                 notice(systemImage: "exclamationmark.triangle.fill", tint: .orange) {
-                    Text("Connected, but tmux isn't installed there. Install tmux 3.2 or newer to run sessions.")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Connected, but tmux isn't installed there. Relay can install its own copy, just for that account (in ~/.relay, no sudo).")
+                        HStack {
+                            Button("Install tmux") { Task { await installTmux() } }
+                                .disabled(tmuxInstall == .installing || AppModel.tmuxBundle == nil)
+                            if tmuxInstall == .installing { ProgressView().controlSize(.small) }
+                        }
+                        if case .failed(let message) = tmuxInstall {
+                            Text(message).foregroundStyle(.red)
+                        }
+                        if AppModel.tmuxBundle == nil {
+                            Text("This build of Relay doesn't include tmux. Install tmux 3.2 or newer on the host.")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
             case .untrustedHostKey(let presented):
                 notice(systemImage: "questionmark.circle.fill", tint: .orange) {
@@ -548,6 +591,18 @@ struct HostEditorSheet: View {
             case .needsSetup(let reason):
                 notice(systemImage: "link.badge.plus", tint: .orange) { Text(reason) }
             }
+        }
+    }
+
+    private func installTmux() async {
+        guard let subject = testSubject else { return }
+        tmuxInstall = .installing
+        do {
+            _ = try await model.installTmux(on: subject.host, password: subject.password, method: .bundled)
+            tmuxInstall = .idle
+            await runTest()
+        } catch {
+            tmuxInstall = .failed(error.localizedDescription)
         }
     }
 
@@ -672,6 +727,10 @@ struct HostEditorSheet: View {
         switch mode {
         case .create:
             authKind = model.keyStore != nil ? .relayKey : .automatic
+            if startOnThisMac && offersThisMac {
+                tab = .thisMac
+                return
+            }
             tab = SSHConfigDiscovery.discoverAliases().contains { alias in
                 !model.hosts.contains { $0.alias == alias }
             } ? .importConfig : .form

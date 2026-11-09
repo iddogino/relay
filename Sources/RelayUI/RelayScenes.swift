@@ -22,6 +22,8 @@ extension AppModel {
             pool: SSHConnectionPool(options: poolOptions),
             keyStore: keyStore,
             trustedHostsFile: AppVariant.knownHostsFile.path,
+            localIdentity: LocalSSHIdentity(port: AppVariant.localSSHPort),
+            knownHostsFiles: poolOptions.knownHostsFiles,
             passwordLookup: { SSHPasswordStore.load(alias: $0) })
         hostRegistry.onHostsChanged = { builtInSSH.hostsChanged() }
         // Secrets earlier builds kept in the login keychain move to where
@@ -72,6 +74,8 @@ public struct RelayScenes<AppMenuCommands: Commands>: Scene {
                     .tabItem { Label("Terminal", systemImage: "terminal") }
                 NotificationsSettingsView(notifier: model.agentNotifier)
                     .tabItem { Label("Notifications", systemImage: "bell.badge") }
+                ThisMacSettingsView(model: model)
+                    .tabItem { Label("This Mac", systemImage: "desktopcomputer") }
                 SyncSettingsView(model: model)
                     .tabItem { Label("iCloud", systemImage: "icloud") }
             }

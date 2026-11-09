@@ -62,6 +62,16 @@ public enum AppVariant {
         SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
     }
 
+    /// Where this Mac's own sshd listens: 22 (Remote Login). A dev build
+    /// can be pointed at a test sshd instead (`RELAY_LOCAL_SSH_PORT`, or
+    /// `RelayLocalSSHPort` in its defaults), to try This Mac without turning Remote Login on.
+    static let localSSHPort: Int = {
+        guard bundleIdentifier.hasSuffix(".dev") else { return 22 }
+        let port = Int(ProcessInfo.processInfo.environment["RELAY_LOCAL_SSH_PORT"] ?? "")
+            ?? UserDefaults.standard.integer(forKey: "RelayLocalSSHPort")
+        return (1...65535).contains(port) ? port : 22
+    }()
+
     /// Relay's own known_hosts: host keys trusted in Relay (the user's
     /// ~/.ssh/known_hosts is read but never written by the built-in client).
     static let knownHostsFile: URL = dataDirectory.appendingPathComponent("known_hosts")
