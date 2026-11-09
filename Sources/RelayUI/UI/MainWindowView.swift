@@ -26,7 +26,9 @@ struct MainWindowView: View {
         #endif
     }
 
-    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    /// Both columns from the start on an iPad (left to itself, the split
+    /// view collapses the sidebar in portrait); an iPhone stacks them.
+    @State private var columnVisibility: NavigationSplitViewVisibility = Platform.isPhone ? .automatic : .all
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
