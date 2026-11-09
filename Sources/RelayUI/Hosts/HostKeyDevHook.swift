@@ -3,6 +3,9 @@ import AppKit
 #endif
 import CryptoKit
 import SwiftUI
+#if os(macOS)
+import SystemConfiguration
+#endif
 import RelayCore
 import RelaySSH
 
@@ -270,6 +273,104 @@ enum HostKeyDevHook {
                 }
 
             #if os(macOS)
+            case "localStatus":
+                // This Mac: Remote Login, its key, the names it could go
+                // by, which saved hosts are it, and the sleep settings.
+                await model.refreshLocalIdentity(force: true)
+                result["port"] = model.localSSHPort
+                result["hostKey"] = model.localHostKey ?? ""
+                let localName = SCDynamicStoreCopyLocalHostName(nil) as String?
+                let started = ContinuousClock.now
+                result["candidates"] = await Task.detached { LocalNetworkAddresses.candidates(localHostName: localName) }.value
+                    .map { ["address": $0.address, "kind": $0.kind.rawValue] }
+                result["candidatesSeconds"] = Double((ContinuousClock.now - started).components.attoseconds) / 1e18
+                    + Double((ContinuousClock.now - started).components.seconds)
+                result["thisMac"] = model.thisMacHost?.alias ?? ""
+                result["hosts"] = model.hosts.map { host -> [String: Any] in
+                    var entry: [String: Any] = ["alias": host.alias, "hostname": host.hostname, "isThisMac": model.isThisMac(host)]
+                    if case .ready(let target)? = model.builtInSSH?.connection(for: host.alias) {
+                        entry["dials"] = "\(target.host):\(target.port)"
+                        entry["hostKeyName"] = target.hostKeyAlias.map { "\($0.host):\($0.port)" } ?? ""
+                    }
+                    return entry
+                }
+                let power = PowerSettings.read()
+                result["power"] = ["hasBattery": power.hasBattery, "onBattery": power.onBattery,
+                                   "systemSleepMinutes": power.systemSleepMinutes ?? -1,
+                                   "wakeOnLAN": power.wakeOnLAN.map { $0 ? 1 : 0 } ?? -1,
+                                   "hints": power.hints.map { "\($0.id): \($0.state)" }]
+                result["keepAwake"] = model.keepAwake.isEnabled
+                result["tmuxBundle"] = AppModel.tmuxBundle?.version ?? ""
+
+            case "keepAwake":
+                model.keepAwake.isEnabled = request["enabled"] as? Bool ?? false
+                result["keepAwake"] = model.keepAwake.isEnabled
+
+            case "localSetup":
+                // The Add This Mac sheet's flow, start to finish.
+                let setup = ThisMacSetup(model: model)
+                await setup.start()
+                result["afterStart"] = "\(setup.step)"
+                if case .details = setup.step {
+                    if let alias = request["alias"] as? String { setup.alias = alias }
+                    if let address = request["address"] as? String { setup.address = address }
+                    setup.password = request["password"] as? String ?? ""
+                    setup.bootstrapKeyFile = request["keyFile"] as? String
+                    await setup.connect()
+                    if case .needsTmux = setup.step, request["installTmux"] as? Bool == true {
+                        await setup.installTmux(.bundled)
+                    }
+                }
+                result["step"] = "\(setup.step)"
+                result["error"] = setup.errorMessage ?? ""
+                result["installedTmux"] = setup.installedTmux ?? ""
+                result["address"] = setup.address
+                result["keyStorage"] = setup.keyStorage.map { "\($0)" } ?? "none"
+
+            case "tmuxProbe":
+                let host = try savedHost(model, request)
+                result["platform"] = "\(try await model.probeTmux(on: host))"
+
+            case "tmuxInstall":
+                let host = try savedHost(model, request)
+                result["version"] = try await model.installTmux(
+                    on: host, method: request["method"] as? String == "packageManager" ? .packageManager : .bundled)
+
+            case "renderThisMac":
+                // This Mac's settings pane and setup sheet, drawn in an
+                // invisible window.
+                let shots = dir.appendingPathComponent("window-shots", isDirectory: true)
+                try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
+                let panes: [(String, AnyView)] = [
+                    ("this-mac", AnyView(ThisMacSettingsView(model: model))),
+                    ("this-mac-setup", AnyView(ThisMacSetupSheet(model: model))),
+                    ("hosts", AnyView(HostsSettingsView(model: model))),
+                ]
+                var written: [String] = []
+                for (name, view) in panes {
+                    let hosting = NSHostingView(rootView: view)
+                    let window = NSWindow(
+                        contentRect: NSRect(x: 0, y: 0, width: 600, height: 560), styleMask: [.borderless],
+                        backing: .buffered, defer: false)
+                    window.isReleasedWhenClosed = false
+                    window.backgroundColor = .windowBackgroundColor
+                    window.alphaValue = 0
+                    window.contentView = hosting
+                    window.orderFrontRegardless()
+                    try await Task.sleep(for: .milliseconds(2500))
+                    window.setContentSize(hosting.fittingSize)
+                    hosting.layoutSubtreeIfNeeded()
+                    try await Task.sleep(for: .milliseconds(300))
+                    let frame = window.contentView?.superview ?? hosting
+                    if let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) {
+                        frame.cacheDisplay(in: frame.bounds, to: rep)
+                        try rep.representation(using: .png, properties: [:])?.write(to: shots.appendingPathComponent("\(name).png"))
+                        written.append("\(name).png")
+                    }
+                    window.orderOut(nil)
+                }
+                result["shots"] = written
+
             case "showSettings":
                 NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
                 result["shown"] = true
@@ -300,6 +401,7 @@ enum HostKeyDevHook {
                     ("terminal", AnyView(TerminalSettingsView())),
                     ("terminal-ghostty", AnyView(TerminalSettingsView(selecting: TerminalConfig.ghosttyFiles.first))),
                     ("add-host", AnyView(HostEditorSheet(model: model, mode: .create))),
+                    ("add-host-this-mac", AnyView(HostEditorSheet(model: model, mode: .create, startOnThisMac: true))),
                 ]
                 var written: [String] = []
                 for (name, view) in panes {

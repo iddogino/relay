@@ -130,6 +130,11 @@ Relay Dev signs with your development profile for `com.iddogino.Relay.dev`
 container, `iCloud.com.iddogino.Relay`, in CloudKit's Development
 environment, so it never sees a release's data.
 
+`Scripts/build-tmux.sh` (needs Docker) builds the tmux Relay can install
+on hosts that have none, into `build/tmux`: static Linux builds and a
+universal macOS one, gzip'd. Both apps bundle it when it's there; without
+it, Relay offers only the host's package manager.
+
 `Scripts/archive-app.sh` builds `build/Relay.app` as a release ships it:
 archived and exported Developer ID-signed. It needs the Developer ID
 certificate and the "Relay Developer ID" profile, as the release workflow

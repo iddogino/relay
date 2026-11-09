@@ -15,7 +15,15 @@ struct ProjectEditorSheet: View {
     /// The host the project lives on. Picked at creation; fixed afterwards
     /// (a project's sessions live on its host — moving it is meaningless).
     @State private var workspace: WorkspaceRef?
-    @State private var addHostPresented = false
+    /// The Add Host sheet, opened on its This Mac tab or not. An item
+    /// rather than a flag: with `isPresented`, the sheet could open with
+    /// the previous tab choice.
+    @State private var addHost: AddHostRequest?
+
+    private enum AddHostRequest: Identifiable {
+        case host, thisMac
+        var id: Self { self }
+    }
     @State private var validating = false
     @State private var validationError: String?
     @FocusState private var nameFocused: Bool
@@ -36,14 +44,15 @@ struct ProjectEditorSheet: View {
     /// Picker sentinel for the "Add Host…" item (never a real alias:
     /// aliases can't contain spaces).
     private static let addHostTag = WorkspaceRef(provider: .sshTmux, opaqueID: " add-host")
+    private static let addThisMacTag = WorkspaceRef(provider: .sshTmux, opaqueID: " add-this-mac")
 
     /// Picking "Add Host…" opens the host sheet instead of selecting.
     private var hostSelection: Binding<WorkspaceRef?> {
         Binding(
             get: { workspace },
             set: { newValue in
-                if newValue == Self.addHostTag {
-                    addHostPresented = true
+                if newValue == Self.addHostTag || newValue == Self.addThisMacTag {
+                    addHost = newValue == Self.addThisMacTag ? .thisMac : .host
                 } else {
                     workspace = newValue
                 }
@@ -60,7 +69,7 @@ struct ProjectEditorSheet: View {
             }
         }
         .onAppear(perform: populate)
-        .sheet(isPresented: $addHostPresented) {
+        .sheet(item: $addHost) { _ in
             HostEditorSheet(model: model, mode: .create) { host in
                 workspace = host.workspace
             }
@@ -82,11 +91,19 @@ struct ProjectEditorSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
+                    // Once per render: each check reads known_hosts.
+                    let thisMac = model.thisMacHost?.workspace
                     Picker("Host", selection: hostSelection) {
                         ForEach(model.remotes) { remote in
-                            Text(remote.displayName).tag(Optional(remote.id))
+                            Text(thisMac == remote.id ? "\(remote.displayName) (This Mac)" : remote.displayName)
+                                .tag(Optional(remote.id))
                         }
                         if !model.remotes.isEmpty { Divider() }
+                        #if os(macOS)
+                        if thisMac == nil {
+                            Text("Add This Mac…").tag(Optional(Self.addThisMacTag))
+                        }
+                        #endif
                         Text("Add Host…").tag(Optional(Self.addHostTag))
                     }
                 }
@@ -182,8 +199,8 @@ struct ProjectEditorSheet: View {
         .frame(width: embedded ? nil : 480)
         .onAppear(perform: populate)
         .task { nameFocused = true }
-        .sheet(isPresented: $addHostPresented) {
-            HostEditorSheet(model: model, mode: .create) { host in
+        .sheet(item: $addHost) { request in
+            HostEditorSheet(model: model, mode: .create, startOnThisMac: request == .thisMac) { host in
                 workspace = host.workspace
             }
         }

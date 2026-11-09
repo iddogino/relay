@@ -27,13 +27,36 @@ public struct SSHTarget: Sendable, Hashable {
     /// first is reached directly, each next one — and finally this target
     /// — through a TCP forward over the previous connection.
     public var jumps: [SSHTarget]
+    /// The name and port the host key is checked under, when it isn't the
+    /// address dialed (OpenSSH's HostKeyAlias): a host reached over
+    /// loopback because it's this Mac is still checked against the key
+    /// trusted for its own name.
+    public var hostKeyAlias: HostKeyAlias?
 
-    public init(host: String, port: Int = 22, username: String, credentials: Credentials, jumps: [SSHTarget] = []) {
+    public struct HostKeyAlias: Sendable, Hashable {
+        public var host: String
+        public var port: Int
+        public init(host: String, port: Int) {
+            self.host = host
+            self.port = port
+        }
+    }
+
+    public init(
+        host: String, port: Int = 22, username: String, credentials: Credentials, jumps: [SSHTarget] = [],
+        hostKeyAlias: HostKeyAlias? = nil
+    ) {
         self.host = host
         self.port = port
         self.username = username
         self.credentials = credentials
         self.jumps = jumps
+        self.hostKeyAlias = hostKeyAlias
+    }
+
+    /// Where the host key is looked up.
+    var hostKeyName: (host: String, port: Int) {
+        hostKeyAlias.map { ($0.host, $0.port) } ?? (host, port)
     }
 }
 
@@ -116,7 +139,7 @@ final class SSHConnection: @unchecked Sendable {
         let failure = FailureBox()
         let authenticated = group.next().makePromise(of: Void.self)
         let userAuth = OfferingAuthDelegate(username: target.username, offers: offers, failure: failure)
-        let serverAuth = KnownHostsDelegate(host: target.host, port: target.port, knownHosts: knownHosts, failure: failure)
+        let serverAuth = KnownHostsDelegate(host: target.hostKeyName.host, port: target.hostKeyName.port, knownHosts: knownHosts, failure: failure)
 
         var bootstrap = ClientBootstrap(group: group)
             .connectTimeout(connectTimeout)
@@ -167,7 +190,7 @@ final class SSHConnection: @unchecked Sendable {
         let failure = FailureBox()
         let authenticated = jump.channelEventLoop.makePromise(of: Void.self)
         let userAuth = OfferingAuthDelegate(username: target.username, offers: offers, failure: failure)
-        let serverAuth = KnownHostsDelegate(host: target.host, port: target.port, knownHosts: knownHosts, failure: failure)
+        let serverAuth = KnownHostsDelegate(host: target.hostKeyName.host, port: target.hostKeyName.port, knownHosts: knownHosts, failure: failure)
         let forward = SSHChannelType.DirectTCPIP(
             targetHost: target.host, targetPort: target.port,
             originatorAddress: try SocketAddress(ipAddress: "127.0.0.1", port: 0))

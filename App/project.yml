@@ -64,6 +64,25 @@ targetTemplates:
     dependencies:
       - package: Relay
         product: RelayUI
+    postCompileScripts:
+      # The tmux builds Relay can install on a host that has none
+      # (Scripts/build-tmux.sh), when they've been built. gzip'd only: the
+      # bundle holds no Mach-O besides the app's own (the App Store requires
+      # every one to be sandboxed); they're unpacked on the host. A script,
+      # not a folder resource, as the folder may not exist.
+      - name: Bundle tmux
+        basedOnDependencyAnalysis: false
+        script: |
+          src="$SRCROOT/../build/tmux"
+          dst="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/tmux"
+          rm -rf "$dst"
+          if [ -f "$src/manifest.json" ]; then
+            mkdir -p "$dst"
+            cp "$src/manifest.json" "$src"/*.gz "$dst/"
+            echo "tmux: bundled from $src"
+          else
+            echo "tmux: not bundled (run Scripts/build-tmux.sh to include it)"
+          fi
     info:
       path: Generated/${target_name}-Info.plist
       properties:
@@ -86,6 +105,9 @@ targetTemplates:
         PRODUCT_MODULE_NAME: RelayApp
         ASSETCATALOG_COMPILER_APPICON_NAME: Relay
         ENABLE_HARDENED_RUNTIME: true
+        # "Bundle tmux" reads build/tmux, outside what a sandboxed script
+        # may.
+        ENABLE_USER_SCRIPT_SANDBOXING: false
         # Where hosts and projects sync. Relay Dev shares it, in CloudKit's
         # Development environment (development signing), so it never sees
         # a release's data.

@@ -20,6 +20,17 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
     private let passwordLookup: @Sendable (String) -> String?
     private let lock = NSLock()
     private var passwords: [String: String?] = [:]
+    /// This Mac's own sshd, when it's known: hosts that are this Mac are
+    /// reached over loopback.
+    public let localIdentity: LocalSSHIdentity?
+    /// Where trusted host keys are read from (to tell a host is this Mac).
+    private let knownHostsFiles: [String]
+    private var knownHostsCache: (hosts: KnownHosts, stamps: [Date?])?
+
+    private static func modificationStamp(_ path: String) -> Date? {
+        let expanded = (path as NSString).expandingTildeInPath
+        return (try? FileManager.default.attributesOfItem(atPath: expanded))?[.modificationDate] as? Date
+    }
 
     static let logger = Logger(subsystem: "com.iddogino.Relay", category: "ssh")
 
@@ -28,8 +39,12 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
         pool: SSHConnectionPool = .shared,
         keyStore: (any SSHKeyStore)? = nil,
         trustedHostsFile: String? = nil,
+        localIdentity: LocalSSHIdentity? = nil,
+        knownHostsFiles: [String] = KnownHosts.defaultFiles,
         passwordLookup: @escaping @Sendable (String) -> String?
     ) {
+        self.localIdentity = localIdentity
+        self.knownHostsFiles = knownHostsFiles
         self.registry = registry
         self.pool = pool
         self.keyStore = keyStore
@@ -52,9 +67,60 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
         guard let host = registry.host(alias: alias) else {
             return .needsSetup("Relay doesn\u{2019}t have a host named \u{201C}\(alias)\u{201D}.")
         }
-        return Self.connection(
+        let connection = Self.connection(
             for: host, hosts: { self.registry.host(alias: $0) }, password: { self.password(for: $0) },
             hasStoredKey: { self.keyStore?.signingKey(id: $0) != nil })
+        guard case .ready(let target) = connection, let identity = localIdentity, isThisMac(host) else {
+            return connection
+        }
+        return .ready(Self.loopback(target, host: host, port: identity.port))
+    }
+
+    /// Where a host that may not be saved (or saved differently) would
+    /// connect, signing in with `password` when it's a password host.
+    /// Jump hosts are the saved ones. No loopback: it's for trying out
+    /// settings as they're typed.
+    public func connection(for host: SSHHost, password: String?) -> Connection {
+        let connection = Self.connection(
+            for: host, hosts: { self.registry.host(alias: $0) },
+            password: { $0 == host.alias ? password : self.password(for: $0) },
+            hasStoredKey: { self.keyStore?.signingKey(id: $0) != nil })
+        guard case .ready(let target) = connection, let identity = localIdentity, isThisMac(host) else {
+            return connection
+        }
+        return .ready(Self.loopback(target, host: host, port: identity.port))
+    }
+
+    /// Whether the saved host `alias` is this Mac: the host key trusted for
+    /// it is the one this Mac's sshd presents. Worked out each time (no
+    /// flag on the host), so it's right on every device and for hosts added
+    /// by hand.
+    public func isThisMac(alias: String) -> Bool {
+        registry.host(alias: alias).map(isThisMac) ?? false
+    }
+
+    func isThisMac(_ host: SSHHost) -> Bool {
+        guard let localKey = localIdentity?.hostKey else { return false }
+        // Reloaded when a file changes, as when `ssh` in a terminal
+        // trusts a key, not only when Relay's hosts do.
+        let stamps = knownHostsFiles.map(Self.modificationStamp)
+        let knownHosts = lock.withLock {
+            if let knownHostsCache, knownHostsCache.stamps == stamps { return knownHostsCache.hosts }
+            let loaded = KnownHosts.load(files: knownHostsFiles)
+            knownHostsCache = (loaded, stamps)
+            return loaded
+        }
+        return LocalSSHIdentity.matches(
+            trustedKeys: knownHosts.trustedKeys(host: host.hostname, port: host.port ?? 22), localKey: localKey)
+    }
+
+    /// `target` (a host that is this Mac) reached over loopback instead:
+    /// no jump hosts, and its host key still checked under the host's own
+    /// name. Pure; unit-tested.
+    static func loopback(_ target: SSHTarget, host: SSHHost, port: Int) -> SSHTarget {
+        SSHTarget(
+            host: "127.0.0.1", port: port, username: target.username, credentials: target.credentials,
+            jumps: [], hostKeyAlias: .init(host: host.hostname, port: host.port ?? 22))
     }
 
     /// Why Relay can't connect to `alias` as it's set up, or nil.
@@ -164,7 +230,10 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
     /// Host settings or saved passwords changed: forget cached passwords so
     /// the next command re-evaluates every host.
     public func hostsChanged() {
-        lock.withLock { passwords = [:] }
+        lock.withLock {
+            passwords = [:]
+            knownHostsCache = nil
+        }
     }
 
     /// The "needs setup" reason for a connection failure, or nil when it's

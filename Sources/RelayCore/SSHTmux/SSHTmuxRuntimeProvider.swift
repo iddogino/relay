@@ -54,7 +54,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             throw RuntimeProviderError.prerequisiteMissing(
                 workspace: alias,
                 what: "tmux",
-                remedy: "Install tmux on the remote host, then retry."
+                remedy: "Install tmux on the host — Settings ▸ Hosts ▸ Edit ▸ Test Connection can install it for you — then retry."
             )
         case (22, _), (_, "no_dir"):
             throw RuntimeProviderError.pathInvalid(workspace: alias, path: project.pathInput)
@@ -220,7 +220,7 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
             case (21, _), (_, "no_tmux"):
                 throw RuntimeProviderError.prerequisiteMissing(
                     workspace: alias, what: "tmux",
-                    remedy: "Install tmux on the remote host, then retry."
+                    remedy: "Install tmux on the host — Settings ▸ Hosts ▸ Edit ▸ Test Connection can install it for you — then retry."
                 )
             case (22, _), (_, "no_dir"):
                 throw RuntimeProviderError.pathInvalid(workspace: alias, path: project.resolvedPath)

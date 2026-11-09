@@ -215,6 +215,7 @@ public final class AppModel {
         cloudSync.onCloudDataDeleted = { [weak self] in self?.syncEnabled = false }
 
         Task { await self.bootstrap() }
+        Task { await self.refreshLocalIdentity(force: true) }
         Task { await self.recheckGitHubAuth() }
 
         agentNotifier.onOpen = { [weak self] id in
@@ -229,6 +230,8 @@ public final class AppModel {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.applicationDidActivate()
+                // Remote Login may have been turned on or off meanwhile.
+                Task { await self?.refreshLocalIdentity() }
             }
         }
 
@@ -1097,6 +1100,14 @@ public final class AppModel {
     /// Turns each machine's reports into "needs you" / "finished" alerts.
     private var agentAlerts: [WorkspaceRef: AgentAlertTracker] = [:]
     let agentNotifier = AgentNotifier()
+    #if os(macOS)
+    let keepAwake = KeepAwake()
+    #endif
+    /// The host key this Mac's own sshd presents (Remote Login on), or nil.
+    /// Hosts trusted with this key are this Mac (`isThisMac`). The
+    /// observable copy of `LocalSSHIdentity.hostKey`, set only by
+    /// `refreshLocalIdentity`, so views update when Remote Login changes.
+    var localHostKey: String?
 
     /// What the agent in this session is doing, or nil (no agent, no
     /// reporter, or no current data).

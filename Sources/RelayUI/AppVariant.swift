@@ -1,4 +1,5 @@
 import Foundation
+import RelayCore
 import Security
 #if os(macOS)
 import SystemConfiguration
@@ -76,6 +77,26 @@ public enum AppVariant {
         SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
         #else
         UIDevice.current.name
+        #endif
+    }
+
+    /// Where this Mac's own sshd listens: 22 (Remote Login). A dev build
+    /// can be pointed at a test sshd instead (`RELAY_LOCAL_SSH_PORT`, or
+    /// `RelayLocalSSHPort` in its defaults), to try This Mac without turning Remote Login on.
+    static let localSSHPort: Int = {
+        guard bundleIdentifier.hasSuffix(".dev") else { return 22 }
+        let port = Int(ProcessInfo.processInfo.environment["RELAY_LOCAL_SSH_PORT"] ?? "")
+            ?? UserDefaults.standard.integer(forKey: "RelayLocalSSHPort")
+        return (1...65535).contains(port) ? port : 22
+    }()
+
+    /// This Mac's own sshd, for telling which hosts are this Mac. None on
+    /// iOS: an iPhone or iPad isn't a host.
+    static var localIdentity: LocalSSHIdentity? {
+        #if os(macOS)
+        LocalSSHIdentity(port: localSSHPort)
+        #else
+        nil
         #endif
     }
 
