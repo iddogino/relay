@@ -89,7 +89,7 @@ if [ ! -f "$ZIG_STAMP" ]; then
   echo "$ZIG_PATCH_SUM" > "$ZIG_STAMP"
 fi
 
-# Ghostty's own UI translations are off: Relay ships none of them (build-app.sh
+# Ghostty's own UI translations are off: Relay ships none of them (App/project.yml
 # takes only share/ghostty and share/terminfo), and building them needs GNU
 # gettext's msgfmt, which macOS doesn't have.
 ZIG_FLAGS=(-Di18n=false)
