@@ -47,8 +47,15 @@ final class ScreensUITests: RelayUITestCase {
                 dismissSheet()
                 XCTAssertTrue(editor.waitForNonExistence(timeout: 5), "the host editor didn't close")
             }
-            app.navigationBars.buttons.element(boundBy: 0).tap()
-            XCTAssertTrue(settings.waitForExistence(timeout: 5), "didn't get back to Settings from \(pane)")
+            // Back (retried: a bar that's still going away can take the tap).
+            for _ in 0..<3 where !settings.exists {
+                let bar = app.navigationBars[pane]
+                guard bar.waitForExistence(timeout: 3) else { break }
+                let back = bar.buttons["BackButton"].firstMatch
+                (back.exists ? back : bar.buttons.element(boundBy: 0)).tap()
+                _ = settings.waitForExistence(timeout: 3)
+            }
+            XCTAssertTrue(settings.exists, "didn't get back to Settings from \(pane)")
         }
         dismissSheet()
     }

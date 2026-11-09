@@ -47,12 +47,18 @@ class RelayUITestCase: XCTestCase {
         let row = app.staticTexts[name ?? sessionName].firstMatch
         // The app reopens the session last open once it has loaded, which
         // can be after the list shows: back to the list whenever it does.
+        // (Existence, not hittability: XCTest fails a test that asks
+        // whether something mid-animation is hittable.)
+        let phone = UIDevice.current.userInterfaceIdiom == .phone
+        var listShown: Bool { row.exists && !(phone && terminal.exists) }
         let deadline = Date().addingTimeInterval(20)
-        while !row.isHittable, Date() < deadline {
-            if terminal.exists { showList() }
+        while !listShown, Date() < deadline {
+            if phone && terminal.exists { showList() }
             RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         }
-        XCTAssertTrue(row.isHittable, "no row for the session", file: file, line: line)
+        XCTAssertTrue(listShown, "no row for the session", file: file, line: line)
+        // Settled (the list may still be sliding in).
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
         row.tap()
         XCTAssertTrue(terminal.waitForExistence(timeout: 20), "no terminal", file: file, line: line)
         waitForScreen(containing: "%", timeout: 20, file: file, line: line)
