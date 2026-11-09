@@ -10,17 +10,21 @@ struct HostsSettingsView: View {
     @State private var selection: String?
     @State private var editor: EditorRequest?
     @State private var confirmRemove: SSHHost?
+    @State private var thisMacSetup = false
 
     private var selectedHost: SSHHost? {
         model.hosts.first { $0.alias == selection }
     }
 
     var body: some View {
+        // Once per render: each check reads known_hosts.
+        let thisMacAlias = model.thisMacHost?.alias
         VStack(alignment: .leading, spacing: 8) {
             List(model.hosts, selection: $selection) { host in
                 HostRow(
                     host: host, projectCount: model.projects(on: host).count,
-                    key: model.relayKey(for: host), problem: model.connectionProblem(host))
+                    key: model.relayKey(for: host), problem: model.connectionProblem(host),
+                    isThisMac: host.alias == thisMacAlias)
                     .tag(host.alias)
                     .contextMenu {
                         Button("Edit…") { edit(host) }
@@ -61,6 +65,9 @@ struct HostsSettingsView: View {
                     if let host = selectedHost { edit(host) }
                 }
                 .disabled(selectedHost == nil)
+                if thisMacAlias == nil {
+                    Button("Add This Mac\u{2026}") { thisMacSetup = true }
+                }
                 Spacer()
                 Text("Relay connects with exactly these settings.")
                     .font(.caption)
@@ -82,6 +89,9 @@ struct HostsSettingsView: View {
             HostEditorSheet(model: model, mode: request.mode) { saved in
                 selection = saved.alias
             }
+        }
+        .sheet(isPresented: $thisMacSetup) {
+            ThisMacSetupSheet(model: model)
         }
         .confirmationDialog(
             "Remove \(confirmRemove?.alias ?? "")?",
@@ -118,13 +128,25 @@ private struct HostRow: View {
     let key: SSHKeyInfo?
     /// Why Relay can't connect to it from this Mac, if it can't.
     let problem: String?
+    /// The host is this Mac (reached over loopback here).
+    var isThisMac = false
 
     var body: some View {
         HStack {
-            Image(systemName: "server.rack")
+            Image(systemName: isThisMac ? "laptopcomputer" : "server.rack")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text(host.alias).fontWeight(.medium)
+                HStack(spacing: 6) {
+                    Text(host.alias).fontWeight(.medium)
+                    if isThisMac {
+                        Text("This Mac")
+                            .font(.caption2.weight(.medium))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(.quaternary, in: Capsule())
+                            .help("Relay reaches this host over loopback: its identity is this Mac\u{2019}s own.")
+                    }
+                }
                 Text(host.summary + authCaption + (host.proxyJump.map { " · through \($0)" } ?? ""))
                     .font(.caption)
                     .foregroundStyle(.secondary)

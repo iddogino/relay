@@ -33,14 +33,20 @@ enum SSHTmuxScripts {
     /// covering login-manager PATHs that non-interactive SSH doesn't get
     /// (Homebrew, MacPorts, local installs).
     static let resolveTmuxFragment = """
+    \(findTmuxFunction)
+    tmux_path=$(find_tmux) || { printf 'RTERM_STATUS=no_tmux\\n'; exit 21; }
+    """
+
+    /// `find_tmux`: prints the tmux to use, or fails. The last place it
+    /// looks is the tmux Relay installs itself (`TmuxInstaller`).
+    static let findTmuxFunction = """
     find_tmux() {
       if command -v tmux >/dev/null 2>&1; then command -v tmux; return 0; fi
-      for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux /opt/local/bin/tmux /usr/pkg/bin/tmux "$HOME/.local/bin/tmux" "$HOME/bin/tmux"; do
+      for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux /opt/local/bin/tmux /usr/pkg/bin/tmux "$HOME/.local/bin/tmux" "$HOME/bin/tmux" "$HOME/.relay/bin/tmux"; do
         if [ -x "$p" ]; then printf '%s\\n' "$p"; return 0; fi
       done
       return 1
     }
-    tmux_path=$(find_tmux) || { printf 'RTERM_STATUS=no_tmux\\n'; exit 21; }
     """
 
     /// Prefers a previously validated tmux path, falling back to discovery.

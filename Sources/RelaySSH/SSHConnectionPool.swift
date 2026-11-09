@@ -328,6 +328,24 @@ public actor SSHConnectionPool {
         connection.close()
     }
 
+    /// The host key `host:port` presents, read from the start of a
+    /// handshake that's then abandoned (nothing is signed in, nothing
+    /// trusted). nil when nothing answers there or it isn't SSH.
+    public func probeHostKey(host: String, port: Int, timeout: TimeAmount = .seconds(3)) async -> String? {
+        let target = SSHTarget(host: host, port: port, username: "relay-probe", credentials: .automatic)
+        do {
+            let connection = try await SSHConnection.connect(
+                target: target, offers: [], knownHosts: KnownHosts.load(files: []), group: group,
+                connectTimeout: timeout, handshakeTimeout: timeout)
+            connection.close()
+            return nil
+        } catch SSHClientError.hostKeyNotTrusted(_, let presented) {
+            return presented
+        } catch {
+            return nil
+        }
+    }
+
     private func connect(_ target: SSHTarget) async throws -> SSHConnection {
         let offers = Self.authOffers(
             for: target.credentials, agent: options.agent, defaultKeyFiles: options.defaultKeyFiles,
@@ -343,7 +361,7 @@ public actor SSHConnectionPool {
         // channel of until this connection closes.
         let hop = SSHTarget(
             host: last.host, port: last.port, username: last.username, credentials: last.credentials,
-            jumps: Array(target.jumps.dropLast()))
+            jumps: Array(target.jumps.dropLast()), hostKeyAlias: last.hostKeyAlias)
         let slot: Slot
         do {
             (slot, _) = try await acquire(hop)
