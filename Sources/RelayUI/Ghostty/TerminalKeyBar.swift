@@ -9,6 +9,10 @@ import UIKit
 /// Control and Option apply to the next key, from here or the keyboard:
 /// tap to arm one for one key, double-tap to keep it on, tap again to
 /// release. Arrows and Backspace repeat while held.
+///
+/// The keys scroll sideways where they don't fit (most of them, on an
+/// iPhone), faded at an edge with more past it. A swipe that starts on a
+/// key scrolls rather than pressing it.
 final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
     enum Key: Equatable {
         case named(TerminalKey.Named)
@@ -18,12 +22,14 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
 
     weak var terminal: TerminalSurfaceView?
 
+    private let scroll = KeyBarScrollView()
     private let stack = UIStackView()
+    private let fade = CAGradientLayer()
     private var modifierButtons: [StickyModifier: UIButton] = [:]
     private var repeatTimer: Timer?
 
-    /// In order of need: on an iPhone, the keys up to the arrows fit
-    /// without scrolling.
+    /// In order of need: on most iPhones the keys up to the arrows fit, with
+    /// the edge of the next showing; the rest scroll into reach.
     static let keys: [Key] = [
         .named(.escape), .named(.tab), .modifier(.control),
         .named(.left), .named(.down), .named(.up), .named(.right),
@@ -52,15 +58,19 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
     }
 
     private func build(height: CGFloat) {
-        let scroll = UIScrollView()
         scroll.showsHorizontalScrollIndicator = false
-        scroll.alwaysBounceHorizontal = true
-        scroll.delaysContentTouches = false
+        scroll.accessibilityIdentifier = "keybar.keys"
+        // Touches wait a moment before reaching a key: long enough to tell a
+        // swipe from a press, which then scrolls instead.
+        scroll.delaysContentTouches = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.didLayout = { [weak self] in self?.updateFade() }
+        fade.startPoint = CGPoint(x: 0, y: 0.5)
+        fade.endPoint = CGPoint(x: 1, y: 0.5)
         addSubview(scroll)
 
         stack.axis = .horizontal
-        stack.spacing = Self.isPhone ? 5 : 6
+        stack.spacing = Self.isPhone ? 4 : 6
         stack.alignment = .center
         stack.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(stack)
@@ -122,6 +132,28 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         ])
     }
 
+    /// Fades the keys out at an edge with more keys past it.
+    private func updateFade() {
+        let width = scroll.bounds.width
+        let offset = scroll.contentOffset.x
+        let before = offset > 1
+        let after = offset + width < scroll.contentSize.width - 1
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if width > 0, before || after {
+            // The mask is in the scroller's own coordinates, which scroll.
+            fade.frame = scroll.bounds
+            let edge = min(12, width / 4) / width
+            fade.locations = [0, NSNumber(value: edge), NSNumber(value: 1 - edge), 1]
+            let opaque = UIColor.black.cgColor, clear = UIColor.clear.cgColor
+            fade.colors = [before ? clear : opaque, opaque, opaque, after ? clear : opaque]
+            scroll.layer.mask = fade
+        } else {
+            scroll.layer.mask = nil
+        }
+        CATransaction.commit()
+    }
+
     // MARK: Keys
 
     private static let keyHeight: CGFloat = 36
@@ -163,7 +195,7 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         configuration.baseBackgroundColor = Self.keyColor
         configuration.baseForegroundColor = .label
         configuration.cornerStyle = .medium
-        let inset: CGFloat = Self.isPhone ? 7 : 10
+        let inset: CGFloat = Self.isPhone ? (image == nil ? 7 : 5) : 10
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: inset, bottom: 0, trailing: inset)
         if let image {
             configuration.image = UIImage(systemName: image, withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .medium))
@@ -177,7 +209,7 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         button.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             button.heightAnchor.constraint(equalToConstant: Self.keyHeight),
-            button.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.isPhone ? 34 : 40),
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.isPhone ? 32 : 40),
         ])
         // Like a keyboard's keys: a hairline shadow underneath.
         button.layer.shadowColor = UIColor.black.cgColor
@@ -187,8 +219,9 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         return button
     }
 
-    /// Fires `action` on touch down (keys act when pressed, as on a
-    /// keyboard), repeating while held when `repeats`.
+    /// Fires `action` when the key is released, as a keyboard's keys do;
+    /// when `repeats`, when it's pressed instead, then repeating while held.
+    /// Either way, a swipe across the keys cancels it.
     private func wire(_ button: UIButton, repeats: Bool, action: @escaping @MainActor () -> Void) {
         button.addAction(UIAction { [weak self] _ in
             UIDevice.current.playInputClick()
@@ -202,7 +235,8 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
                     }
                 }
             }
-        }, for: .touchDown)
+        }, for: repeats ? .touchDown : .touchUpInside)
+        guard repeats else { return }
         for event: UIControl.Event in [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit] {
             button.addAction(UIAction { [weak self] _ in
                 self?.repeatTimer?.invalidate()
@@ -289,6 +323,21 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         case .pageUp: return "Page Up"
         case .pageDown: return "Page Down"
         }
+    }
+}
+
+/// The key bar's scroller.
+private final class KeyBarScrollView: UIScrollView {
+    /// After each layout, which scrolling also causes.
+    var didLayout: (() -> Void)?
+
+    /// A drag that starts on a key scrolls too. (By default a scroll view
+    /// never takes back a touch from a control.)
+    override func touchesShouldCancel(in view: UIView) -> Bool { true }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        didLayout?()
     }
 }
 

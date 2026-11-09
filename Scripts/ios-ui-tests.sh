@@ -149,6 +149,14 @@ for kind in $DEVICES; do
   device="$(xcrun simctl create "Relay UI Tests $kind" "$type" "$runtime")"
   CREATED_DEVICES=("$device")
   xcrun simctl boot "$device"
+  if [ "$kind" = phone ]; then
+    # A Japanese keyboard too, for composing (TerminalUITests); the list of
+    # keyboards is read at boot.
+    xcrun simctl spawn "$device" defaults write -g AppleKeyboards -array \
+      "en_US@sw=QWERTY;hw=Automatic" "ja_JP-Romaji@sw=QWERTY-Japanese;hw=Automatic"
+    xcrun simctl shutdown "$device"
+    xcrun simctl boot "$device"
+  fi
   echo "$kind: $type on $runtime ($device)"
 
   xcrun simctl install "$device" "$APP"

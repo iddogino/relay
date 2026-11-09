@@ -10,11 +10,13 @@ import UniformTypeIdentifiers
 /// it adds to this view's, the program's output comes in through the I/O,
 /// and input goes out as libghostty key and mouse events.
 ///
-/// Input: the software keyboard (`UIKeyInput`) plus `TerminalKeyBar`
-/// above it; hardware keyboards key by key (`pressesBegan`), with ⌘
-/// shortcuts left to the app's menus. Touch: drag to scroll the
-/// scrollback (with momentum), long-press and drag to select, pinch to
-/// change the text size; a pointer clicks, drags and scrolls like a mouse.
+/// Input: the software keyboard (`UITextInput`, for its trackpad and
+/// composition — see TerminalSurfaceView+TextInput.swift) plus
+/// `TerminalKeyBar` above it; hardware keyboards key by key
+/// (`pressesBegan`), with ⌘ shortcuts left to the app's menus. Touch:
+/// drag to scroll the scrollback (with momentum), long-press and drag to
+/// select, pinch to change the text size; a pointer clicks, drags and
+/// scrolls like a mouse.
 @MainActor
 final class TerminalSurfaceView: UIView, UIKeyInput {
     private(set) var surface: ghostty_surface_t?
@@ -47,6 +49,12 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
 
     private lazy var keyBar = TerminalKeyBar(terminal: self)
     private var stickyModifiers: [StickyModifier: StickyModifier.State] = [:]
+
+    /// `UITextInput`'s state (TerminalSurfaceView+TextInput.swift).
+    var textInput = TextInputState()
+    weak var inputDelegate: (any UITextInputDelegate)?
+    var markedTextStyle: [NSAttributedString.Key: Any]?
+    lazy var tokenizer: any UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
 
     /// Hardware keys held down, by HID usage, for their release events and
     /// key repeat (UIKit doesn't repeat keys it hands over as presses).
@@ -197,7 +205,7 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
         traits.displayScale > 0 ? traits.displayScale : 3
     }
 
-    private var scale: CGFloat { Self.screenScale(traitCollection) }
+    var scale: CGFloat { Self.screenScale(traitCollection) }
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -309,6 +317,8 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
     var returnKeyType: UIReturnKeyType = .default
 
     func insertText(_ text: String) {
+        // In place of any composition (the text it was composed into).
+        endComposition()
         // A hardware keyboard's Return (and other keys UIKit doesn't hand
         // over as presses) come as text too.
         for character in text {
@@ -361,7 +371,7 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
 
     // MARK: Key events
 
-    private func pressNamed(_ key: TerminalKey.Named, mods: ghostty_input_mods_e) {
+    func pressNamed(_ key: TerminalKey.Named, mods: ghostty_input_mods_e) {
         sendKey(keycode: key.keycode, mods: mods, consumed: GHOSTTY_MODS_NONE, text: nil, unshifted: nil)
     }
 
