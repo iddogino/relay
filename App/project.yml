@@ -1,0 +1,184 @@
+# Relay's two apps, both presenting the package's RelayUI:
+#
+# - Relay: the App Store app, in the App Sandbox, without Sparkle (the App
+#   Store updates it). Mac only for now; iPad and iPhone will join this
+#   target.
+# - Relay Direct: the Mac app distributed here, Developer ID-signed and
+#   notarized (Scripts/archive-app.sh, .github/workflows/release.yml), with
+#   Sparkle updates. Not sandboxed.
+#
+# Both are Relay.app, with the bundle ID, Keychain group and iCloud
+# container every Relay build shares: whichever one the user runs sees the
+# same SSH keys, passwords and synced hosts and projects. What they share
+# is defined once, in the RelayApp template; each target adds only what
+# makes it differ.
+#
+# The Xcode project and the apps' Info.plists are generated, not checked in:
+#   xcodegen --spec App/project.yml && open App/Relay.xcodeproj
+#
+# Debug builds are Relay Dev (com.iddogino.Relay.dev: its own Keychain
+# group and data, the dev hooks, no updates, and iCloud's Development
+# environment), safe to run next to an installed Relay. Release builds are
+# Relay.
+name: Relay
+options:
+  deploymentTarget:
+    macOS: "15.0"
+  # Xcode resolves the package's dependencies itself: at the versions
+  # Package.resolved pins, as `swift build` does. Runs in this folder.
+  postGenCommand: >-
+    mkdir -p Relay.xcodeproj/project.xcworkspace/xcshareddata/swiftpm &&
+    cp ../Package.resolved Relay.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+settings:
+  base:
+    DEVELOPMENT_TEAM: HL9SP7TJ3J
+    # Placeholders: a release sets the version (Scripts/archive-app.sh's
+    # RELAY_VERSION and RELAY_BUILD_NUMBER).
+    MARKETING_VERSION: 1.0.0
+    CURRENT_PROJECT_VERSION: 1
+    # libghostty is built for Apple silicon (Scripts/build-libghostty.sh).
+    ARCHS: arm64
+    SWIFT_VERSION: "6.0"
+packages:
+  Relay:
+    path: ..
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.6
+targetTemplates:
+  RelayApp:
+    type: application
+    platform: macOS
+    sources:
+      - ../Resources/Relay.icon
+      # Ghostty's runtime resources: themes for user configs, and the
+      # terminfo it uses locally (nothing is installed on hosts).
+      - path: ../Vendor/ghostty/zig-out/share/ghostty
+        type: folder
+        buildPhase: resources
+      - path: ../Vendor/ghostty/zig-out/share/terminfo
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: Relay
+        product: RelayUI
+    postCompileScripts:
+      # The tmux builds Relay can install on a host that has none
+      # (Scripts/build-tmux.sh), when they've been built. gzip'd only: the
+      # bundle holds no Mach-O besides the app's own (the App Store requires
+      # every one to be sandboxed); they're unpacked on the host. A script,
+      # not a folder resource, as the folder may not exist.
+      - name: Bundle tmux
+        basedOnDependencyAnalysis: false
+        script: |
+          src="$SRCROOT/../build/tmux"
+          dst="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/tmux"
+          rm -rf "$dst"
+          if [ -f "$src/manifest.json" ]; then
+            mkdir -p "$dst"
+            cp "$src/manifest.json" "$src"/*.gz "$dst/"
+            echo "tmux: bundled from $src"
+          else
+            echo "tmux: not bundled (run Scripts/build-tmux.sh to include it)"
+          fi
+    info:
+      path: Generated/${target_name}-Info.plist
+      properties:
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleDisplayName: $(PRODUCT_NAME)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHighResolutionCapable: true
+        NSPrincipalClass: NSApplication
+        NSSupportsAutomaticGraphicsSwitching: true
+        NSHumanReadableCopyright: Terminal emulation by libghostty (MIT). Not affiliated with the Ghostty project.
+        RelayDataDirectory: $(RELAY_DATA_DIRECTORY)
+        # The entitlements grant the same group and container.
+        RelayKeychainAccessGroup: $(DEVELOPMENT_TEAM).$(PRODUCT_BUNDLE_IDENTIFIER)
+        RelayCloudKitContainer: $(RELAY_CLOUDKIT_CONTAINER)
+    settings:
+      base:
+        PRODUCT_MODULE_NAME: RelayApp
+        ASSETCATALOG_COMPILER_APPICON_NAME: Relay
+        ENABLE_HARDENED_RUNTIME: true
+        # "Bundle tmux" reads build/tmux, outside what a sandboxed script
+        # may.
+        ENABLE_USER_SCRIPT_SANDBOXING: false
+        # Where hosts and projects sync. Relay Dev shares it, in CloudKit's
+        # Development environment (development signing), so it never sees
+        # a release's data.
+        RELAY_CLOUDKIT_CONTAINER: iCloud.com.iddogino.Relay
+        CODE_SIGN_STYLE: Automatic
+      configs:
+        Debug:
+          PRODUCT_NAME: Relay Dev
+          PRODUCT_BUNDLE_IDENTIFIER: com.iddogino.Relay.dev
+          RELAY_DATA_DIRECTORY: Relay Dev
+        Release:
+          PRODUCT_NAME: Relay
+          PRODUCT_BUNDLE_IDENTIFIER: com.iddogino.Relay
+          RELAY_DATA_DIRECTORY: Relay
+targets:
+  Relay:
+    templates: [RelayApp]
+    sources:
+      - Store/RelayApp.swift
+    info:
+      properties:
+        RelayDevHookDirectory: $(RELAY_DEV_HOOK_DIRECTORY)
+    settings:
+      configs:
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: Store/RelayDev.entitlements
+          RELAY_DEV_HOOK_DIRECTORY: /private/tmp/relay-dev-hook/
+        Release:
+          CODE_SIGN_ENTITLEMENTS: Store/Relay.entitlements
+  Relay Direct:
+    templates: [RelayApp]
+    sources:
+      - Direct/RelayApp.swift
+      - Direct/UpdaterModel.swift
+    dependencies:
+      - package: Sparkle
+    info:
+      properties:
+        SUFeedURL: $(RELAY_SPARKLE_FEED_URL)
+        SUPublicEDKey: $(RELAY_SPARKLE_PUBLIC_KEY)
+    settings:
+      base:
+        CODE_SIGN_ENTITLEMENTS: Direct/Relay.entitlements
+        # The appcast every installed Relay checks, and the key its updates
+        # are signed with (the release workflow's SPARKLE_ED_PRIVATE_KEY).
+        # Changing either strands installed copies.
+        RELAY_SPARKLE_FEED_URL: https://raw.githubusercontent.com/iddogino/relay/main/appcast.xml
+        RELAY_SPARKLE_PUBLIC_KEY: 83fVWPb/G/hc2hYzYyoKW7eB/abuYzTSIJJYvMwIdvA=
+      configs:
+        Debug:
+          # Relay Dev never replaces itself with a release.
+          RELAY_SPARKLE_FEED_URL: ""
+        Release:
+          # As releases are signed: the Developer ID certificate, with the
+          # profile that grants the Keychain group and iCloud (the release
+          # workflow's MACOS_CERTIFICATE_P12 and MACOS_PROVISIONING_PROFILE).
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Developer ID Application
+          PROVISIONING_PROFILE_SPECIFIER: Relay Developer ID
+schemes:
+  Relay:
+    build:
+      targets:
+        Relay: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  Relay Direct:
+    build:
+      targets:
+        Relay Direct: all
+    run:
+      config: Debug
+    archive:
+      config: Release

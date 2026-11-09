@@ -3,6 +3,9 @@ build/
 .e2e-state/
 Vendor/ghostty/
 Vendor/toolchain/
+# Generated from App/project.yml by XcodeGen.
+App/Relay.xcodeproj/
+App/Generated/
 .DS_Store
 .env
 # Local Claude Code session state — never ship.

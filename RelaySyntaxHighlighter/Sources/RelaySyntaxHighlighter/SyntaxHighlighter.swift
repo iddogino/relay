@@ -4,10 +4,35 @@ import Foundation
 /// Grammar references (`$language`) resolve through here — lazily, so
 /// cyclic references (javascript → interpolation → javascript) terminate.
 public final class GrammarStore: @unchecked Sendable {
-    public static let shared = GrammarStore()
+    public static let shared = GrammarStore(bundle: resourceBundle())
 
+    /// Where the grammars are; nil when they're missing (everything renders
+    /// plain).
+    private let bundle: Bundle?
     private let lock = NSLock()
     private var cache: [String: Grammar?] = [:]
+
+    init(bundle: Bundle?) {
+        self.bundle = bundle
+    }
+
+    /// The module's resource bundle. An app keeps it in its resources
+    /// (Xcode copies it there); anywhere else
+    /// (`swift test`, Linux), SwiftPM's `Bundle.module` finds it in the
+    /// build folder.
+    ///
+    /// Not `Bundle.module` in an app: as SwiftPM's native build system
+    /// generates it, it looks beside the app's Contents folder (where a
+    /// signed app can't have anything) and in the build machine's build
+    /// folder, and stops the app when neither has the bundle. An app
+    /// without its grammars shows plain text instead.
+    static func resourceBundle(main: Bundle = .main) -> Bundle? {
+        let name = "RelaySyntaxHighlighter_RelaySyntaxHighlighter.bundle"
+        if let url = main.resourceURL?.appendingPathComponent(name), let bundle = Bundle(url: url) {
+            return bundle
+        }
+        return main.bundleURL.pathExtension == "app" ? nil : .module
+    }
 
     /// nil grammar for unknown/unbundled languages.
     public func grammar(for language: String) -> Grammar? {
@@ -23,7 +48,7 @@ public final class GrammarStore: @unchecked Sendable {
         // Language ids are converter-controlled, but never let a hostile
         // string traverse paths.
         guard language.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else { return nil }
-        guard let url = Bundle.module.url(
+        guard let url = bundle?.url(
             forResource: language, withExtension: "json", subdirectory: "Grammars")
         else { return nil }
         guard let data = try? Data(contentsOf: url),
@@ -37,7 +62,7 @@ public final class GrammarStore: @unchecked Sendable {
         // paths(forResourcesOfType:) returns [String] on both platforms;
         // URL accessors (lastPathComponent, path) are typed as String? on
         // swift-corelibs-foundation and don't compile cleanly on Linux.
-        let paths = Bundle.module.paths(forResourcesOfType: "json", inDirectory: "Grammars")
+        let paths = bundle?.paths(forResourcesOfType: "json", inDirectory: "Grammars") ?? []
         return paths.map { path -> String in
             let file = (path as NSString).lastPathComponent
             return (file as NSString).deletingPathExtension

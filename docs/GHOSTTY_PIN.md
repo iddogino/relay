@@ -18,7 +18,7 @@ Metal renderer), built from official source and linked statically as
 Scripts/build-libghostty.sh              # fetches the pinned commit and Zig 0.17.0, applies patches, builds
 Scripts/build-libghostty.sh --universal  # also the x86_64 Mac, iOS and iOS Simulator slices
 Scripts/build-libghostty.sh --test       # the patches' Zig unit tests instead of a build
-Scripts/build-app.sh                     # builds Relay.app (links the xcframework)
+Scripts/archive-app.sh                   # builds Relay.app (links the xcframework)
 ```
 
 The default build has this Mac's architecture only, which is all the Mac

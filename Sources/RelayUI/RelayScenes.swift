@@ -53,6 +53,12 @@ public struct RelayScenes<AppMenuCommands: Commands>: Scene {
         self.appMenuCommands = appMenuCommands()
     }
 
+    /// With nothing added to the app menu (the App Store app: the App
+    /// Store updates it).
+    public init(model: AppModel) where AppMenuCommands == EmptyCommands {
+        self.init(model: model) { EmptyCommands() }
+    }
+
     /// Standard cap choices, plus the current value if it was set to
     /// something else (e.g. via `defaults write`) so the picker never shows
     /// an empty selection.

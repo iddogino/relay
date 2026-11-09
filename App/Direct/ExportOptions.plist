@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- How Scripts/archive-app.sh exports the direct download: Developer
+	     ID-signed (notarizable), with the profile that grants its Keychain
+	     group and iCloud, in iCloud's Production environment. -->
+	<key>method</key>
+	<string>developer-id</string>
+	<key>destination</key>
+	<string>export</string>
+	<key>teamID</key>
+	<string>HL9SP7TJ3J</string>
+	<key>signingStyle</key>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Developer ID Application</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>com.iddogino.Relay</key>
+		<string>Relay Developer ID</string>
+	</dict>
+	<key>iCloudContainerEnvironment</key>
+	<string>Production</string>
+</dict>
+</plist>

@@ -57,8 +57,11 @@ jobs:
           RELAY_TEST_REQUIRE_OPENSSH10: "1"
         run: swift test
 
-      - name: Build release binary
-        run: swift build -c release --product Relay
+      # The highlighter's own suite also runs on Linux (below); here it runs
+      # where the app does, including how an app finds its grammars.
+      - name: Run highlighter tests
+        working-directory: RelaySyntaxHighlighter
+        run: swift test
 
   # Relay's libghostty patches (patches/ghostty) carry their own Zig unit
   # tests; this runs them against the pinned Ghostty source. The Swift suite
@@ -126,6 +129,42 @@ jobs:
                 summary["failedTests"], summary["skippedTests"], device["modelName"], device["osVersion"]))
           sys.exit(0 if summary["result"] == "Passed" and summary["passedTests"] > 0 else 1)
           '
+
+  # Both apps (App/project.yml), built unsigned as releases build them:
+  # the direct download, and the App Store app (RelayUI in the App Sandbox,
+  # without Sparkle). macOS 26, because compiling the Icon Composer icon
+  # (Resources/Relay.icon) fails on the macOS 15 image.
+  apps:
+    name: Mac apps (Xcode)
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GhosttyKit (cached)
+        uses: ./.github/actions/ghosttykit
+
+      - name: Install XcodeGen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install xcodegen
+
+      # What each build exists for: the bundle ID, Keychain group and iCloud
+      # container every Relay build shares, the resources, and what sets
+      # the two apart (Scripts/check-app.py). Both are Relay.app, so each
+      # is checked, then removed, before the next is built.
+      - name: Build and check both apps (Release)
+        run: |
+          xcodegen --spec App/project.yml
+          APP=.build/xcode-app/Build/Products/Release/Relay.app
+          for scheme in "Relay Direct" Relay; do
+            rm -rf "$APP"
+            xcodebuild build -project App/Relay.xcodeproj -scheme "$scheme" -configuration Release \
+              -destination 'generic/platform=macOS' ARCHS=arm64 CODE_SIGNING_ALLOWED=NO \
+              -derivedDataPath .build/xcode-app -quiet
+            Scripts/check-app.py "$scheme" Release "$APP"
+          done
 
   # RelaySyntaxHighlighter is a standalone, pure-Swift package (no AppKit, no
   # libghostty) — so its Prism fixture suite runs on a cheap Linux runner,

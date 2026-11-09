@@ -5,7 +5,26 @@
     <link>https://github.com/iddogino/relay</link>
     <description>Relay updates. Maintained by CI (Scripts/update-appcast.py); do not edit items by hand.</description>
     <language>en</language>
-                                  <item>
+                                      <item>
+      <title>Relay 0.1.13-rc.1</title>
+      <link>https://github.com/iddogino/relay/releases/tag/v0.1.13-rc.1</link>
+      <pubDate>Sun, 08 Nov 2026 18:04:59 GMT</pubDate>
+      <sparkle:version>25</sparkle:version>
+      <sparkle:shortVersionString>0.1.13-rc.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:channel>rc</sparkle:channel>
+      <enclosure url="https://github.com/iddogino/relay/releases/download/v0.1.13-rc.1/Relay-0.1.13-rc.1.dmg" length="12544921" type="application/octet-stream" sparkle:edSignature="aHjsFbQ9MRaG0LxVLZ2Wq55mezY7A+EDoxOrw4hvHeMNJmz9gtXlYBNv1HRC2RYhIdku3t8lY1mPsYtzoES/Dg=="/>
+    </item>
+    <item>
+      <title>Relay 0.1.12</title>
+      <link>https://github.com/iddogino/relay/releases/tag/v0.1.12</link>
+      <pubDate>Sun, 08 Nov 2026 16:42:56 GMT</pubDate>
+      <sparkle:version>24</sparkle:version>
+      <sparkle:shortVersionString>0.1.12</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/iddogino/relay/releases/download/v0.1.12/Relay-0.1.12.dmg" length="12809271" type="application/octet-stream" sparkle:edSignature="txMBDKHLgbH/UYSr/GeaAz4KW0FXXTeWOlbDlMhy/yNbFXN1GFmVDLnmPgQxwzrU8hwkEyhNaYb6DkJ/XgASBQ=="/>
+    </item>
+    <item>
       <title>Relay 0.1.12-rc.1</title>
       <link>https://github.com/iddogino/relay/releases/tag/v0.1.12-rc.1</link>
       <pubDate>Sun, 08 Nov 2026 01:11:03 GMT</pubDate>
