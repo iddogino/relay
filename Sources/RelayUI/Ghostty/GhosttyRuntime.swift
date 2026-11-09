@@ -348,8 +348,9 @@ final class GhosttyRuntime {
     /// Serves a clipboard read (paste, OSC 52, Kitty clipboard). Relay's
     /// clipboard is text-only: `text/plain` is served when requested, and
     /// listed when a listing is asked for. On iOS, where reading the
-    /// pasteboard outside a paste the user started asks them first, the
-    /// terminal view pastes itself and programs can't read it.
+    /// pasteboard outside a paste the user started asks them first, only the
+    /// view's own pastes are served (with the text it already read), and
+    /// programs can't read it.
     fileprivate nonisolated static func onReadClipboard(
         _ userdata: UnsafeMutableRawPointer?,
         location: ghostty_clipboard_e,
@@ -360,8 +361,19 @@ final class GhosttyRuntime {
         guard location == GHOSTTY_CLIPBOARD_STANDARD else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
         guard let view = surfaceView(from: userdata) else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
         #if os(iOS)
-        _ = view
-        return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
+        // Only the paste the view itself started (`TerminalSurfaceView.paste`),
+        // which reads synchronously on the main thread while it holds the
+        // text — a program's read (OSC 52, from the I/O thread) never sees it.
+        guard Thread.isMainThread, mimes.contains("text/plain"),
+              let text = MainActor.assumeIsolated({ view.takePendingPaste() })
+        else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
+        nonisolated(unsafe) let statePointer = state
+        MainActor.assumeIsolated {
+            guard let surface = view.surface else { return }
+            completeClipboardRequest(
+                surface, contents: [("text/plain", Data(text.utf8))], available: [], state: statePointer)
+        }
+        return GHOSTTY_CLIPBOARD_READ_STARTED
         #else
         let wantsText = mimes.contains("text/plain")
         let string = NSPasteboard.general.string(forType: .string)

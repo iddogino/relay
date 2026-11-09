@@ -385,6 +385,9 @@ public final class AppModel {
         // sync: all of them), keeping the selection to restore on disk.
         persist(lastSelected: restoredSelection)
         if syncEnabled { cloudSync.start() }
+        #if os(iOS)
+        await waitUntilOnScreen()
+        #endif
         await refreshRemotes()
         // All projects are visible (expanded) in the sidebar, so reconcile
         // each once at launch; restore the last-selected session when found
@@ -1603,7 +1606,9 @@ public final class AppModel {
     }
 
     func archiveSession(_ session: RemoteSession) async {
-        guard let project = projects.first(where: { $0.id == session.projectID }) else { return }
+        // Once at a time: its cleanup command mustn't run twice.
+        guard !archivingSessions.contains(session.id),
+              let project = projects.first(where: { $0.id == session.projectID }) else { return }
         if selectedSessionID == session.id {
             selectedSessionID = nil
         }
@@ -1847,6 +1852,9 @@ public final class AppModel {
     #if os(iOS)
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var suspendTask: Task<Void, Never>?
+    /// The pooled connections' close, which a reconnect waits for (so it
+    /// can't close the new ones).
+    private var closingConnections: Task<Void, Never>?
     /// How long connections outlive a trip to the background, so a quick
     /// switch to another app and back finds the terminal still connected.
     private static let backgroundGrace: Duration = .seconds(25)
@@ -1858,7 +1866,7 @@ public final class AppModel {
             for controller in attachmentPool.values { controller.setPresented(false) }
             guard !connectionsSuspended, suspendTask == nil else { return }
             backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Relay connections") { [weak self] in
-                MainActor.assumeIsolated { self?.suspendConnections() }
+                MainActor.assumeIsolated { self?.suspendConnections(expiring: true) }
             }
             suspendTask = Task { [weak self] in
                 try? await Task.sleep(for: Self.backgroundGrace)
@@ -1878,7 +1886,9 @@ public final class AppModel {
     /// Ends every connection — terminals (the remote sessions keep
     /// running), monitors, the SSH client's pooled ones — keeping the
     /// selection to reconnect to.
-    private func suspendConnections() {
+    /// `expiring`: iOS's background time is up, and the background task
+    /// must end now.
+    private func suspendConnections(expiring: Bool = false) {
         suspendTask?.cancel()
         suspendTask = nil
         if !connectionsSuspended {
@@ -1887,15 +1897,43 @@ public final class AppModel {
             for id in warmOrder.reversed() { dropAttachment(for: id) }
             syncAgentMonitors()
             syncLoadMonitor()
-            if let pool = builtInSSH?.pool { Task { await pool.closeAll() } }
+            if let pool = builtInSSH?.pool {
+                closingConnections = Task { await pool.closeAll() }
+            }
         }
-        endBackgroundTask()
+        guard !expiring, let closing = closingConnections else {
+            // Out of time: iOS needs the task ended now.
+            endBackgroundTask()
+            return
+        }
+        // The background task keeps the app running until they're closed.
+        let task = backgroundTask
+        Task { [weak self] in
+            await closing.value
+            self?.endBackgroundTask(task)
+        }
     }
 
-    private func endBackgroundTask() {
-        guard backgroundTask != .invalid else { return }
+    /// Ends the background task (`task`: only if it's still that one).
+    private func endBackgroundTask(_ task: UIBackgroundTaskIdentifier? = nil) {
+        guard backgroundTask != .invalid, task == nil || task == backgroundTask else { return }
         UIApplication.shared.endBackgroundTask(backgroundTask)
         backgroundTask = .invalid
+    }
+
+    /// Launched in the background (by a sync push): nothing connects until
+    /// the app is on screen — iOS would suspend it with connections open.
+    private func waitUntilOnScreen() async {
+        guard UIApplication.shared.applicationState == .background else { return }
+        ghosttyLogger.info("launched in the background: connecting once on screen")
+        connectionsSuspended = true
+        // Polled: iOS suspends the app meanwhile, so it costs nothing, and
+        // no activation can slip by between a check and a subscription.
+        while UIApplication.shared.applicationState == .background {
+            try? await Task.sleep(for: .seconds(1))
+        }
+        connectionsSuspended = false
+        syncAgentMonitors()
     }
 
     /// Back on screen: reconnects the session on screen, or shows the one
@@ -1906,9 +1944,20 @@ public final class AppModel {
             connectionsSuspended = false
             syncAgentMonitors()
         }
+        let closing = closingConnections
+        closingConnections = nil
         guard let session = selectedSession,
               let project = projects.first(where: { $0.id == session.projectID }) else { return }
-        warmAttachment(for: session, project: project)
+        guard let closing else {
+            warmAttachment(for: session, project: project)
+            return
+        }
+        // After the close, which would otherwise take the new connection.
+        Task { [weak self] in
+            await closing.value
+            guard let self, !self.connectionsSuspended, self.selectedSessionID == session.id else { return }
+            self.warmAttachment(for: session, project: project)
+        }
     }
     #endif
 

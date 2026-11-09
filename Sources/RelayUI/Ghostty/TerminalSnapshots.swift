@@ -199,7 +199,7 @@ extension TerminalSurfaceView {
 
     /// The presented frame as `<name>.png`, the visible text as `<name>.txt`.
     func writeSnapshot(to dir: URL, name: String) {
-        guard let surface else { return }
+        guard surface != nil else { return }
         #if os(macOS)
         if let contents = layer?.contents,
            CFGetTypeID(contents as CFTypeRef) == IOSurfaceGetTypeID() {
@@ -213,17 +213,20 @@ extension TerminalSurfaceView {
             if let png { try? png.write(to: dir.appendingPathComponent("\(name).png")) }
         }
         #endif
+        try? Data(visibleText().utf8).write(to: dir.appendingPathComponent("\(name).txt"))
+    }
+
+    /// The text on screen, row by row.
+    func visibleText() -> String {
+        guard let surface else { return "" }
         let selection = ghostty_selection_s(
             top_left: ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
             bottom_right: ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0),
             rectangle: false)
         var text = ghostty_text_s()
-        if ghostty_surface_read_text(surface, selection, &text) {
-            defer { ghostty_surface_free_text(surface, &text) }
-            if let pointer = text.text {
-                let data = Data(bytes: pointer, count: Int(text.text_len))
-                try? data.write(to: dir.appendingPathComponent("\(name).txt"))
-            }
-        }
+        guard ghostty_surface_read_text(surface, selection, &text) else { return "" }
+        defer { ghostty_surface_free_text(surface, &text) }
+        guard let pointer = text.text else { return "" }
+        return String(decoding: Data(bytes: pointer, count: Int(text.text_len)), as: UTF8.self)
     }
 }

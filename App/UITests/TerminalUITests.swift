@@ -51,6 +51,26 @@ final class TerminalUITests: RelayUITestCase {
         shot("keyboard-hidden")
     }
 
+    /// Double-tapping a modifier keeps it on across keys; a tap releases it.
+    func testDoubleTapLocksAModifier() throws {
+        openSession()
+        showKeyboard()
+        let ctrl = keyBarKey("ctrl")
+        XCTAssertTrue(ctrl.waitForExistence(timeout: 5), "no key bar")
+        ctrl.doubleTap()
+        XCTAssertEqual(ctrl.value as? String, "locked")
+        // ^U clears the line, and Control stays on for the next.
+        app.typeText("u")
+        XCTAssertEqual(ctrl.value as? String, "locked")
+        app.typeText("u")
+        XCTAssertEqual(ctrl.value as? String, "locked")
+        ctrl.tap()
+        XCTAssertEqual(ctrl.value as? String, "off")
+        let typed = marker("unlocked")
+        app.typeText("echo \(typed)\n")
+        waitForScreen(containing: "\n\(typed)")
+    }
+
     /// The keys past the edge scroll into reach, and a swipe along the key
     /// bar that starts on a key scrolls without pressing it.
     func testKeyBarScrolls() throws {

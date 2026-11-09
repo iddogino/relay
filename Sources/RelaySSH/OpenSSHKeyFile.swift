@@ -47,11 +47,28 @@ public enum OpenSSHKeyFile {
     /// The public key blob from the `.pub` next to a private key file,
     /// used to pick the matching agent identity.
     public static func publicKeyBlob(forPrivateKeyAt path: String) -> Data? {
-        let expanded = UserHome.expand(path) + ".pub"
-        guard let text = try? String(contentsOfFile: expanded, encoding: .utf8) else { return nil }
+        let expanded = UserHome.expand(path)
+        // An OpenSSH key file carries its public key in the clear (even
+        // when the private key is encrypted): no .pub needed beside it.
+        if let text = try? String(contentsOfFile: expanded, encoding: .utf8), let blob = publicKeyBlob(text) {
+            return blob
+        }
+        guard let text = try? String(contentsOfFile: expanded + ".pub", encoding: .utf8) else { return nil }
         let fields = text.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
         guard fields.count >= 2 else { return nil }
         return Data(base64Encoded: String(fields[1]))
+    }
+
+    /// The public key (wire format) an OpenSSH key file holds, read without
+    /// its passphrase; nil for anything else.
+    static func publicKeyBlob(_ text: String) -> Data? {
+        guard let data = try? body(text) else { return nil }
+        var reader = SSHWireReader(data.dropFirst(magic.count))
+        guard (try? reader.readString()) != nil, (try? reader.readString()) != nil,
+              (try? reader.readString()) != nil, (try? reader.readUInt32()) == 1,
+              let blob = try? reader.readString(), !blob.isEmpty
+        else { return nil }
+        return blob
     }
 
     static let magic = Data("openssh-key-v1\0".utf8)

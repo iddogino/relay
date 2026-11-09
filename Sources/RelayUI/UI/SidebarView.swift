@@ -363,24 +363,12 @@ private struct SessionRow: View {
     /// Green = live ssh connection (selected or warm in the background);
     /// grey = no local connection. Yellow/red show connection trouble.
     private var statusColor: Color {
-        switch model.connectionPhase(for: session.id) {
-        case .attached: return .green
-        case .connecting, .reconnecting: return .yellow
-        case .ended, .failed: return .red
-        case .idle, nil: return .secondary.opacity(0.5)
-        }
+        model.connectionPhase(for: session.id)?.statusColor ?? .secondary.opacity(0.5)
     }
 
     /// The dot, in words (VoiceOver).
     private var connectionDescription: String {
-        switch model.connectionPhase(for: session.id) {
-        case .attached: return "connected"
-        case .connecting: return "connecting"
-        case .reconnecting: return "reconnecting"
-        case .ended: return "ended"
-        case .failed: return "disconnected"
-        case .idle, nil: return "not connected"
-        }
+        (model.connectionPhase(for: session.id) ?? .idle).spokenDescription
     }
 
     /// What runs inside the session, as reported by its terminal title
@@ -465,12 +453,14 @@ private struct SessionRow: View {
         .accessibilityValue(connectionDescription)
         #if os(iOS)
         .swipeActions(edge: .trailing) {
-            Button {
-                Task { await model.archiveSession(session) }
-            } label: {
-                Label("Archive", systemImage: "archivebox")
+            if !isArchiving {
+                Button {
+                    Task { await model.archiveSession(session) }
+                } label: {
+                    Label("Archive", systemImage: "archivebox")
+                }
+                .tint(.orange)
             }
-            .tint(.orange)
             if isConnected {
                 Button {
                     model.disconnectSession(session)

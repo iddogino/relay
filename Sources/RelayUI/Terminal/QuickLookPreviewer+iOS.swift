@@ -17,9 +17,17 @@ final class QuickLookPreviewer: NSObject {
         let scene = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive }
-        guard var top = scene?.keyWindow?.rootViewController else { return }
+        scene?.keyWindow?.rootViewController?.topmostPresented.present(controller, animated: true)
+    }
+}
+
+extension UIViewController {
+    /// The controller showing over everything this one presents: where a
+    /// new presentation goes.
+    var topmostPresented: UIViewController {
+        var top = self
         while let presented = top.presentedViewController { top = presented }
-        top.present(controller, animated: true)
+        return top
     }
 }
 

@@ -1123,10 +1123,9 @@ private struct PathField: View {
         let copy = folder.appendingPathComponent(url.lastPathComponent)
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            // (A key already imported is found by the public key in the
+            // file itself: the .pub beside it can't be read from here.)
             try FileManager.default.copyItem(at: url, to: copy)
-            // Its public half, when it's beside it (finds a key already imported).
-            let pub = url.appendingPathExtension("pub")
-            try? FileManager.default.copyItem(at: pub, to: copy.appendingPathExtension("pub"))
             path = copy.path
         } catch {
             path = ""

@@ -62,6 +62,8 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
     private var heldKeyText: [UIKeyboardHIDUsage: String] = [:]
     private var keyRepeatTimer: Timer?
 
+    private var pendingPaste: String?
+    private var accessibilityText: (text: String, at: CFTimeInterval)?
     private var lastPanTranslation: CGPoint = .zero
     private var momentum: CADisplayLink?
     private var momentumVelocity: CGFloat = 0
@@ -104,6 +106,10 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
 
         guard let created = create(app, &config) else { return nil }
         surface = created
+        // Relay's size, not the config's: as a binding, so libghostty
+        // counts it as chosen and a config reload doesn't reset it (the
+        // surface config's size alone doesn't).
+        performBinding("set_font_size:\(fontSize)")
         renderLayer = layer.sublayers?.last
         TerminalSnapshots.register(self)
 
@@ -323,7 +329,8 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
         // over as presses) come as text too.
         for character in text {
             switch character {
-            case "\n", "\r": pressNamed(.enter, mods: takeStickyMods())
+            // "\r\n" is one Character (a grapheme cluster).
+            case "\n", "\r", "\r\n": pressNamed(.enter, mods: takeStickyMods())
             case "\t": pressNamed(.tab, mods: takeStickyMods())
             case "\u{1B}": pressNamed(.escape, mods: takeStickyMods())
             case "\u{7F}", "\u{8}": pressNamed(.backspace, mods: takeStickyMods())
@@ -339,10 +346,12 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
     // MARK: The key bar
 
     func pressKeyBarKey(_ key: TerminalKey.Named) {
+        commitComposition()
         pressNamed(key, mods: takeStickyMods())
     }
 
     func typeKeyBarText(_ text: String) {
+        commitComposition()
         for character in text { type(character, extraMods: takeStickyMods()) }
     }
 
@@ -554,7 +563,10 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
 
     // MARK: ⌘ shortcuts
 
-    override var keyCommands: [UIKeyCommand]? {
+    override var keyCommands: [UIKeyCommand]? { Self.keyCommandList }
+
+    /// Made once: UIKit asks for them on every key press.
+    private static let keyCommandList: [UIKeyCommand] = {
         var commands = [
             UIKeyCommand(title: "Bigger Text", action: #selector(increaseTextSize), input: "+", modifierFlags: .command),
             UIKeyCommand(title: "Bigger Text", action: #selector(increaseTextSize), input: "=", modifierFlags: .command),
@@ -566,13 +578,13 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
         // back), and key commands are matched before presses are
         // delivered — the first responder's first.
         for input in ["\r", UIKeyCommand.inputEscape] {
-            for flags in Self.terminalKeyModifiers {
+            for flags in terminalKeyModifiers {
                 commands.append(UIKeyCommand(input: input, modifierFlags: flags, action: #selector(terminalKeyCommand(_:))))
             }
         }
         for command in commands { command.wantsPriorityOverSystemBehavior = true }
         return commands
-    }
+    }()
 
     /// Every combination of Shift, Control and Option (⌘ stays the app's).
     private static let terminalKeyModifiers: [UIKeyModifierFlags] = {
@@ -630,7 +642,23 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
 
     override func paste(_ sender: Any?) {
         // A paste the user asked for (menu, ⌘V): reading is allowed.
-        if let text = UIPasteboard.general.string { injectText(text) }
+        if let text = UIPasteboard.general.string { paste(text: text) }
+    }
+
+    /// Pastes `text` as Ghostty's own paste does: bracketed when the
+    /// program asks for that, and confirmed first when it looks unsafe
+    /// (several lines, or a bracketed-paste escape). The binding reads the
+    /// clipboard synchronously, which serves this text (`takePendingPaste`).
+    private func paste(text: String) {
+        pendingPaste = text
+        performBinding("paste_from_clipboard")
+        pendingPaste = nil
+    }
+
+    /// The paste in progress, for the runtime's clipboard read.
+    func takePendingPaste() -> String? {
+        defer { pendingPaste = nil }
+        return pendingPaste
     }
 
     override func selectAll(_ sender: Any?) {
@@ -643,7 +671,7 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
         _ = provider.loadObject(ofClass: String.self) { [weak self] string, _ in
             guard let string else { return }
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self?.injectText(string) }
+                MainActor.assumeIsolated { self?.paste(text: string) }
             }
         }
     }
@@ -662,20 +690,21 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
                 ? "Pasting this text may run commands in the terminal.\n\n\(contents.prefix(300))"
                 : "The remote terminal wants to use your clipboard.",
             preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: isPaste ? "Paste" : "Allow", style: .default) { _ in completion(true) })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completion(false) })
-        guard let presenter = window?.rootViewController.map(Self.topmost) else {
+        // The alert takes the keyboard; the terminal gets it back after.
+        let hadKeyboard = isFirstResponder
+        let answer = { [weak self] (confirmed: Bool) in
+            completion(confirmed)
+            if hadKeyboard { _ = self?.becomeFirstResponder() }
+        }
+        alert.addAction(UIAlertAction(title: isPaste ? "Paste" : "Allow", style: .default) { _ in answer(true) })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in answer(false) })
+        guard let presenter = window?.rootViewController?.topmostPresented else {
             completion(false)
             return
         }
         presenter.present(alert, animated: true)
     }
 
-    private static func topmost(_ controller: UIViewController) -> UIViewController {
-        var top = controller
-        while let presented = top.presentedViewController { top = presented }
-        return top
-    }
 
     // MARK: Touch
 
@@ -886,24 +915,17 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
 
     // MARK: Accessibility
 
-    /// The visible text, for VoiceOver (and UI tests).
+    /// The visible text, for VoiceOver (and UI tests). Read at most a few
+    /// times a second: `.updatesFrequently` has it polled.
     override var accessibilityValue: String? {
-        get { visibleText() }
+        get {
+            let now = CACurrentMediaTime()
+            if let cached = accessibilityText, now - cached.at < 0.25 { return cached.text }
+            let text = visibleText()
+            accessibilityText = (text, now)
+            return text
+        }
         set {}
-    }
-
-    /// The text on screen, row by row.
-    func visibleText() -> String {
-        guard let surface else { return "" }
-        let selection = ghostty_selection_s(
-            top_left: ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
-            bottom_right: ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0),
-            rectangle: false)
-        var text = ghostty_text_s()
-        guard ghostty_surface_read_text(surface, selection, &text) else { return "" }
-        defer { ghostty_surface_free_text(surface, &text) }
-        guard let pointer = text.text else { return "" }
-        return String(decoding: Data(bytes: pointer, count: Int(text.text_len)), as: UTF8.self)
     }
 }
 

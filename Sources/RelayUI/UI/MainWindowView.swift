@@ -10,12 +10,52 @@ struct MainWindowView: View {
     @Environment(\.scenePhase) private var scenePhase
     #endif
 
+    /// The GitHub sign-in, from the window — unless Settings is up (on iOS
+    /// a sheet itself), which presents it over itself instead.
+    private var gitHubLoginPresented: Binding<Bool> {
+        Binding(
+            get: { model.gitHubLoginPresented && !settingsShowing },
+            set: { model.gitHubLoginPresented = $0 })
+    }
+
+    private var settingsShowing: Bool {
+        #if os(iOS)
+        model.settingsPresented
+        #else
+        false
+        #endif
+    }
+
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(model: model)
+                #if os(iOS)
+                // Session names and their status lines need the room on an
+                // iPad (an iPhone shows the list full width).
+                .navigationSplitViewColumnWidth(min: 300, ideal: 340, max: 440)
+                #else
                 .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 400)
+                #endif
         } detail: {
             TerminalDetailView(model: model)
+                #if os(iOS)
+                .toolbar {
+                    // With the sidebar collapsed, the way back to it (the
+                    // terminal's own toolbar leaves none).
+                    if !Platform.isPhone && columnVisibility == .detailOnly {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button {
+                                withAnimation { columnVisibility = .all }
+                            } label: {
+                                Label("Show Sidebar", systemImage: "sidebar.left")
+                            }
+                            .accessibilityIdentifier("showSidebar")
+                        }
+                    }
+                }
+                #endif
         }
         #if os(macOS)
         // Closing the window is a detach-only operation: the local ssh
@@ -52,7 +92,7 @@ struct MainWindowView: View {
         .sheet(isPresented: $model.createSheetPresented) {
             CreateSheet(model: model)
         }
-        .sheet(isPresented: $model.gitHubLoginPresented) {
+        .sheet(isPresented: gitHubLoginPresented) {
             GitHubLoginSheet(model: model)
         }
         .confirmationDialog(

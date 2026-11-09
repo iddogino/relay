@@ -43,9 +43,7 @@ struct TerminalDetailView: View {
                             TerminalNavigationTitle(
                                 project: project, session: session, phase: model.attachment.phase)
                         }
-                        ToolbarItemGroup(placement: .topBarTrailing) {
-                            TerminalToolbarItems(model: model, session: session, project: project)
-                        }
+                        TerminalToolbarItems(model: model, session: session, project: project)
                     }
                 #endif
             } else {
@@ -103,24 +101,9 @@ private struct TerminalHeaderBar: View {
     let terminalTitle: String
     let phase: TerminalAttachmentController.Phase
 
-    private var statusText: String? {
-        switch phase {
-        case .connecting: return "Connecting…"
-        case .reconnecting: return "Reconnecting…"
-        case .ended: return "Ended"
-        case .failed: return "Disconnected"
-        case .attached, .idle: return nil
-        }
-    }
+    private var statusText: String? { phase.statusText }
 
-    private var statusColor: Color {
-        switch phase {
-        case .attached: return .green
-        case .connecting, .reconnecting: return .yellow
-        case .ended, .failed: return .red
-        case .idle: return .secondary
-        }
-    }
+    private var statusColor: Color { phase.statusColor }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -428,24 +411,9 @@ private struct TerminalNavigationTitle: View {
     let session: RemoteSession
     let phase: TerminalAttachmentController.Phase
 
-    private var statusColor: Color {
-        switch phase {
-        case .attached: return .green
-        case .connecting, .reconnecting: return .yellow
-        case .ended, .failed: return .red
-        case .idle: return .secondary
-        }
-    }
+    private var statusColor: Color { phase.statusColor }
 
-    private var statusText: String? {
-        switch phase {
-        case .connecting: return "Connecting…"
-        case .reconnecting: return "Reconnecting…"
-        case .ended: return "Ended"
-        case .failed: return "Disconnected"
-        case .attached, .idle: return nil
-        }
-    }
+    private var statusText: String? { phase.statusText }
 
     var body: some View {
         VStack(spacing: 1) {
@@ -469,7 +437,50 @@ private struct TerminalNavigationTitle: View {
 
 /// The terminal screen's buttons: the machine's load and the PR (with
 /// room for them), the changes, and the session's actions.
-private struct TerminalToolbarItems: View {
+/// The terminal's toolbar on iOS, each part in a pill of its own: a
+/// popover or menu grows out of its item's pill, which would take the
+/// others with it if they shared one.
+private struct TerminalToolbarItems: ToolbarContent {
+    @Bindable var model: AppModel
+    let session: RemoteSession
+    let project: Project
+
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    var body: some ToolbarContent {
+        // The load and the pull request: wide layouts (the menu has the
+        // pull request otherwise).
+        if sizeClass == .regular, let load = model.selectedMachineLoad {
+            ToolbarItem(placement: .topBarTrailing) {
+                MachineLoadBadge(
+                    model: model,
+                    machineName: model.remotes.first { $0.id == project.workspace }?.displayName
+                        ?? project.workspace.opaqueID,
+                    history: load)
+            }
+            separator
+        }
+        if sizeClass == .regular, let pr = model.gitState(for: session.id)?.pullRequest {
+            ToolbarItem(placement: .topBarTrailing) {
+                PRBadge(model: model, sessionID: session.id, pr: pr)
+            }
+            separator
+        }
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            SessionToolbarItems(model: model, session: session, project: project)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var separator: some ToolbarContent {
+        if #available(iOS 26, *) {
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
+        }
+    }
+}
+
+/// The changes (opening the diff tray) and the session's menu.
+private struct SessionToolbarItems: View {
     @Bindable var model: AppModel
     let session: RemoteSession
     let project: Project
@@ -477,18 +488,6 @@ private struct TerminalToolbarItems: View {
 
     var body: some View {
         let git = model.gitState(for: session.id)
-        if sizeClass == .regular {
-            if let load = model.selectedMachineLoad {
-                MachineLoadBadge(
-                    model: model,
-                    machineName: model.remotes.first { $0.id == project.workspace }?.displayName
-                        ?? project.workspace.opaqueID,
-                    history: load)
-            }
-            if let pr = git?.pullRequest {
-                PRBadge(model: model, sessionID: session.id, pr: pr)
-            }
-        }
         if let git {
             Button {
                 model.diffTrayVisible.toggle()

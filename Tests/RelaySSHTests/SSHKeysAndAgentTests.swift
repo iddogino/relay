@@ -126,6 +126,19 @@ struct SSHKeysAndAgentTests {
         #expect(Data(buffer.readableBytesView) == OpenSSHKeyFile.publicKeyBlob(forPrivateKeyAt: path))
     }
 
+    /// The public key comes from the key file itself — encrypted or not —
+    /// so it's found without the .pub (which iOS's file picker doesn't give
+    /// access to).
+    @Test func readsTheKeyFilesOwnPublicKey() throws {
+        for (name, extra) in [("plain-pub", [String]()), ("encrypted-pub", ["-N", "hunter2"])] {
+            let path = try keygen(name, ["-t", "ed25519"] + extra)
+            let pub = try String(contentsOfFile: path + ".pub", encoding: .utf8)
+            let expected = Data(base64Encoded: String(pub.split(separator: " ")[1]))
+            try FileManager.default.removeItem(atPath: path + ".pub")
+            #expect(OpenSSHKeyFile.publicKeyBlob(forPrivateKeyAt: path) == expected)
+        }
+    }
+
     @Test func refusesKeyFilesItCannotUse() throws {
         let rsa = try keygen("rsa-file", ["-t", "rsa", "-b", "2048"])
         #expect(throws: OpenSSHKeyFile.KeyFileError.unsupportedKeyType("ssh-rsa")) { try OpenSSHKeyFile.load(path: rsa) }

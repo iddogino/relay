@@ -8,7 +8,7 @@ import UIKit
 ///
 /// Control and Option apply to the next key, from here or the keyboard:
 /// tap to arm one for one key, double-tap to keep it on, tap again to
-/// release. Arrows and Backspace repeat while held.
+/// release. The arrows repeat while held.
 ///
 /// The keys scroll sideways where they don't fit (most of them, on an
 /// iPhone), faded at an edge with more past it. A swipe that starts on a
@@ -38,7 +38,7 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         .named(.home), .named(.end), .named(.pageUp), .named(.pageDown),
     ]
 
-    private static let isPhone = UIDevice.current.userInterfaceIdiom == .phone
+    private static var isPhone: Bool { Platform.isPhone }
 
     init(terminal: TerminalSurfaceView) {
         self.terminal = terminal
@@ -166,7 +166,7 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         case .named(let named):
             let button = keyButton(title: Self.title(named), image: Self.symbol(named), label: Self.label(named))
             button.accessibilityIdentifier = "keybar.\(named.rawValue)"
-            let repeats = [.left, .right, .up, .down, .backspace].contains(named)
+            let repeats = [.left, .right, .up, .down].contains(named)
             wire(button, repeats: repeats) { [weak self] in self?.terminal?.pressKeyBarKey(named) }
             return button
         case .text(let text):
@@ -179,13 +179,12 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
             let button = keyButton(title: title, image: nil, label: modifier == .control ? "Control" : "Option")
             button.accessibilityIdentifier = "keybar.\(title)"
             modifierButtons[modifier] = button
+            // A single tap arms right away; a second one soon after makes
+            // it stick (one recognizer: a separate double-tap one would
+            // race the single tap's toggle).
             let tap = UITapGestureRecognizer(target: self, action: #selector(modifierTapped(_:)))
-            let doubleTap = UITapGestureRecognizer(target: self, action: #selector(modifierDoubleTapped(_:)))
-            doubleTap.numberOfTapsRequired = 2
-            // A single tap arms right away; a second one makes it stick.
             tap.delaysTouchesEnded = false
             button.addGestureRecognizer(tap)
-            button.addGestureRecognizer(doubleTap)
             return button
         }
     }
@@ -248,13 +247,20 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
     @objc private func modifierTapped(_ gesture: UITapGestureRecognizer) {
         guard let modifier = modifier(of: gesture) else { return }
         UIDevice.current.playInputClick()
-        terminal?.toggleStickyModifier(modifier)
+        let now = CACurrentMediaTime()
+        if let last = lastModifierTap[modifier], now - last < Self.doubleTapInterval {
+            terminal?.lockStickyModifier(modifier)
+            lastModifierTap[modifier] = nil
+        } else {
+            terminal?.toggleStickyModifier(modifier)
+            lastModifierTap[modifier] = now
+        }
     }
 
-    @objc private func modifierDoubleTapped(_ gesture: UITapGestureRecognizer) {
-        guard let modifier = modifier(of: gesture) else { return }
-        terminal?.lockStickyModifier(modifier)
-    }
+    /// When each modifier was last tapped once (and is still on from it),
+    /// to tell a double tap.
+    private var lastModifierTap: [StickyModifier: CFTimeInterval] = [:]
+    private static let doubleTapInterval: CFTimeInterval = 0.35
 
     private func modifier(of gesture: UIGestureRecognizer) -> StickyModifier? {
         modifierButtons.first { $0.value === gesture.view }?.key
@@ -264,6 +270,8 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
     func showModifiers(_ states: [StickyModifier: StickyModifier.State]) {
         for (modifier, button) in modifierButtons {
             let state = states[modifier] ?? .off
+            // Used up by a key: a tap after it starts over.
+            if state == .off { lastModifierTap[modifier] = nil }
             var configuration = button.configuration
             configuration?.baseBackgroundColor = state == .off ? Self.keyColor : .tintColor
             configuration?.baseForegroundColor = state == .off ? .label : .white
@@ -300,9 +308,6 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         case .down: return "arrow.down"
         case .left: return "arrow.left"
         case .right: return "arrow.right"
-        case .backspace: return "delete.left"
-        case .enter: return "return"
-        case .forwardDelete: return "delete.right"
         default: return nil
         }
     }
@@ -311,9 +316,6 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         switch key {
         case .escape: return "Escape"
         case .tab: return "Tab"
-        case .enter: return "Return"
-        case .backspace: return "Delete"
-        case .forwardDelete: return "Forward Delete"
         case .up: return "Up Arrow"
         case .down: return "Down Arrow"
         case .left: return "Left Arrow"
@@ -322,6 +324,8 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         case .end: return "End"
         case .pageUp: return "Page Up"
         case .pageDown: return "Page Down"
+        // Not on the bar (the keyboard has them).
+        case .enter, .backspace, .forwardDelete: return key.rawValue
         }
     }
 }

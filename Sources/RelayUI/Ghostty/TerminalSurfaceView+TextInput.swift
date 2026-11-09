@@ -64,6 +64,16 @@ extension TerminalSurfaceView: UITextInput {
         if !committed.isEmpty { insertText(committed) }
     }
 
+    /// Sends the composition as typed, before a key from outside the
+    /// keyboard (the key bar), and tells the keyboard it's over — or it
+    /// would commit it later, into whatever the key led to.
+    func commitComposition() {
+        guard !textInput.composing.isEmpty else { return }
+        inputDelegate?.textWillChange(self)
+        unmarkText()
+        inputDelegate?.textDidChange(self)
+    }
+
     /// Drops the composition, unsent.
     func endComposition() {
         guard !textInput.composing.isEmpty else { return }

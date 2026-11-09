@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 /// Touch on the terminal: drag through the scrollback, pinch the text
@@ -90,5 +91,40 @@ final class GestureUITests: RelayUITestCase {
         keyBarKey("paste").tap()
         app.typeText("\n")
         waitForScreen(containing: "\npasted:\(word)")
+    }
+
+    /// A paste that could break out of its bracketing (tmux brackets every
+    /// paste) — and run what follows as typed — asks first, as on the Mac.
+    func testUnsafePasteAsksFirst() throws {
+        openSession()
+        showKeyboard()
+        clearLine()
+        // Whatever happens, the command line is left empty for the next test.
+        addTeardownBlock { @MainActor in self.clearLine() }
+        let pasted = marker("pasted")
+        UIPasteboard.general.string = "echo \(pasted)\u{1B}[201~"
+        let alert = app.alerts["Confirm Paste"]
+
+        keyBarKey("paste").tap()
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "an unsafe paste didn't ask first")
+        shot("confirm-paste")
+        alert.buttons["Cancel"].tap()
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        XCTAssertFalse(screenText.contains(pasted), "a cancelled paste arrived anyway")
+        // The terminal has the keyboard back (past its first-run tip).
+        showKeyboard()
+
+        keyBarKey("paste").tap()
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "an unsafe paste didn't ask first")
+        alert.buttons["Paste"].tap()
+        waitForScreen(containing: "echo \(pasted)")
+
+        // A safe one (bracketed lines) goes straight in.
+        clearLine()
+        let safe = marker("safe")
+        UIPasteboard.general.string = "echo \(safe)"
+        keyBarKey("paste").tap()
+        waitForScreen(containing: "echo \(safe)")
+        XCTAssertFalse(alert.exists, "a safe paste asked")
     }
 }

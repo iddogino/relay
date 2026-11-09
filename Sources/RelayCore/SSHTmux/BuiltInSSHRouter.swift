@@ -140,14 +140,30 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
         #endif
     }
 
+    /// The user a host with none set signs in as: this Mac's. iOS has no
+    /// user of its own worth using (it's \u{201C}mobile\u{201D}), so such a
+    /// host needs one set there.
+    public static var defaultUser: String? {
+        #if os(iOS)
+        nil
+        #else
+        NSUserName()
+        #endif
+    }
+
     /// Resolves `host` (and its jump hosts, each a Relay host) into a
-    /// target. Pure apart from the lookups; unit-tested.
+    /// target. `ownCredentials`, when given, stands in for the host's own
+    /// sign-in (jump hosts still sign in as set up): for checking the route
+    /// to a host whose sign-in is about to change. Pure apart from the
+    /// lookups; unit-tested.
     static func connection(
         for host: SSHHost,
         hosts: (String) -> SSHHost?,
         password: (String) -> String?,
         hasStoredKey: (String) -> Bool,
+        ownCredentials: SSHTarget.Credentials? = nil,
         allowsAgent: Bool = agentAvailable,
+        defaultUser: String? = defaultUser,
         visited: [String] = []
     ) -> Connection {
         // Problems are reported about the host the user picked; a jump
@@ -160,44 +176,50 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
         if host.inheritedOptions.contains(where: { $0.lowercased().hasPrefix("proxycommand ") }) {
             return .needsSetup("\(subject) connects through a ProxyCommand, which Relay can\u{2019}t run. Use a jump host instead.")
         }
+        guard let username = host.user.flatMap({ $0.isEmpty ? nil : $0 }) ?? defaultUser else {
+            return .needsSetup("\(subject) has no user set (a Mac signs in as its own). Set the user to connect from here.")
+        }
         let credentials: SSHTarget.Credentials
-        switch host.auth {
-        case .automatic:
-            guard allowsAgent else {
-                return .needsSetup("\(subject) signs in with a Mac\u{2019}s SSH agent or keys. Sign in with a Relay key or a password to connect from here.")
-            }
-            credentials = .automatic
-        case .keyFile(let path, let certificatePath):
-            let file = UserHome.expand(path)
-            #if os(iOS)
-            guard FileManager.default.isReadableFile(atPath: file) else {
-                return .needsSetup("\(subject) signs in with a key file on a Mac (\(path)). Sign in with a Relay key or a password to connect from here.")
-            }
-            #endif
-            guard FileManager.default.isReadableFile(atPath: file) else {
-                if UserHome.isSandboxed {
-                    return .needsSetup("Relay can\u{2019}t read \(possessive) key file (\(path)). Give Relay access to your .ssh folder in Settings \u{25B8} Hosts.")
+        if let ownCredentials {
+            credentials = ownCredentials
+        } else {
+            switch host.auth {
+            case .automatic:
+                guard allowsAgent else {
+                    return .needsSetup("\(subject) signs in with a Mac\u{2019}s SSH agent or keys. Sign in with a Relay key or a password to connect from here.")
                 }
-                return .needsSetup(FileManager.default.fileExists(atPath: file)
-                    ? "Relay can\u{2019}t read \(possessive) key file (\(path))."
-                    : "\(possessive.prefix(1).uppercased() + possessive.dropFirst()) key file (\(path)) isn\u{2019}t there.")
+                credentials = .automatic
+            case .keyFile(let path, let certificatePath):
+                let file = UserHome.expand(path)
+                guard FileManager.default.isReadableFile(atPath: file) else {
+                    #if os(iOS)
+                    return .needsSetup("\(subject) signs in with a key file on a Mac (\(path)). Sign in with a Relay key or a password to connect from here.")
+                    #else
+                    if UserHome.isSandboxed {
+                        return .needsSetup("Relay can\u{2019}t read \(possessive) key file (\(path)). Give Relay access to your .ssh folder in Settings \u{25B8} Hosts.")
+                    }
+                    return .needsSetup(FileManager.default.fileExists(atPath: file)
+                        ? "Relay can\u{2019}t read \(possessive) key file (\(path))."
+                        : "\(possessive.prefix(1).uppercased() + possessive.dropFirst()) key file (\(path)) isn\u{2019}t there.")
+                    #endif
+                }
+                credentials = .keyFile(path: path, certificatePath: certificatePath?.isEmpty == false ? certificatePath : nil)
+            case .password:
+                guard let secret = password(host.alias), !secret.isEmpty else {
+                    return .needsSetup("No password for \(visited.isEmpty ? "this host" : "\u{201C}\(host.alias)\u{201D}") is saved on this device.")
+                }
+                credentials = .password(secret)
+            case .storedKey(let id):
+                guard hasStoredKey(id) else {
+                    return .needsSetup("\(subject) signs in with a Relay key that isn\u{2019}t on this device.")
+                }
+                credentials = .storedKey(id: id)
             }
-            credentials = .keyFile(path: path, certificatePath: certificatePath?.isEmpty == false ? certificatePath : nil)
-        case .password:
-            guard let secret = password(host.alias), !secret.isEmpty else {
-                return .needsSetup("No password for \(visited.isEmpty ? "this host" : "\u{201C}\(host.alias)\u{201D}") is saved on this device.")
-            }
-            credentials = .password(secret)
-        case .storedKey(let id):
-            guard hasStoredKey(id) else {
-                return .needsSetup("\(subject) signs in with a Relay key that isn\u{2019}t on this device.")
-            }
-            credentials = .storedKey(id: id)
         }
         var target = SSHTarget(
             host: host.hostname,
             port: host.port ?? 22,
-            username: host.user ?? NSUserName(),
+            username: username,
             credentials: credentials)
         if let jumpAlias = host.proxyJump {
             guard !visited.contains(jumpAlias), jumpAlias != host.alias else {
@@ -208,7 +230,7 @@ public final class BuiltInSSHRouter: @unchecked Sendable {
             }
             switch connection(
                 for: jump, hosts: hosts, password: password, hasStoredKey: hasStoredKey,
-                allowsAgent: allowsAgent, visited: visited + [host.alias]) {
+                allowsAgent: allowsAgent, defaultUser: defaultUser, visited: visited + [host.alias]) {
             case .needsSetup(let reason):
                 return .needsSetup(reason)
             case .ready(var hop):
