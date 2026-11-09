@@ -1855,11 +1855,21 @@ public final class AppModel {
     /// The pooled connections' close, which a reconnect waits for (so it
     /// can't close the new ones).
     private var closingConnections: Task<Void, Never>?
+    /// Whether a window has been active (on screen) yet, and who's waiting
+    /// for one (`waitUntilOnScreen`).
+    private var windowActive = false
+    private var onScreenWaiters: [CheckedContinuation<Void, Never>] = []
     /// How long connections outlive a trip to the background, so a quick
     /// switch to another app and back finds the terminal still connected.
     private static let backgroundGrace: Duration = .seconds(25)
 
     func scenePhaseChanged(to phase: ScenePhase) {
+        if phase == .active {
+            windowActive = true
+            let waiters = onScreenWaiters
+            onScreenWaiters = []
+            waiters.forEach { $0.resume() }
+        }
         switch phase {
         case .background:
             // No drawing in the background (iOS refuses GPU work there).
@@ -1921,17 +1931,13 @@ public final class AppModel {
         backgroundTask = .invalid
     }
 
-    /// Launched in the background (by a sync push): nothing connects until
-    /// the app is on screen — iOS would suspend it with connections open.
+    /// Launched in the background (by a sync push, with no window): nothing
+    /// connects until a window is on screen — iOS would suspend the app
+    /// with connections open. A normal launch waits only for its window.
     private func waitUntilOnScreen() async {
-        guard UIApplication.shared.applicationState == .background else { return }
-        ghosttyLogger.info("launched in the background: connecting once on screen")
+        guard !windowActive else { return }
         connectionsSuspended = true
-        // Polled: iOS suspends the app meanwhile, so it costs nothing, and
-        // no activation can slip by between a check and a subscription.
-        while UIApplication.shared.applicationState == .background {
-            try? await Task.sleep(for: .seconds(1))
-        }
+        await withCheckedContinuation { onScreenWaiters.append($0) }
         connectionsSuspended = false
         syncAgentMonitors()
     }

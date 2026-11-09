@@ -44,9 +44,15 @@ class RelayUITestCase: XCTestCase {
 
     /// Taps the session's row (opening its terminal) and waits for it to connect.
     func openSession(_ name: String? = nil, file: StaticString = #filePath, line: UInt = #line) {
-        if terminal.exists { showList() }
         let row = app.staticTexts[name ?? sessionName].firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 20), "no row for the session", file: file, line: line)
+        // The app reopens the session last open once it has loaded, which
+        // can be after the list shows: back to the list whenever it does.
+        let deadline = Date().addingTimeInterval(20)
+        while !row.isHittable, Date() < deadline {
+            if terminal.exists { showList() }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
+        XCTAssertTrue(row.isHittable, "no row for the session", file: file, line: line)
         row.tap()
         XCTAssertTrue(terminal.waitForExistence(timeout: 20), "no terminal", file: file, line: line)
         waitForScreen(containing: "%", timeout: 20, file: file, line: line)
