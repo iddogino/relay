@@ -42,6 +42,7 @@ struct SidebarView: View {
             if model.remotesLoaded && model.projects.isEmpty {
                 emptyState
             } else {
+                #if os(macOS)
                 // The header is a plain row, not a Section header: on macOS
                 // 27 a sidebar Section header shows a collapse chevron on
                 // hover even with .collapsible(false) (shoving the + aside),
@@ -49,6 +50,7 @@ struct SidebarView: View {
                 sectionHeader
                     .selectionDisabled()
                     .moveDisabled(true)
+                #endif
                 ForEach(model.projects) { project in
                     ProjectGroup(model: model, project: project)
                 }
@@ -66,8 +68,30 @@ struct SidebarView: View {
                     .padding(8)
             }
         }
+        #if os(iOS)
+        .refreshable { await model.refreshAll() }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    model.settingsPresented = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+                .accessibilityIdentifier("sidebar.settings")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    model.createSheetPresented = true
+                } label: {
+                    Label("New Session or Project", systemImage: "plus")
+                }
+                .accessibilityIdentifier("sidebar.add")
+            }
+        }
+        #endif
     }
 
+    #if os(macOS)
     private var sectionHeader: some View {
         HStack(spacing: 2) {
             Text("Projects")
@@ -96,6 +120,7 @@ struct SidebarView: View {
         // dot column below it.
         .padding(.trailing, 10)
     }
+    #endif
 
     @ViewBuilder private var emptyState: some View {
         ContentUnavailableView {
@@ -110,6 +135,7 @@ struct SidebarView: View {
     }
 }
 
+#if os(macOS)
 /// Pops a context-style menu at the mouse pointer.
 private enum PopUpMenu {
     private final class Item: NSObject {
@@ -130,6 +156,7 @@ private enum PopUpMenu {
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 }
+#endif
 
 private struct ProjectGroup: View {
     @Bindable var model: AppModel
@@ -252,8 +279,7 @@ private struct ProjectRow: View {
                 Task { await model.refreshSessions(for: project) }
             }
             Button("Copy SSH Alias") {
-                NSPasteboard.general.declareTypes([.string], owner: nil)
-                NSPasteboard.general.setString(hostAlias, forType: .string)
+                Platform.copy(hostAlias)
             }
             Divider()
             Button("Remove Project…", role: .destructive) {
@@ -279,11 +305,25 @@ private struct SessionsErrorRow: View {
                     .lineLimit(3)
                     .foregroundStyle(.secondary)
             }
-            Button {
-                Task { await model.refreshSessions(for: project) }
-            } label: {
-                Text("Retry")
-                    .font(.caption)
+            HStack(spacing: 14) {
+                Button {
+                    Task { await model.refreshSessions(for: project) }
+                } label: {
+                    Text("Retry")
+                        .font(.caption)
+                }
+                #if os(iOS)
+                // A host set up on a Mac (its agent, a key file) needs a
+                // Relay key or a password to connect from here.
+                if let host = model.host(for: project.workspace), model.needsConnection(host) {
+                    Button {
+                        model.hostToSetUp = host
+                    } label: {
+                        Text("Set Up \(host.alias)\u{2026}")
+                            .font(.caption)
+                    }
+                }
+                #endif
             }
             .buttonStyle(.borderless)
             .padding(.leading, SidebarGrid.textInset)
@@ -323,12 +363,12 @@ private struct SessionRow: View {
     /// Green = live ssh connection (selected or warm in the background);
     /// grey = no local connection. Yellow/red show connection trouble.
     private var statusColor: Color {
-        switch model.connectionPhase(for: session.id) {
-        case .attached: return .green
-        case .connecting, .reconnecting: return .yellow
-        case .ended, .failed: return .red
-        case .idle, nil: return .secondary.opacity(0.5)
-        }
+        model.connectionPhase(for: session.id)?.statusColor ?? .secondary.opacity(0.5)
+    }
+
+    /// The dot, in words (VoiceOver).
+    private var connectionDescription: String {
+        (model.connectionPhase(for: session.id) ?? .idle).spokenDescription
     }
 
     /// What runs inside the session, as reported by its terminal title
@@ -368,13 +408,15 @@ private struct SessionRow: View {
                         .textFieldStyle(.plain)
                         .focused($nameFieldFocused)
                         .onSubmit { commitRename() }
+                        #if os(macOS)
                         .onExitCommand { isEditingName = false }
+                        #endif
                         .onAppear { nameFieldFocused = true }
                         // Click-away unfocuses → commit, Finder-style.
                         .onChange(of: nameFieldFocused) { _, focused in
                             if !focused { commitRename() }
                         }
-                } else if isSelected {
+                } else if isSelected, !Platform.isTouch {
                     // Finder-style: clicking the name of the already-selected
                     // row begins the rename. The gesture is scoped to the
                     // text only — a row-level gesture would swallow the
@@ -408,6 +450,34 @@ private struct SessionRow: View {
             }
         }
         .opacity(isArchiving ? 0.5 : 1)
+        .accessibilityValue(connectionDescription)
+        #if os(iOS)
+        .swipeActions(edge: .trailing) {
+            if !isArchiving {
+                Button {
+                    Task { await model.archiveSession(session) }
+                } label: {
+                    Label("Archive", systemImage: "archivebox")
+                }
+                .tint(.orange)
+            }
+            if isConnected {
+                Button {
+                    model.disconnectSession(session)
+                } label: {
+                    Label("Disconnect", systemImage: "bolt.slash")
+                }
+            }
+        }
+        .swipeActions(edge: .leading) {
+            Button {
+                model.setMarkedUnread(!agentUnseen, for: session)
+            } label: {
+                Label(agentUnseen ? "Read" : "Unread", systemImage: agentUnseen ? "envelope.open" : "envelope.badge")
+            }
+            .tint(.blue)
+        }
+        #endif
         .contextMenu {
             Button("Rename") {
                 beginRename()

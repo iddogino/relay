@@ -3,10 +3,25 @@ import RelayCore
 
 struct TerminalDetailView: View {
     @Bindable var model: AppModel
+    #if os(iOS)
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    private var keyboard = KeyboardObserver.shared
+
+    init(model: AppModel) {
+        self.model = model
+    }
+
+    /// An iPhone on its side with the keyboard up has room for a few rows;
+    /// the navigation bar gives way (hiding the keyboard brings it back).
+    private var navigationBarHidden: Bool {
+        verticalSizeClass == .compact && keyboard.softwareKeyboardShown
+    }
+    #endif
 
     var body: some View {
         Group {
             if let session = model.selectedSession, let project = model.selectedProject {
+                #if os(macOS)
                 VStack(spacing: 0) {
                     TerminalHeaderBar(
                         project: project,
@@ -16,10 +31,26 @@ struct TerminalDetailView: View {
                     Divider()
                     TerminalStage(model: model, session: session, project: project)
                 }
+                #else
+                // The header's line is the navigation bar's title here.
+                TerminalStage(model: model, session: session, project: project)
+                    .navigationTitle(session.displayName)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar(navigationBarHidden ? .hidden : .automatic, for: .navigationBar)
+                    .animation(.default, value: navigationBarHidden)
+                    .toolbar {
+                        ToolbarItem(placement: .principal) {
+                            TerminalNavigationTitle(
+                                project: project, session: session, phase: model.attachment.phase)
+                        }
+                        TerminalToolbarItems(model: model, session: session, project: project)
+                    }
+                #endif
             } else {
                 EmptyDetailView(model: model)
             }
         }
+        #if os(macOS)
         .toolbar {
             ToolbarItemGroup {
                 if let project = model.selectedProject,
@@ -56,6 +87,7 @@ struct TerminalDetailView: View {
         // two sections differ in shade). Without that background the title
         // bar shows the window's own material, flush with the sidebar.
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        #endif
         .inspector(isPresented: $model.diffTrayVisible) {
             DiffTrayView(model: model)
                 .inspectorColumnWidth(min: 340, ideal: 480, max: 900)
@@ -69,24 +101,9 @@ private struct TerminalHeaderBar: View {
     let terminalTitle: String
     let phase: TerminalAttachmentController.Phase
 
-    private var statusText: String? {
-        switch phase {
-        case .connecting: return "Connecting…"
-        case .reconnecting: return "Reconnecting…"
-        case .ended: return "Ended"
-        case .failed: return "Disconnected"
-        case .attached, .idle: return nil
-        }
-    }
+    private var statusText: String? { phase.statusText }
 
-    private var statusColor: Color {
-        switch phase {
-        case .attached: return .green
-        case .connecting, .reconnecting: return .yellow
-        case .ended, .failed: return .red
-        case .idle: return .secondary
-        }
-    }
+    private var statusColor: Color { phase.statusColor }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -144,8 +161,16 @@ private struct TerminalStage: View {
             // and the sidebar divider, and the dark terminal color bleeding
             // there shows through the (translucent) title-bar separator and
             // divider as a black line overhanging the column edge.
+            #if os(macOS)
             Color(nsColor: model.attachment.surfaceView?.terminalBackgroundColor ?? .textBackgroundColor)
                 .ignoresSafeArea(edges: .bottom)
+            #else
+            // The terminal's own background (its theme's) until it reports
+            // one, so nothing flashes around it as it resizes.
+            Color(uiColor: model.attachment.surfaceView?.terminalBackgroundColor
+                  ?? GhosttyRuntime.shared.configuredBackground ?? .black)
+                .ignoresSafeArea(.container, edges: .bottom)
+            #endif
 
             if let surfaceView = model.attachment.surfaceView {
                 TerminalHostView(surfaceView: surfaceView)
@@ -311,6 +336,8 @@ private struct EmptyDetailView: View {
         } description: {
             if model.projects.isEmpty {
                 Text("Add a project — a folder on one of your hosts — to get started.")
+            } else if Platform.isTouch {
+                Text("Select a session, or create one.")
             } else {
                 Text("Select a session, or create one with ⌘N.")
             }
@@ -330,6 +357,7 @@ private struct EmptyDetailView: View {
     }
 }
 
+#if os(macOS)
 /// Hosts the AppKit terminal surface inside SwiftUI and keeps it focused.
 private struct TerminalHostView: NSViewRepresentable {
     let surfaceView: TerminalSurfaceView
@@ -352,3 +380,161 @@ private struct TerminalHostView: NSViewRepresentable {
         }
     }
 }
+#else
+/// Hosts the UIKit terminal surface inside SwiftUI. With a hardware
+/// keyboard it takes keys right away; otherwise a tap brings up the
+/// software keyboard (which would cover half the terminal unasked).
+private struct TerminalHostView: UIViewRepresentable {
+    let surfaceView: TerminalSurfaceView
+
+    func makeUIView(context: Context) -> UIView {
+        UIView()
+    }
+
+    func updateUIView(_ container: UIView, context: Context) {
+        if surfaceView.superview !== container {
+            container.subviews.forEach { $0.removeFromSuperview() }
+            surfaceView.frame = container.bounds
+            surfaceView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            container.addSubview(surfaceView)
+            if TerminalSurfaceView.hardwareKeyboardConnected {
+                DispatchQueue.main.async { _ = surfaceView.becomeFirstResponder() }
+            }
+        }
+    }
+}
+
+/// The terminal screen's title: the session, and under it the project
+/// and host with the connection's state.
+private struct TerminalNavigationTitle: View {
+    let project: Project
+    let session: RemoteSession
+    let phase: TerminalAttachmentController.Phase
+
+    private var statusColor: Color { phase.statusColor }
+
+    private var statusText: String? { phase.statusText }
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text(session.displayName)
+                .font(.headline)
+                .lineLimit(1)
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 6, height: 6)
+                Text(statusText ?? "\(project.name) · \(project.workspace.opaqueID)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("terminal.title")
+    }
+}
+
+/// The terminal screen's buttons: the machine's load and the PR (with
+/// room for them), the changes, and the session's actions.
+/// The terminal's toolbar on iOS, each part in a pill of its own: a
+/// popover or menu grows out of its item's pill, which would take the
+/// others with it if they shared one.
+private struct TerminalToolbarItems: ToolbarContent {
+    @Bindable var model: AppModel
+    let session: RemoteSession
+    let project: Project
+
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    var body: some ToolbarContent {
+        // The load and the pull request: wide layouts (the menu has the
+        // pull request otherwise).
+        if sizeClass == .regular, let load = model.selectedMachineLoad {
+            ToolbarItem(placement: .topBarTrailing) {
+                MachineLoadBadge(
+                    model: model,
+                    machineName: model.remotes.first { $0.id == project.workspace }?.displayName
+                        ?? project.workspace.opaqueID,
+                    history: load)
+            }
+            separator
+        }
+        if sizeClass == .regular, let pr = model.gitState(for: session.id)?.pullRequest {
+            ToolbarItem(placement: .topBarTrailing) {
+                PRBadge(model: model, sessionID: session.id, pr: pr)
+            }
+            separator
+        }
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            SessionToolbarItems(model: model, session: session, project: project)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var separator: some ToolbarContent {
+        if #available(iOS 26, *) {
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
+        }
+    }
+}
+
+/// The changes (opening the diff tray) and the session's menu.
+private struct SessionToolbarItems: View {
+    @Bindable var model: AppModel
+    let session: RemoteSession
+    let project: Project
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    var body: some View {
+        let git = model.gitState(for: session.id)
+        if let git {
+            Button {
+                model.diffTrayVisible.toggle()
+            } label: {
+                HStack(spacing: 3) {
+                    Text("+\(git.additions)")
+                        .foregroundStyle(.green)
+                    Text("−\(git.deletions)")
+                        .foregroundStyle(.red)
+                }
+                .font(.system(size: 13, design: .monospaced))
+            }
+            .accessibilityLabel("Changes: \(git.additions) added, \(git.deletions) removed")
+        }
+        Menu {
+            if sizeClass != .regular, let pr = git?.pullRequest {
+                Button {
+                    Platform.open(pr.url)
+                } label: {
+                    Label("Pull Request #\(pr.number)", systemImage: "arrow.triangle.pull")
+                }
+            }
+            Button {
+                model.attachment.retryNow()
+            } label: {
+                Label("Reconnect", systemImage: "arrow.clockwise")
+            }
+            Button {
+                model.newSessionProject = project
+            } label: {
+                Label("New Session…", systemImage: "plus")
+            }
+            Divider()
+            Button {
+                Task { await model.archiveSession(session) }
+            } label: {
+                Label("Archive Session", systemImage: "archivebox")
+            }
+            Button(role: .destructive) {
+                model.confirmKillSession = session
+            } label: {
+                Label("Kill Session…", systemImage: "xmark.octagon")
+            }
+        } label: {
+            Label("Session", systemImage: "ellipsis.circle")
+        }
+        .accessibilityIdentifier("terminal.menu")
+    }
+}
+#endif

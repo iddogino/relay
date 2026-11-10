@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import IOKit.ps
 import SystemConfiguration
@@ -109,3 +110,4 @@ struct PowerSettings: Equatable {
         if let url = URL(string: "x-apple.systempreferences:\(pane)") { NSWorkspace.shared.open(url) }
     }
 }
+#endif

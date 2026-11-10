@@ -1,4 +1,6 @@
+#if os(macOS)
 import AppKit
+#endif
 import SwiftUI
 import RelayCore
 import RelaySSH
@@ -8,8 +10,13 @@ import RelaySSH
 /// form by hand.
 ///
 /// New hosts sign in with a Relay key by default: synced through iCloud
-/// Keychain, or kept in this Mac's Secure Enclave. Setting one up signs in
-/// once (password, agent, key file) to add the key to the host.
+/// Keychain, or kept in this device's Secure Enclave. Setting one up signs
+/// in once (password, agent, key file) to add the key to the host.
+///
+/// On iPhone and iPad, which have no SSH agent or key files of their own:
+/// a Relay key (set up with a password, or a key file picked in Files) or
+/// a password. A host set up on a Mac with its agent or a key file shows
+/// as such, and needs one of those to connect here.
 struct HostEditorSheet: View {
     enum Mode {
         case create
@@ -88,6 +95,38 @@ struct HostEditorSheet: View {
     private var isEditing: Bool { original != nil }
 
     var body: some View {
+        #if os(iOS)
+        NavigationStack {
+            iOSForm
+                .navigationTitle(isEditing ? "Edit Host" : "Add Host")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button {
+                            Task { await save() }
+                        } label: {
+                            if setupState == .running {
+                                ProgressView()
+                            } else {
+                                Text(authKind == .relayKey && !keyIsReady ? "Set Up" : isEditing ? "Save" : "Add")
+                            }
+                        }
+                        .disabled(candidate == nil || setupState == .running || relayKeyBlocked)
+                    }
+                }
+        }
+        .onAppear {
+            populate()
+            // Only a Mac has an agent to sign in with once.
+            if bootstrap == .automatic { bootstrap = .password }
+        }
+        .onChange(of: candidate) { testState = .idle }
+        .onChange(of: setupInputs) { if setupState != .running { setupState = .idle } }
+        .onDisappear { PathField.forgetImportedFiles() }
+        #else
         VStack(alignment: .leading, spacing: 0) {
             Text(isEditing ? "Edit Host" : "Add Host")
                 .font(.title3.weight(.semibold))
@@ -153,7 +192,126 @@ struct HostEditorSheet: View {
         .onAppear(perform: populate)
         .onChange(of: candidate) { testState = .idle }
         .onChange(of: setupInputs) { if setupState != .running { setupState = .idle } }
+        #endif
     }
+
+    #if os(iOS)
+    // MARK: iOS form
+
+    private var iOSForm: some View {
+        Form {
+            Section {
+                FormField(label: "Name", text: $alias, prompt: "my-server")
+                    .disabled(isEditing)
+                FormField(label: "Hostname", text: $hostname, prompt: "server.example.com", keyboard: .URL)
+                FormField(label: "Port", text: $port, prompt: "22", keyboard: .numberPad)
+                FormField(label: "User", text: $user, prompt: "required")
+                Picker("Connect", selection: $proxyJump) {
+                    Text("Directly").tag("")
+                    ForEach(jumpHostChoices, id: \.self) { alias in
+                        Text("Through \(alias)").tag(alias)
+                    }
+                }
+            }
+            Section {
+                Picker("Sign in with", selection: $authKind) {
+                    if model.keyStore != nil {
+                        Text("Relay key").tag(AuthKind.relayKey)
+                    }
+                    Text("Password").tag(AuthKind.password)
+                    // A Mac's ways, for a host set up on one (it keeps them).
+                    if authKind == .automatic || original?.auth == .automatic {
+                        Text("SSH agent (on a Mac)").tag(AuthKind.automatic)
+                    }
+                    if authKind == .keyFile || original.map({ if case .keyFile = $0.auth { true } else { false } }) == true {
+                        Text("Key file (on a Mac)").tag(AuthKind.keyFile)
+                    }
+                }
+                switch authKind {
+                case .relayKey:
+                    iOSRelayKeyFields
+                case .password:
+                    FormField(label: "Password", text: $password,
+                              prompt: hasStoredPassword ? "Saved in Keychain" : "required", secure: true)
+                case .automatic, .keyFile:
+                    Text("Only a Mac signs in to this host that way. To connect from this \(Platform.deviceKind), sign in with a Relay key or a password.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Sign In")
+            } footer: {
+                if authKind == .relayKey && !keyIsReady {
+                    Text(setupExplanation)
+                } else if authKind == .password {
+                    Text("Saved in your Keychain.")
+                }
+            }
+
+            if usesProxyCommand {
+                notice(systemImage: "exclamationmark.triangle.fill", tint: .orange) {
+                    Text("Your ssh config reaches this host through a ProxyCommand, which Relay can\u{2019}t run. Connect through another host instead, or directly.")
+                }
+            }
+            if let problem = connectionProblem {
+                notice(systemImage: "link.badge.plus", tint: .orange) { Text(problem) }
+            }
+            if authKind == .relayKey {
+                relayKeyNotices
+            }
+            if let validationMessage {
+                notice(systemImage: "exclamationmark.triangle.fill", tint: .orange) { Text(validationMessage) }
+            }
+            if let saveError {
+                notice(systemImage: "exclamationmark.triangle.fill", tint: .orange) { Text(saveError) }
+            }
+            testResult
+            Section {
+                testButton
+            }
+            if let original, original.auth.storedKeyID != nil, !model.needsConnection(original) {
+                Section {
+                    HostKeysSection(model: model, host: original)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var iOSRelayKeyFields: some View {
+        Picker("Keep the key", selection: $keyStorage) {
+            Text("In iCloud Keychain").tag(SSHKeyInfo.Storage.iCloudKeychain)
+            Text("On this \(Platform.deviceKind) only").tag(SSHKeyInfo.Storage.secureEnclave)
+        }
+        if keyIsReady, let key = currentKey {
+            LabeledContent("Key") {
+                Label {
+                    Text("\(key.name) · \(String(key.fingerprint.prefix(19)))…")
+                        .font(.caption.monospaced())
+                } icon: {
+                    Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+                }
+            }
+        } else {
+            Picker("Sign in once with", selection: $bootstrap) {
+                Text("Password").tag(Bootstrap.password)
+                Text("Key file").tag(Bootstrap.keyFile)
+            }
+            switch bootstrap {
+            case .password:
+                FormField(label: "Password", text: $bootstrapPassword, prompt: "used once, not saved", secure: true)
+            case .automatic:
+                EmptyView()
+            case .keyFile:
+                LabeledContent("Private key") {
+                    PathField(path: $bootstrapKeyPath, prompt: "From Files", title: "Choose a private key")
+                }
+                if importsKeyFile && keyFileIsEncrypted && !keyFileAlreadyImported {
+                    FormField(label: "Passphrase", text: $passphrase, prompt: "unlocks the key", secure: true)
+                }
+            }
+        }
+    }
+    #endif
 
     private var saveTitle: String {
         if authKind == .relayKey && !keyIsReady { return "Set Up Key & \(isEditing ? "Save" : "Add")" }
@@ -215,7 +373,7 @@ struct HostEditorSheet: View {
                 formCaption("Saved in your Keychain. Relay's built-in SSH client signs in with it.")
             }
         }
-        .formStyle(.columns)
+        .relayFormStyle()
         .textFieldStyle(.roundedBorder)
 
         if usesProxyCommand {
@@ -247,6 +405,18 @@ struct HostEditorSheet: View {
     }
 
     private func notice<Content: View>(systemImage: String, tint: Color, @ViewBuilder content: () -> Content) -> some View {
+        #if os(iOS)
+        // A row of its own in the form.
+        Section {
+            Label {
+                content()
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: systemImage).foregroundStyle(tint)
+            }
+        }
+        #else
         Label {
             content()
                 .font(.callout)
@@ -259,6 +429,7 @@ struct HostEditorSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(tint.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
         .padding(.top, 12)
+        #endif
     }
 
     // MARK: Relay key
@@ -275,7 +446,7 @@ struct HostEditorSheet: View {
                     detail: "Made in the Secure Enclave; it can never leave this Mac. Your other devices need their own setup.")
                     .tag(SSHKeyInfo.Storage.secureEnclave)
             }
-            .pickerStyle(.radioGroup)
+            .radioGroupPickerStyle()
             .labelsHidden()
         }
         if keyIsReady, let key = currentKey {
@@ -342,7 +513,7 @@ struct HostEditorSheet: View {
         case .iCloudKeychain:
             return "Relay signs in once to add your iCloud Keychain key to the host. If another of your devices already added it, no sign-in is needed."
         case .secureEnclave:
-            return "Relay makes a key in this Mac's Secure Enclave and signs in once to add it to the host."
+            return "Relay makes a key in this \(Platform.deviceKind)'s Secure Enclave and signs in once to add it to the host."
         }
     }
 
@@ -350,24 +521,30 @@ struct HostEditorSheet: View {
         if keyStorage == .iCloudKeychain {
             if !(model.keyStore?.canSync ?? false) {
                 notice(systemImage: "exclamationmark.triangle.fill", tint: .orange) {
-                    Text("This build of Relay isn't signed for iCloud Keychain, so it can't sync keys. Choose Keep on this Mac only.")
+                    Text("This build of Relay isn't signed for iCloud Keychain, so it can't sync keys. Keep the key on this \(Platform.deviceKind) only.")
                 }
             } else if FileManager.default.ubiquityIdentityToken == nil {
                 notice(systemImage: "icloud.slash", tint: .orange) {
+                    #if os(macOS)
                     VStack(alignment: .leading, spacing: 8) {
                         Text("You're not signed in to iCloud, so this key would stay on this Mac. Sign in under System Settings ▸ Apple Account, then turn on iCloud ▸ Passwords & Keychain.")
                         Button("Open iCloud Settings") {
                             if let url = URL(string: "x-apple.systempreferences:com.apple.systempreferences.AppleIDSettings:icloud") {
-                                NSWorkspace.shared.open(url)
+                                Platform.open(url)
                             }
                         }
                     }
+                    #else
+                    Text("You're not signed in to iCloud, so this key would stay on this \(Platform.deviceKind). Sign in in Settings, then turn on iCloud ▸ Passwords.")
+                    #endif
                 }
             } else if !keyIsReady {
+                #if os(macOS)
                 Text("Syncs through iCloud Keychain — make sure it's on: System Settings ▸ Apple Account ▸ iCloud ▸ Passwords & Keychain.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.top, 8)
+                #endif
             }
         }
         switch setupState {
@@ -586,7 +763,7 @@ struct HostEditorSheet: View {
                 }
             case .keyNotOnThisDevice:
                 notice(systemImage: "link.badge.plus", tint: .orange) {
-                    Text("This host's Relay key isn't on this Mac. Sign in once to set it up here.")
+                    Text("This host's Relay key isn't on this \(Platform.deviceKind). Sign in once to set it up here.")
                 }
             case .needsSetup(let reason):
                 notice(systemImage: "link.badge.plus", tint: .orange) { Text(reason) }
@@ -652,6 +829,10 @@ struct HostEditorSheet: View {
             guard let value = Int(trimmedPort) else { throw SSHHost.ValidationError.port }
             parsedPort = value
         }
+        #if os(iOS)
+        // iOS's own user name ("mobile") is no default for a remote machine.
+        if trimmedUser.isEmpty { throw MissingUser() }
+        #endif
         let auth: SSHHostAuth
         switch authKind {
         case .relayKey:
@@ -716,6 +897,10 @@ struct HostEditorSheet: View {
 
     private struct DuplicateAlias: LocalizedError {
         var errorDescription: String? { "There's already a host with this name." }
+    }
+
+    private struct MissingUser: LocalizedError {
+        var errorDescription: String? { "Enter the user to sign in as." }
     }
 
     private var defaultStorage: SSHKeyInfo.Storage {
@@ -900,13 +1085,55 @@ private struct PathField: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            #if os(macOS)
             TextField("", text: $path, prompt: Text(prompt))
                 .labelsHidden()
                 .fontDesign(.monospaced)
             Button("Choose…", action: choose)
+            #else
+            // iOS has no paths to type: a file from Files.
+            Spacer()
+            Text(path.isEmpty ? prompt : (path as NSString).lastPathComponent)
+                .foregroundStyle(path.isEmpty ? .tertiary : .secondary)
+                .lineLimit(1)
+            Button("Choose…") { importing = true }
+                .fileImporter(isPresented: $importing, allowedContentTypes: [.item], onCompletion: imported)
+            #endif
         }
     }
 
+    #if os(iOS)
+    @State private var importing = false
+
+    /// Where key files picked in Files are copied for the setup to read
+    /// (deleted when the editor closes).
+    static var importFolder: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("relay-key-import", isDirectory: true)
+    }
+
+    static func forgetImportedFiles() {
+        try? FileManager.default.removeItem(at: importFolder)
+    }
+
+    private func imported(_ result: Result<URL, Error>) {
+        guard case .success(let url) = result else { return }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let folder = Self.importFolder.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let copy = folder.appendingPathComponent(url.lastPathComponent)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            // (A key already imported is found by the public key in the
+            // file itself: the .pub beside it can't be read from here.)
+            try FileManager.default.copyItem(at: url, to: copy)
+            path = copy.path
+        } catch {
+            path = ""
+        }
+    }
+    #endif
+
+    #if os(macOS)
     private func choose() {
         let panel = NSOpenPanel()
         panel.title = title
@@ -920,6 +1147,7 @@ private struct PathField: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         path = UserHome.abbreviate(url.path)
     }
+    #endif
 }
 
 /// The `~/.ssh/config` aliases Relay doesn't have yet, each resolved the
@@ -969,7 +1197,7 @@ private struct SSHConfigImportList: View {
                         }
                         .padding(.vertical, 2)
                     }
-                    .listStyle(.bordered)
+                    .borderedListStyle()
                 }
             } else {
                 ProgressView("Reading ~/.ssh/config…")

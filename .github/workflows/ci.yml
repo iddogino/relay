@@ -166,6 +166,48 @@ jobs:
             Scripts/check-app.py "$scheme" Release "$APP"
           done
 
+  # The iPhone and iPad app (the App Store target's iOS destination): built
+  # for devices (unsigned) and the Simulator, then driven by its UI tests —
+  # keyboards, touch, rotation, the background — against a throwaway SSH
+  # host (Scripts/ios-ui-tests.sh). macOS 26, for the Icon Composer icon.
+  ios-app:
+    name: iPhone & iPad app
+    runs-on: macos-26
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GhosttyKit with iOS slices (cached)
+        uses: ./.github/actions/ghosttykit
+        with:
+          universal: "true"
+
+      - name: Install XcodeGen and tmux
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install xcodegen tmux
+
+      - name: Build for devices (Release, unsigned)
+        run: |
+          xcodegen --spec App/project.yml
+          xcodebuild build -project App/Relay.xcodeproj -scheme Relay -configuration Release \
+            -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath .build/xcode-ios -quiet
+
+      - name: UI tests on iPhone and iPad simulators
+        env:
+          RELAY_UITEST_SHOTS: ${{ runner.temp }}/ios-ui-shots
+        run: Scripts/ios-ui-tests.sh
+
+      - name: Keep the screenshots and results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ui-tests
+          path: ${{ runner.temp }}/ios-ui-shots
+          retention-days: 7
+
   # RelaySyntaxHighlighter is a standalone, pure-Swift package (no AppKit, no
   # libghostty) — so its Prism fixture suite runs on a cheap Linux runner,
   # which also guards against swift-corelibs-foundation's NSRegularExpression

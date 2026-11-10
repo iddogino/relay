@@ -103,13 +103,23 @@ dependencies besides pinned libghostty (built from source, see
 
 Both apps build from one Xcode project, generated from `App/project.yml`:
 **Relay Direct**, the app distributed here (Sparkle updates, Developer ID),
-and **Relay**, the App Store app (the same UI in the App Sandbox, without
-Sparkle). Run builds Relay Dev (`com.iddogino.Relay.dev`), which installs
-next to Relay with its own data, Keychain group and preferences, and never
-updates itself.
+and **Relay**, the App Store app — on the Mac the same UI in the App Sandbox,
+without Sparkle, and on iPhone and iPad from the same target (one bundle ID,
+one purchase). Run builds Relay Dev (`com.iddogino.Relay.dev`), which
+installs next to Relay with its own data, Keychain group and preferences,
+and never updates itself.
+
+On iPad, Relay looks like the Mac: sessions beside the terminal. On iPhone
+it's the session list, then one terminal — with one connection at a time.
+Both have a key bar above the keyboard (Escape, Tab, Control, Option,
+arrows…), take a hardware keyboard key by key, and drop their connections
+shortly after going to the background (reconnecting on return). iOS signs
+in to hosts with a Relay key or a password; a host set up on a Mac with its
+agent or a key file needs one of those to connect from iOS.
 
 ```sh
 Scripts/build-libghostty.sh   # once: fetch pinned Ghostty + Zig, build GhosttyKit
+                              # (--universal adds iOS and the iOS Simulator)
 brew install xcodegen
 xcodegen --spec App/project.yml
 open App/Relay.xcodeproj
@@ -137,10 +147,13 @@ swift test              # unit tests (config parsing, quoting, codecs, persisten
 Scripts/live-e2e.sh     # live acceptance run against your two configured remotes
                         # (fully namespaced; cleans up after itself)
 Scripts/live-e2e-cleanup.sh   # independent cleanup if a run crashed
+Scripts/ios-ui-tests.sh # the iPhone and iPad app on fresh simulators, driven by
+                        # its UI tests against a throwaway SSH host
 ```
 
-CI runs `swift test` on every PR and push to `main`, and builds both apps,
-checking each with `Scripts/check-app.py`. The pinned GhosttyKit build is cached,
+CI runs `swift test` on every PR and push to `main`, builds both apps,
+checking each with `Scripts/check-app.py`, and runs the iPhone and iPad UI
+tests. The pinned GhosttyKit build is cached,
 so only the first run after a pin bump pays the from-source build.
 
 ## Releasing

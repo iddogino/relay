@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Observation
 import RelayCore
@@ -176,3 +177,4 @@ final class ThisMacSetup {
         }
     }
 }
+#endif

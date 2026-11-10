@@ -27,8 +27,13 @@ struct KeychainSecrets: Sendable {
 
     /// Where saves go: follows Sync with iCloud.
     var active: Location {
+        #if os(iOS)
+        // iOS has only the data protection keychain.
+        return accessGroup != nil && AppModel.syncEnabledDefault ? .synced : .local
+        #else
         guard accessGroup != nil else { return .login }
         return AppModel.syncEnabledDefault ? .synced : .local
+        #endif
     }
 
     func load(account: String) -> String? {
@@ -50,7 +55,13 @@ struct KeychainSecrets: Sendable {
     /// Whether the login keychain may still hold this service's items:
     /// in builds that keep them there, and until they've been moved.
     private var loginKeychainInUse: Bool {
-        active == .login || !UserDefaults.standard.bool(forKey: movedDefaultsKey)
+        #if os(iOS)
+        // There's no login keychain to read (a query for it would match
+        // the data protection keychain's items instead).
+        return false
+        #else
+        return active == .login || !UserDefaults.standard.bool(forKey: movedDefaultsKey)
+        #endif
     }
 
     private var movedDefaultsKey: String { "keychainMovedFromLogin.\(service)" }

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import IOKit.pwr_mgt
 
@@ -41,3 +42,4 @@ final class KeepAwake {
         }
     }
 }
+#endif

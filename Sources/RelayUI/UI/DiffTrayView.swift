@@ -1,5 +1,7 @@
 import SwiftUI
+#if os(macOS)
 import AppKit
+#endif
 import RelayCore
 import RelaySyntaxHighlighter
 
@@ -341,8 +343,7 @@ private struct FileHeaderRow: View {
     }
 
     private func copyPath() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(info.path, forType: .string)
+        Platform.copy(info.path)
         copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
     }
@@ -491,7 +492,7 @@ struct FileBlock {
             // "  <old> <new> <marker> " — two leading spaces stand in for the
             // row's leading padding so the tint reaches the left edge.
             var g = AttributedString("  \(pad(line.old, digits)) \(pad(line.new, digits)) ")
-            g.foregroundColor = Color(nsColor: .tertiaryLabelColor)
+            g.foregroundColor = Color.tertiaryLabelText
             var mark = AttributedString("\(markerGlyph(line.kind)) ")
             mark.foregroundColor = .secondary
             g += mark

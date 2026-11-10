@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 @preconcurrency import Quartz
 
@@ -34,3 +35,4 @@ extension QuickLookPreviewer: QLPreviewPanelDataSource, QLPreviewPanelDelegate {
         MainActor.assumeIsolated { items.indices.contains(index) ? items[index] : nil }
     }
 }
+#endif

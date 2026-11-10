@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import CoreImage
 import GhosttyKit
 import IOSurface
@@ -16,28 +20,20 @@ import IOSurface
 /// live without taking over the machine's keyboard and mouse.
 @MainActor
 enum TerminalSnapshots {
-    static let notification = Notification.Name("com.iddogino.Relay.dev.snapshot")
-    static let driveNotification = Notification.Name("com.iddogino.Relay.dev.drive")
+    static let notification = "com.iddogino.Relay.dev.snapshot"
+    static let driveNotification = "com.iddogino.Relay.dev.drive"
     private static var views: [ObjectIdentifier: WeakView] = [:]
-    private static var observer: NSObjectProtocol?
-    private static var driveObserver: NSObjectProtocol?
+    private static var installed = false
 
     private struct WeakView { weak var view: TerminalSurfaceView? }
 
     static var isAvailable: Bool { AppVariant.bundleIdentifier.hasSuffix(".dev") }
 
     static func installIfDevBuild() {
-        guard isAvailable, observer == nil else { return }
-        observer = DistributedNotificationCenter.default().addObserver(
-            forName: notification, object: nil, queue: .main
-        ) { _ in
-            MainActor.assumeIsolated { writeAll() }
-        }
-        driveObserver = DistributedNotificationCenter.default().addObserver(
-            forName: driveNotification, object: nil, queue: .main
-        ) { _ in
-            MainActor.assumeIsolated { drive() }
-        }
+        guard isAvailable, !installed else { return }
+        installed = true
+        DevNotifications.observe(notification) { writeAll() }
+        DevNotifications.observe(driveNotification) { drive() }
     }
 
     static func register(_ view: TerminalSurfaceView) {
@@ -157,6 +153,33 @@ extension TerminalSnapshots {
                 }
             case "wait":
                 delay = (step["ms"] as? Double ?? 100) / 1000
+            #if os(iOS)
+            // The iOS view's own input paths: the software keyboard, the
+            // key bar, and the text size.
+            case "insertText":
+                view.insertText(step["text"] as? String ?? "")
+            case "deleteBackward":
+                view.deleteBackward()
+            case "keybar":
+                if let key = TerminalKey.Named(rawValue: step["key"] as? String ?? "") {
+                    view.pressKeyBarKey(key)
+                } else if let text = step["text"] as? String {
+                    view.typeKeyBarText(text)
+                }
+            case "sticky":
+                let modifier: StickyModifier = step["modifier"] as? String == "alt" ? .alternate : .control
+                if step["lock"] as? Bool == true {
+                    view.lockStickyModifier(modifier)
+                } else {
+                    view.toggleStickyModifier(modifier)
+                }
+            case "fontSize":
+                view.setFontSize(step["size"] as? Double ?? TerminalFontSize.defaultSize, persist: step["persist"] as? Bool ?? false)
+            case "keyboard":
+                _ = step["show"] as? Bool == false ? view.resignFirstResponder() : view.becomeFirstResponder()
+            case "screen":
+                recorded.append(view.visibleText())
+            #endif
             default:
                 break
             }
@@ -176,7 +199,8 @@ extension TerminalSurfaceView {
 
     /// The presented frame as `<name>.png`, the visible text as `<name>.txt`.
     func writeSnapshot(to dir: URL, name: String) {
-        guard let surface else { return }
+        guard surface != nil else { return }
+        #if os(macOS)
         if let contents = layer?.contents,
            CFGetTypeID(contents as CFTypeRef) == IOSurfaceGetTypeID() {
             let ioSurface = unsafeBitCast(contents as AnyObject, to: IOSurfaceRef.self)
@@ -188,17 +212,21 @@ extension TerminalSurfaceView {
             IOSurfaceUnlock(ioSurface, .readOnly, nil)
             if let png { try? png.write(to: dir.appendingPathComponent("\(name).png")) }
         }
+        #endif
+        try? Data(visibleText().utf8).write(to: dir.appendingPathComponent("\(name).txt"))
+    }
+
+    /// The text on screen, row by row.
+    func visibleText() -> String {
+        guard let surface else { return "" }
         let selection = ghostty_selection_s(
             top_left: ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
             bottom_right: ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0),
             rectangle: false)
         var text = ghostty_text_s()
-        if ghostty_surface_read_text(surface, selection, &text) {
-            defer { ghostty_surface_free_text(surface, &text) }
-            if let pointer = text.text {
-                let data = Data(bytes: pointer, count: Int(text.text_len))
-                try? data.write(to: dir.appendingPathComponent("\(name).txt"))
-            }
-        }
+        guard ghostty_surface_read_text(surface, selection, &text) else { return "" }
+        defer { ghostty_surface_free_text(surface, &text) }
+        guard let pointer = text.text else { return "" }
+        return String(decoding: Data(bytes: pointer, count: Int(text.text_len)), as: UTF8.self)
     }
 }

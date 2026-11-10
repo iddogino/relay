@@ -60,6 +60,21 @@ struct ProjectEditorSheet: View {
     }
 
     var body: some View {
+        #if os(iOS)
+        Group {
+            if embedded {
+                iOSForm
+            } else {
+                NavigationStack { iOSForm }
+            }
+        }
+        .onAppear(perform: populate)
+        .sheet(item: $addHost) { _ in
+            HostEditorSheet(model: model, mode: .create) { host in
+                workspace = host.workspace
+            }
+        }
+        #else
         VStack(alignment: .leading, spacing: 0) {
             if !embedded {
                 Text(isEditing ? "Project Settings" : "Add Project")
@@ -84,9 +99,11 @@ struct ProjectEditorSheet: View {
                                 .tag(Optional(remote.id))
                         }
                         if !model.remotes.isEmpty { Divider() }
+                        #if os(macOS)
                         if thisMac == nil {
                             Text("Add This Mac…").tag(Optional(Self.addThisMacTag))
                         }
+                        #endif
                         Text("Add Host…").tag(Optional(Self.addHostTag))
                     }
                 }
@@ -140,7 +157,7 @@ struct ProjectEditorSheet: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .formStyle(.columns)
+            .relayFormStyle()
             .textFieldStyle(.roundedBorder)
 
             if let validationError {
@@ -202,7 +219,108 @@ struct ProjectEditorSheet: View {
                 }
             }
         }
+        #endif
     }
+
+    #if os(iOS)
+    /// iOS: a grouped form, its actions in the navigation bar, and the
+    /// folder suggestions as rows under the field.
+    private var iOSForm: some View {
+        Form {
+            Section {
+                FormField(label: "Name", text: $name, prompt: "My iOS App")
+                if isEditing {
+                    LabeledContent("Host", value: workspace?.opaqueID ?? "")
+                } else {
+                    Picker("Host", selection: hostSelection) {
+                        ForEach(model.remotes) { remote in
+                            Text(remote.displayName).tag(Optional(remote.id))
+                        }
+                        Text("Add Host…").tag(Optional(Self.addHostTag))
+                    }
+                }
+                LabeledContent("Folder") {
+                    TextField("Folder", text: $path, prompt: Text("~/code/my-app"))
+                        .fontDesign(.monospaced)
+                        .multilineTextAlignment(.trailing)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .focused($folderFocused)
+                        .onChange(of: path) {
+                            folderSuggestionsDismissed = false
+                            folderHighlight = 0
+                        }
+                        .task(id: folderFetchKey) { await fetchFolderListing() }
+                }
+                if folderDropdownVisible {
+                    ForEach(folderMatches.prefix(6), id: \.self) { match in
+                        Button {
+                            acceptFolderSuggestion(match)
+                        } label: {
+                            Label(match, systemImage: "folder")
+                                .font(.callout.monospaced())
+                        }
+                    }
+                }
+            }
+            Section {
+                Menu {
+                    ForEach(HarnessCatalog.groups) { group in
+                        Section(group.name) {
+                            ForEach(group.presets) { preset in
+                                Button(preset.title) {
+                                    applyPreset(launch: preset.launch, cleanup: preset.cleanup)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Presets", systemImage: "sparkles")
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Launch command").font(.subheadline)
+                    CommandEditor(text: $launchCommand, prompt: "claude")
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Shutdown command").font(.subheadline)
+                    CommandEditor(text: $shutdownCommand, prompt: "optional")
+                }
+            } header: {
+                Text("New Sessions")
+            } footer: {
+                Text("The default for new sessions — each session can pick a different harness at creation. The launch command starts the session; the shutdown command runs when it's archived. Both run in the project folder with RTERM_* variables set — including $RTERM_SESSION_SLUG, the session name slugified for branch/folder names.")
+            }
+            if let validationError {
+                Section {
+                    Label {
+                        Text(validationError).font(.callout)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    }
+                }
+            }
+        }
+        .navigationTitle(isEditing ? "Project Settings" : "Add Project")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button {
+                    Task { await validateAndSave() }
+                } label: {
+                    if validating {
+                        ProgressView()
+                    } else {
+                        Text(isEditing ? "Save" : "Add")
+                    }
+                }
+                .disabled(validating || workspace == nil || name.trimmingCharacters(in: .whitespaces).isEmpty || path.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+    #endif
 
     // MARK: Folder autocomplete
 
@@ -417,7 +535,7 @@ private struct CommandEditor: View {
             }
         }
         .frame(height: 56)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.textBackground))
         .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary, lineWidth: 1))
     }
 }
@@ -512,6 +630,13 @@ struct NewSessionSheet: View {
     }
 
     var body: some View {
+        #if os(iOS)
+        if embedded {
+            iOSForm
+        } else {
+            NavigationStack { iOSForm }
+        }
+        #else
         VStack(alignment: .leading, spacing: 14) {
             if !embedded {
                 Text("New Session")
@@ -632,7 +757,124 @@ struct NewSessionSheet: View {
         }
         .padding(embedded ? 0 : 20)
         .frame(width: embedded ? nil : 400)
+        #endif
     }
+
+    #if os(iOS)
+    private var iOSForm: some View {
+        Form {
+            Section {
+                if allowsProjectChoice {
+                    Picker("Project", selection: $chosenProjectID) {
+                        ForEach(model.projects) { candidate in
+                            Text(pickerLabel(for: candidate)).tag(Optional(candidate.id))
+                        }
+                    }
+                    .onAppear {
+                        if chosenProjectID == nil { chosenProjectID = project.id }
+                    }
+                }
+                LabeledContent("Name") {
+                    TextField("Name", text: $name, prompt: Text("fix auth flow"))
+                        .multilineTextAlignment(.trailing)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .focused($nameFocused)
+                        .onSubmit { Task { await create() } }
+                        .task { nameFocused = true }
+                }
+            }
+            Section {
+                LabeledContent("Start with") {
+                    Menu {
+                        if projectHasDefault {
+                            Button("Project default") { start = .projectDefault }
+                        }
+                        Button("Plain shell") { start = .shell }
+                        Divider()
+                        ForEach(HarnessCatalog.groups) { group in
+                            Section(group.name) {
+                                ForEach(group.presets) { preset in
+                                    Button(preset.title) { start = .preset(preset.id) }
+                                }
+                            }
+                        }
+                        Divider()
+                        Button("Custom command…") { start = .custom }
+                    } label: {
+                        Text(startLabel)
+                    }
+                }
+                .onAppear { loadStartChoice(for: activeProject) }
+                .onChange(of: chosenProjectID) {
+                    loadStartChoice(for: activeProject)
+                    Task { await model.refreshAgentReporterStatus(activeProject.workspace) }
+                }
+                .task { await model.refreshAgentReporterStatus(activeProject.workspace) }
+                if start == .custom {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Launch").font(.subheadline)
+                        CommandEditor(text: $customLaunch, prompt: "claude")
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Cleanup").font(.subheadline)
+                        CommandEditor(text: $customCleanup, prompt: "optional — runs on archive")
+                    }
+                } else if let launch = effectiveCommands.launch {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(launch)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                        if let cleanup = effectiveCommands.cleanup {
+                            Text("On archive: \(cleanup)")
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+            } footer: {
+                if start != .custom, effectiveCommands.launch == nil {
+                    Text("Opens a plain shell in \(activeProject.pathInput) on \(activeProject.workspace.opaqueID).")
+                }
+            }
+            if let agent = detectedAgent {
+                Section {
+                    AgentReporterSection(model: model, workspace: activeProject.workspace, agent: agent)
+                }
+            }
+            if let errorMessage {
+                Section {
+                    Label {
+                        Text(errorMessage).font(.callout)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    }
+                }
+            }
+        }
+        .navigationTitle("New Session")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button {
+                    Task { await create() }
+                } label: {
+                    if creating {
+                        ProgressView()
+                    } else {
+                        Text("Create")
+                    }
+                }
+                .disabled(creating || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+    }
+    #endif
 
     /// The provider-facing request for the current choice.
     private var sessionStart: SessionStart {
@@ -739,6 +981,44 @@ struct CreateSheet: View {
     }
 
     var body: some View {
+        #if os(iOS)
+        // The segments in the navigation bar; each form brings its own
+        // title-less Cancel/Create.
+        NavigationStack {
+            Group {
+                switch tab {
+                case .session:
+                    if let defaultProject = model.selectedProject ?? model.projects.first {
+                        NewSessionSheet(
+                            model: model,
+                            project: defaultProject,
+                            embedded: true,
+                            allowsProjectChoice: true)
+                    } else {
+                        ContentUnavailableView(
+                            "No Projects",
+                            systemImage: "folder",
+                            description: Text("Add a project first — sessions live inside projects."))
+                    }
+                case .project:
+                    ProjectEditorSheet(
+                        model: model,
+                        context: ProjectEditorContext(mode: .create(workspace: nil)),
+                        embedded: true)
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Picker("Create", selection: $tab) {
+                        Text("Session").tag(Tab.session)
+                        Text("Project").tag(Tab.project)
+                    }
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                }
+            }
+        }
+        #else
         VStack(alignment: .leading, spacing: 16) {
             Picker("Create", selection: $tab) {
                 Text("New Session").tag(Tab.session)
@@ -770,6 +1050,7 @@ struct CreateSheet: View {
         }
         .padding(20)
         .frame(width: 480)
+        #endif
     }
 }
 
@@ -803,12 +1084,12 @@ private struct AgentReporterSection: View {
                     Toggle(isOn: $model.agentReporterPerSession) {
                         Text("Report \(agent.displayName) status for this session")
                     }
-                    .toggleStyle(.checkbox)
+                    .checkboxToggleStyle()
                     HStack(spacing: 6) {
                         Button("Install for all sessions on \(host)") {
                             Task { await install() }
                         }
-                        .buttonStyle(.link)
+                        .linkButtonStyle()
                         .disabled(installing || !status.cliFound)
                         .help(status.cliFound
                               ? "Adds Relay's status plugin to \(agent.displayName) on \(host), so every session reports — including ones you start by hand."

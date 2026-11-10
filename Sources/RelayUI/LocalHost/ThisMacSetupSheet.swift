@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 import RelayCore
@@ -231,3 +232,4 @@ struct ThisMacSetupSheet: View {
         }
     }
 }
+#endif

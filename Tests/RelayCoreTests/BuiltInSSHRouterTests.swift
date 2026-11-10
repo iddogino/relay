@@ -48,6 +48,59 @@ struct BuiltInSSHRouterTests {
             host: "r.example", port: 22, username: NSUserName(), credentials: .storedKey(id: "K1"))))
     }
 
+    /// iOS has no SSH agent: a host that signs in with one (set up on a
+    /// Mac) needs setup there — also as another host's jump host.
+    @Test func withoutAnAgentItsHostsNeedSetup() throws {
+        let agent = SSHHost(alias: "box", hostname: "10.0.0.5")
+        let noAgent = BuiltInSSHRouter.connection(
+            for: agent, hosts: { _ in nil }, password: { _ in nil }, hasStoredKey: { _ in false }, allowsAgent: false)
+        #expect(try #require(Self.reason(noAgent)).contains("SSH agent"))
+
+        let behind = SSHHost(alias: "inner", hostname: "10.0.0.6", auth: .password, proxyJump: "box")
+        let throughIt = BuiltInSSHRouter.connection(
+            for: behind, hosts: { $0 == "box" ? agent : nil }, password: { _ in "pw" }, hasStoredKey: { _ in false },
+            allowsAgent: false)
+        #expect(try #require(Self.reason(throughIt)).contains("jump host \u{201C}box\u{201D}"))
+    }
+
+    /// Where there's no user of its own to sign in as (iOS), a host saved
+    /// with no user (on a Mac, which signs in as its own) needs one set —
+    /// also as a jump host.
+    @Test func withoutADefaultUserAHostNeedsOne() throws {
+        let noUser = SSHHost(alias: "box", hostname: "10.0.0.5", auth: .password)
+        let unset = BuiltInSSHRouter.connection(
+            for: noUser, hosts: { _ in nil }, password: { _ in "pw" }, hasStoredKey: { _ in false }, defaultUser: nil)
+        #expect(try #require(Self.reason(unset)).contains("no user"))
+
+        var named = noUser
+        named.user = "dev"
+        #expect(BuiltInSSHRouter.connection(
+            for: named, hosts: { _ in nil }, password: { _ in "pw" }, hasStoredKey: { _ in false }, defaultUser: nil)
+            == .ready(SSHTarget(host: "10.0.0.5", port: 22, username: "dev", credentials: .password("pw"))))
+
+        let behind = SSHHost(alias: "inner", hostname: "10.0.0.6", user: "dev", auth: .password, proxyJump: "box")
+        let throughIt = BuiltInSSHRouter.connection(
+            for: behind, hosts: { $0 == "box" ? noUser : nil }, password: { _ in "pw" }, hasStoredKey: { _ in false },
+            defaultUser: nil)
+        #expect(try #require(Self.reason(throughIt)).contains("jump host \u{201C}box\u{201D}"))
+    }
+
+    /// Checking the route to a host whose sign-in is about to change: its
+    /// own sign-in is stood in for, its jump hosts' isn't.
+    @Test func aStandInSignInCoversOnlyTheHostItself() throws {
+        let agent = SSHHost(alias: "box", hostname: "10.0.0.5", user: "dev")
+        #expect(BuiltInSSHRouter.connection(
+            for: agent, hosts: { _ in nil }, password: { _ in nil }, hasStoredKey: { _ in false },
+            ownCredentials: .automatic, allowsAgent: false)
+            == .ready(SSHTarget(host: "10.0.0.5", port: 22, username: "dev", credentials: .automatic)))
+
+        let behind = SSHHost(alias: "inner", hostname: "10.0.0.6", user: "dev", proxyJump: "box")
+        let throughIt = BuiltInSSHRouter.connection(
+            for: behind, hosts: { $0 == "box" ? agent : nil }, password: { _ in nil }, hasStoredKey: { _ in false },
+            ownCredentials: .automatic, allowsAgent: false)
+        #expect(try #require(Self.reason(throughIt)).contains("SSH agent"))
+    }
+
     @Test func saysWhatAHostNeedsWhenItCantConnect() throws {
         let noPassword = SSHHost(alias: "pw", hostname: "h", auth: .password)
         #expect(try #require(Self.reason(Self.connection(noPassword))).contains("No password"))

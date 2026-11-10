@@ -1,6 +1,11 @@
 import Foundation
+import RelayCore
 import Security
+#if os(macOS)
 import SystemConfiguration
+#else
+import UIKit
+#endif
 
 /// Which build this is. The dev variant ("Relay Dev", App/project.yml's
 /// Debug configuration) installs alongside the real app: its own bundle ID
@@ -50,17 +55,29 @@ public enum AppVariant {
     /// isn't entitled to. nil: this build can't sync.
     static let cloudKitContainer: String? = {
         guard let container = Bundle.main.object(forInfoDictionaryKey: "RelayCloudKitContainer") as? String,
-              !container.isEmpty,
-              let task = SecTaskCreateFromSelf(nil),
+              !container.isEmpty else { return nil }
+        #if os(iOS)
+        // iOS builds are always signed for it (no ad-hoc builds), and
+        // can't read their entitlements.
+        return container
+        #else
+        guard let task = SecTaskCreateFromSelf(nil),
               let entitled = SecTaskCopyValueForEntitlement(
                 task, "com.apple.developer.icloud-container-identifiers" as CFString, nil) as? [String],
               entitled.contains(container) else { return nil }
         return container
+        #endif
     }()
 
-    /// This Mac's name, as in System Settings ▸ General ▸ Sharing.
+    /// This device's name: the Mac's, as in System Settings ▸ General ▸
+    /// Sharing; on iOS, the model ("iPhone"), all apps may know.
+    @MainActor
     static var computerName: String {
+        #if os(macOS)
         SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
+        #else
+        UIDevice.current.name
+        #endif
     }
 
     /// Where this Mac's own sshd listens: 22 (Remote Login). A dev build
@@ -72,6 +89,16 @@ public enum AppVariant {
             ?? UserDefaults.standard.integer(forKey: "RelayLocalSSHPort")
         return (1...65535).contains(port) ? port : 22
     }()
+
+    /// This Mac's own sshd, for telling which hosts are this Mac. None on
+    /// iOS: an iPhone or iPad isn't a host.
+    static var localIdentity: LocalSSHIdentity? {
+        #if os(macOS)
+        LocalSSHIdentity(port: localSSHPort)
+        #else
+        nil
+        #endif
+    }
 
     /// Relay's own known_hosts: host keys trusted in Relay (the user's
     /// ~/.ssh/known_hosts is read but never written by the built-in client).
