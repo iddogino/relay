@@ -47,13 +47,19 @@ class RelayUITestCase: XCTestCase {
         let row = app.staticTexts[name ?? sessionName].firstMatch
         // The app reopens the session last open once it has loaded, which
         // can be after the list shows: back to the list whenever it does.
-        // (Existence, not hittability: XCTest fails a test that asks
-        // whether something mid-animation is hittable.)
+        // On screen by frame — not hittability (XCTest fails a test that
+        // asks it of something mid-animation), nor existence (a screen
+        // navigated away from can stay in the hierarchy).
         let phone = UIDevice.current.userInterfaceIdiom == .phone
-        var listShown: Bool { row.exists && !(phone && terminal.exists) }
+        let window = app.windows.firstMatch
+        func onScreen(_ element: XCUIElement) -> Bool {
+            element.exists && !element.frame.isEmpty && window.frame.contains(element.frame)
+        }
+        var terminalShown: Bool { phone && onScreen(terminal) }
+        var listShown: Bool { onScreen(row) && !terminalShown }
         let deadline = Date().addingTimeInterval(20)
         while !listShown, Date() < deadline {
-            if phone && terminal.exists { showList() }
+            if terminalShown { showList() }
             RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         }
         XCTAssertTrue(listShown, "no row for the session", file: file, line: line)
