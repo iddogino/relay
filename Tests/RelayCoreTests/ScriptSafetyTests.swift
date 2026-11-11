@@ -17,9 +17,11 @@ struct ScriptSafetyTests {
         /// Argv records: one invocation per element, args separated by \u{1F}.
         func invocations() throws -> [[String]] {
             guard let contents = try? String(contentsOf: log, encoding: .utf8) else { return [] }
-            return contents.split(separator: "\n").map { line in
+            let calls = contents.split(separator: "\n").map { line in
                 line.split(separator: "\u{1F}", omittingEmptySubsequences: false).map(String.init)
             }
+            #expect(!calls.contains { $0.first == "MISSING-U" }, "a tmux command ran without -u")
+            return calls
         }
     }
 
@@ -36,6 +38,14 @@ struct ScriptSafetyTests {
         // `has-session` reports "no such session" so kill scripts see success.
         let script = """
         #!/bin/sh
+        # Every command goes with -u (tmux would otherwise print tabs and
+        # non-ASCII as "_" where the host has no UTF-8 locale); recorded
+        # without it, or as MISSING-U.
+        case "${1:-}" in
+          -u) shift ;;
+          -V) ;;
+          *) printf 'MISSING-U\u{1F}%s\n' "${1:-}" >> \(POSIXShellQuote.quote(log.path)) ;;
+        esac
         out=""
         for a in "$@"; do out="$out$a\u{1F}"; done
         printf '%s\\n' "$out" >> \(POSIXShellQuote.quote(log.path))

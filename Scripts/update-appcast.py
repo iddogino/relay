@@ -82,7 +82,9 @@ def main() -> int:
     blocks.append(item)
     blocks.sort(key=build_number, reverse=True)
 
-    feed = skeleton.replace("</channel>", "".join(blocks) + "  </channel>", 1)
+    # The indentation before </channel> is consumed with it: left behind, it
+    # would pile up in front of the first item, two spaces a release.
+    feed = re.sub(r"[ \t]*</channel>", lambda _: "".join(blocks) + "  </channel>", skeleton, count=1)
 
     # Never write a feed that doesn't parse.
     try:

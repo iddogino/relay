@@ -90,6 +90,56 @@ struct SSHKeysAndAgentTests {
         }
     }
 
+    /// A key the agent holds but won't sign with (one that needs a
+    /// confirmation nobody gives: `ssh-add -c`, 1Password, Secretive) is
+    /// passed over for the next. It used to end the whole sign-in, with
+    /// the key that would have worked never tried.
+    @Test func aKeyTheAgentWontSignWithIsPassedOver() async throws {
+        let sshd = try #require(Self.sshd, "sshd must be available")
+        let refused = try keygen("refused", ["-t", "ed25519"])
+        let good = try keygen("good", ["-t", "ed25519"])
+        let authorized = try FileHandle(forWritingTo: sshd.directory.appendingPathComponent("authorized_keys"))
+        authorized.seekToEndOfFile()
+        authorized.write(try Data(contentsOf: URL(fileURLWithPath: refused + ".pub")))
+        authorized.write(try Data(contentsOf: URL(fileURLWithPath: good + ".pub")))
+        try authorized.close()
+
+        // An agent whose confirmation prompt always says no.
+        let socket = scratch.appendingPathComponent("agent-confirm.sock").path
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-agent")
+        process.arguments = ["-D", "-a", socket]
+        process.environment = ["SSH_ASKPASS": "/usr/bin/false", "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": ":0", "PATH": "/usr/bin:/bin"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        defer { process.terminate() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !FileManager.default.fileExists(atPath: socket), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(try run("/usr/bin/ssh-add", ["-q", "-c", refused], environment: ["SSH_AUTH_SOCK": socket]) == 0)
+        #expect(try run("/usr/bin/ssh-add", ["-q", good], environment: ["SSH_AUTH_SOCK": socket]) == 0)
+        try FileManager.default.removeItem(atPath: refused)
+        try FileManager.default.removeItem(atPath: good)
+
+        let agent = SSHAgent(socketPath: socket)
+        let identities = try agent.identities()
+        #expect(identities.count == 2)
+        // The premise: the agent refuses the first key.
+        #expect(throws: (any Error).self) { try agent.sign(keyBlob: identities[0].blob, data: Data("x".utf8)) }
+
+        var options = SSHConnectionPool.Options()
+        options.knownHostsFiles = [sshd.knownHostsPath]
+        options.agent = agent
+        options.defaultKeyFiles = []
+        var target = sshd.target
+        target.credentials = .automatic
+        let result = try await SSHConnectionPool(options: options).exec(
+            target: target, command: "echo second-key", stdin: Data(), timeout: .seconds(20))
+        #expect(String(decoding: result.stdout, as: UTF8.self).contains("second-key"))
+    }
+
     @Test func rsaAgentKeysAreNotOffered() async throws {
         // NIOSSH would label them ssh-rsa (SHA-1), which servers refuse.
         let key = try keygen("rsa", ["-t", "rsa", "-b", "2048"])

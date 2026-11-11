@@ -92,9 +92,9 @@ public final class CloudSync {
     /// Records the owner's items as they are now (see
     /// `SyncState.recordLocal`); changes go out with the next sync. The
     /// owner saves `state` right after.
-    public func recordLocal(_ items: [SyncItem]) {
+    public func recordLocal(_ items: [SyncItem], keeping: Set<String> = []) {
         guard loaded else { return }
-        let changed = state.recordLocal(items)
+        let changed = state.recordLocal(items, keeping: keeping)
         enqueue(changed)
         pendingCount = state.pendingNames.count
         if !changed.isEmpty { sendSoon() }

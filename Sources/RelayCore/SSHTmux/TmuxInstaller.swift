@@ -258,12 +258,17 @@ public enum TmuxInstaller {
         exec "$HOME/.relay/tmux/\(version)/tmux" "$@"
         RELAY_EOF
         chmod 755 "$w.part"
+        # Checked before it's put in place: a tmux that won't run here must
+        # not be what Relay (and the user's PATH) finds from now on.
+        if ! v=$("$w.part" -V 2>&1); then
+          rm -f "$w.part"
+          printf 'RTERM_STATUS=wont_run\\n'; printf '%s\\n' "$v" >&2; exit 32
+        fi
         mv -f "$w.part" "$w"
         linked=no
         if [ ! -e "$HOME/.local/bin/tmux" ] && [ ! -L "$HOME/.local/bin/tmux" ]; then
           mkdir -p "$HOME/.local/bin" && ln -s "$w" "$HOME/.local/bin/tmux" && linked=yes
         fi
-        if ! v=$("$w" -V 2>&1); then printf 'RTERM_STATUS=wont_run\\n'; printf '%s\\n' "$v" >&2; exit 32; fi
         printf 'RTERM_STATUS=ok\\nRTERM_TMUX=%s\\nRTERM_TMUX_VERSION=%s\\nRTERM_LINKED=%s\\n' "$w" "$v" "$linked"
         """
     }
@@ -289,7 +294,7 @@ public enum TmuxInstaller {
         }
         func run(_ script: String, input: SSHExecInput) async throws -> [String: String] {
             let result = try await pool.exec(
-                target: target, command: "/bin/sh -c \(POSIXShellQuote.quote(script))", input: input,
+                target: target, command: RemoteShCommand.line(script), input: input,
                 timeout: .seconds(120))
             let stdout = String(decoding: result.stdout, as: UTF8.self)
             let markers = SSHCommandRunner.CommandResult(exitCode: result.exitCode, stdout: stdout, stderr: "").markers()

@@ -313,7 +313,14 @@ public final class AppModel {
             return
         }
         let alias = project.workspace.opaqueID
-        let host = SSHHostNameResolver.browserHost(alias: alias, host: hosts.first { $0.alias == alias })
+        let savedHost = hosts.first { $0.alias == alias }
+        // A session on this Mac: localhost already is the right machine
+        // (and a server bound to 127.0.0.1 answers under no other name).
+        if let savedHost, isThisMac(savedHost) {
+            Platform.open(url)
+            return
+        }
+        let host = SSHHostNameResolver.browserHost(alias: alias, host: savedHost)
         Platform.open(LocalhostURLRewriter.rewrite(url, remoteHost: host) ?? url)
     }
 
@@ -369,6 +376,10 @@ public final class AppModel {
             collapsedProjects = state.collapsedProjectIDs
             restoredSelection = state.lastSelectedSessionID
             loadedHosts = state.hosts
+            unreadableHosts = (state.unreadableHosts, state.unreadableHostAliases)
+            if !state.unreadableHosts.isEmpty {
+                ghosttyLogger.error("\(state.unreadableHosts.count, privacy: .public) host record(s) in state.json couldn't be read; kept as they are")
+            }
             cloudSync.restore(state.sync)
         } catch ProjectStoreError.corruptState(let backupPath) {
             cloudSync.restore(nil)
@@ -392,21 +403,21 @@ public final class AppModel {
         // All projects are visible (expanded) in the sidebar, so reconcile
         // each once at launch; restore the last-selected session when found
         // (selection triggers reattachment).
-        var selectionToRestore: SessionID?
+        // Restored as soon as its project has been read, and only while
+        // nothing is selected: a slow or unreachable host further down
+        // the list must not hold it back, nor take the user away from a
+        // session they've picked meanwhile.
         for project in projects {
             await refreshSessions(for: project)
             if let restored = restoredSelection,
                sessions[project.id]?.contains(where: { $0.id == restored }) == true {
-                selectionToRestore = restored
                 restoredSelection = nil
+                // Let the sidebar finish inserting rows before applying selection.
+                try? await Task.sleep(for: .milliseconds(100))
+                if selectedSessionID == nil { selectedSessionID = restored }
             }
         }
         restoredSelection = nil
-        if let selectionToRestore {
-            // Let the sidebar finish inserting rows before applying selection.
-            try? await Task.sleep(for: .milliseconds(100))
-            selectedSessionID = selectionToRestore
-        }
     }
 
     private func applicationDidActivate() {
@@ -546,8 +557,26 @@ public final class AppModel {
         try await provider.removeAuthorizedKey(alias: host.alias, publicKeyBlob: key.publicKeyBlob)
     }
 
+    /// The hosts that connect through `host`.
+    func hostsJumping(through host: SSHHost) -> [SSHHost] {
+        hosts.filter { $0.proxyJump == host.alias }
+    }
+
+    /// Why `host` can't be removed, or nil when it can.
+    func removalBlocker(for host: SSHHost) -> String? {
+        let projectCount = projects(on: host).count
+        if projectCount > 0 {
+            return projectCount == 1 ? "A project uses this host." : "\(projectCount) projects use this host."
+        }
+        let dependents = hostsJumping(through: host).map(\.alias)
+        if !dependents.isEmpty {
+            return "\(dependents.joined(separator: ", ")) \(dependents.count == 1 ? "connects" : "connect") through this host."
+        }
+        return nil
+    }
+
     func removeHost(_ host: SSHHost) async {
-        guard projects(on: host).isEmpty else { return }
+        guard removalBlocker(for: host) == nil else { return }
         hosts.removeAll { $0.alias == host.alias }
         SSHPasswordStore.delete(alias: host.alias)
         hostRegistry?.setHosts(hosts)
@@ -629,6 +658,7 @@ public final class AppModel {
             self.refreshPRStatusNow()
             if self.diffTrayVisible {
                 self.diff = nil
+                self.diffError = nil
                 Task { await self.loadDiff() }
             }
             self.persist()
@@ -916,8 +946,21 @@ public final class AppModel {
               let project = projects.first(where: { $0.id == session.projectID }),
               !isRemoteMissing(project) else { return }
         gitStateTask = Task { [provider] in
-            defer { self.gitStateTask = nil }
-            guard let state = try? await provider.gitState(for: session, project: project) else {
+            defer {
+                self.gitStateTask = nil
+                // The selection moved on while this probe ran: the new
+                // session's turn now, not at the next tick.
+                if self.selectedSessionID != session.id { self.refreshGitState() }
+            }
+            let state: SessionGitState?
+            do {
+                state = try await provider.gitState(for: session, project: project)
+            } catch {
+                // A transient failure (the host didn't answer this time)
+                // keeps what was known.
+                return
+            }
+            guard let state else {
                 self.gitStates[session.id] = nil
                 self.prStatuses[session.id] = nil
                 return
@@ -937,16 +980,32 @@ public final class AppModel {
         }
     }
 
+    /// Counts diff loads, so only the latest one's result is shown: a
+    /// slow host's answer for a session the user has since left must not
+    /// land under another session's header.
+    private var diffLoadGeneration = 0
+
     func loadDiff() async {
+        diffLoadGeneration += 1
+        let generation = diffLoadGeneration
         guard let session = selectedSession,
-              let project = projects.first(where: { $0.id == session.projectID }) else { return }
+              let project = projects.first(where: { $0.id == session.projectID }) else {
+            diffLoading = false
+            return
+        }
         diffLoading = true
         diffError = nil
-        defer { diffLoading = false }
+        let result: Result<SessionGitDiff?, Error>
         do {
-            diff = try await provider.gitDiff(for: session, project: project)
+            result = .success(try await provider.gitDiff(for: session, project: project))
         } catch {
-            diffError = error.localizedDescription
+            result = .failure(error)
+        }
+        guard generation == diffLoadGeneration, selectedSessionID == session.id else { return }
+        diffLoading = false
+        switch result {
+        case .success(let loaded): diff = loaded
+        case .failure(let error): diffError = error.localizedDescription
         }
     }
 
@@ -1971,6 +2030,11 @@ public final class AppModel {
 
     private var persistChain: Task<Void, Never>?
 
+    /// Host records the state file holds that this build can't read (see
+    /// PersistedState.unreadableHosts): saved back as found, and never
+    /// synced as deletions.
+    private var unreadableHosts: (records: [JSONValue], aliases: [String]) = ([], [])
+
     func persist() {
         persist(lastSelected: selectedSessionID)
     }
@@ -1978,7 +2042,9 @@ public final class AppModel {
     private func persist(lastSelected: SessionID?) {
         // Every change to the hosts and projects comes through here, so
         // this is where sync notices them.
-        cloudSync.recordLocal(syncItems())
+        cloudSync.recordLocal(
+            syncItems(),
+            keeping: Set(unreadableHosts.aliases.map(SyncItem.recordName(hostAlias:))))
         let state = PersistedState(
             projects: projects,
             tombstones: tombstones,
@@ -1986,6 +2052,7 @@ public final class AppModel {
             collapsedProjectIDs: collapsedProjects,
             sessionOrder: sessionOrder,
             hosts: hostRegistry == nil ? nil : hosts,
+            unreadableHosts: unreadableHosts.records,
             sync: cloudSync.state
         )
         // Chain saves so an older snapshot can never overwrite a newer one.

@@ -1,3 +1,5 @@
+// Debug builds only: none of this is compiled into a release.
+#if DEBUG
 #if os(macOS)
 import AppKit
 #endif
@@ -17,7 +19,7 @@ enum SyncDevHook {
     private static var installed = false
 
     static func installIfDevBuild(model: AppModel) {
-        guard AppVariant.bundleIdentifier.hasSuffix(".dev"), !installed else { return }
+        guard AppVariant.isDevBuild, !installed else { return }
         installed = true
         DevNotifications.observe(notification) { [weak model] in
             guard let model else { return }
@@ -237,3 +239,4 @@ enum SyncDevHook {
         return project
     }
 }
+#endif

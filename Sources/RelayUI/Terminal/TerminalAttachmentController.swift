@@ -120,7 +120,10 @@ final class TerminalAttachmentController {
     func retryNow() {
         guard session != nil, project != nil else { return }
         switch phase {
-        case .reconnecting, .failed, .connecting:
+        // Attached too: a connection can hang without having ended yet
+        // (the host vanished, and nothing has noticed), and Reconnect is
+        // how the user says so.
+        case .reconnecting, .failed, .connecting, .attached:
             generation &+= 1
             attachTask?.cancel()
             tearDownSurface()
@@ -206,7 +209,15 @@ final class TerminalAttachmentController {
         terminalLink = created?.link
         terminalLink?.start()
         view.setPresented(presented)
-        lastAttachTime = Date()
+        // Still connecting (or reconnecting): the phase turns attached
+        // when the SSH session opens (sessionOpened).
+        openedAt = nil
+    }
+
+    /// The SSH session behind the surface is open on the host.
+    private func sessionOpened() {
+        openedAt = Date()
+        lastOpenFailure = nil
         phase = .attached
     }
 
@@ -214,20 +225,31 @@ final class TerminalAttachmentController {
     /// that feeds it (started by the caller).
     private func makeSurface(spec: TerminalLaunchSpec) -> (view: TerminalSurfaceView, link: SSHTerminalLink?)? {
         let gen = generation
+        // Retries keep the generation, so the surface is told apart by
+        // its own number: an earlier surface's session opening late
+        // must not mark this one attached.
+        surfaceSerial &+= 1
+        let serial = surfaceSerial
         let io = ManualTerminalIO()
         guard let view = TerminalSurfaceView(manualIO: io) else { return nil }
         let link = SSHTerminalLink(
             io: io,
             pool: spec.pool,
             configuration: .init(target: spec.target, command: spec.command, environment: spec.environment),
+            onOpen: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, gen == self.generation, serial == self.surfaceSerial,
+                          self.surfaceView != nil else { return }
+                    self.sessionOpened()
+                }
+            },
             onEnd: { [weak self] end, openError in
                 // The surface reports the end like a process exit (and the
                 // reconnect logic takes it from there).
                 let failure = openError.map(SSHTerminalLink.describe)
                 Task { @MainActor [weak self] in
                     guard let self, gen == self.generation else { return }
-                    // A session that opened clears an earlier failure.
-                    if failure != nil || end != nil { self.lastOpenFailure = failure }
+                    if let failure { self.lastOpenFailure = failure }
                 }
             })
         return (view, link)
@@ -285,8 +307,15 @@ final class TerminalAttachmentController {
                     self.showDropNotice("Upload to \(alias) finished after the session changed — remote path copied to the clipboard.")
                     return
                 }
-                self.surfaceView?.injectText(pasteText)
                 self.dropActivity = .idle
+                guard case .attached = self.phase, let surfaceView = self.surfaceView else {
+                    // The terminal dropped (and may be reconnecting): the
+                    // path has nowhere to be typed.
+                    Platform.copy(String(pasteText.dropLast()))
+                    self.showDropNotice("Upload to \(alias) finished while the terminal was disconnected — remote path copied to the clipboard.")
+                    return
+                }
+                surfaceView.injectText(pasteText)
             } catch is CancellationError {
                 if gen == self.generation {
                     self.dropActivity = .idle
@@ -393,7 +422,10 @@ final class TerminalAttachmentController {
         return total
     }
 
-    private var lastAttachTime = Date.distantPast
+    /// When the current surface's SSH session opened; nil while it's
+    /// still connecting.
+    private var openedAt: Date?
+    private var surfaceSerial = 0
 
     /// The SSH session ended. Never touches the remote session: decide
     /// between ended (session gone) and reconnect (transient failure).
@@ -401,12 +433,13 @@ final class TerminalAttachmentController {
         guard let session, let project else { return }
         tearDownSurface()
 
-        // An attachment that survived a while resets the backoff; one that
-        // died quickly continues escalating it. The threshold must exceed the
-        // connect timeout so slow connection failures still escalate and
-        // the bounded-retry limit stays reachable.
-        let quickFailure = Date().timeIntervalSince(lastAttachTime) < 30
-        let attempt = quickFailure ? previousAttempt + 1 : 0
+        // An attachment that was open a while resets the backoff; one that
+        // never opened, or died soon after, continues escalating it —
+        // however long the failed connection took to give up, so the
+        // bounded-retry limit stays reachable on a host that only stalls.
+        let stable = openedAt.map { Date().timeIntervalSince($0) >= 30 } ?? false
+        openedAt = nil
+        let attempt = stable ? 0 : previousAttempt + 1
         guard attempt < Self.maxAutoRetries else {
             let reason = lastOpenFailure.map { " Last error: \($0)." } ?? ""
             phase = .failed(message: "Can't reach \(project.workspace.opaqueID). The connection keeps dropping.\(reason)")

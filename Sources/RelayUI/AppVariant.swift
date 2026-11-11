@@ -40,6 +40,18 @@ public enum AppVariant {
 
     static let bundleIdentifier: String = Bundle.main.bundleIdentifier ?? "com.iddogino.Relay"
 
+    /// Whether the dev-only automation hooks may run: a Debug build, named
+    /// as one (Relay Dev). Never true in a release, whatever its bundle
+    /// is renamed to — the hooks drive the app (hosts, keys, sessions,
+    /// uploads) from files and notifications any local process can send.
+    static let isDevBuild: Bool = {
+        #if DEBUG
+        return bundleIdentifier.hasSuffix(".dev")
+        #else
+        return false
+        #endif
+    }()
+
     /// The Keychain access group Relay's SSH keys live in — set by the
     /// build script only when the app is signed with an entitlement for
     /// it. nil (ad-hoc builds): no iCloud Keychain, Secure Enclave keys
@@ -84,7 +96,7 @@ public enum AppVariant {
     /// can be pointed at a test sshd instead (`RELAY_LOCAL_SSH_PORT`, or
     /// `RelayLocalSSHPort` in its defaults), to try This Mac without turning Remote Login on.
     static let localSSHPort: Int = {
-        guard bundleIdentifier.hasSuffix(".dev") else { return 22 }
+        guard isDevBuild else { return 22 }
         let port = Int(ProcessInfo.processInfo.environment["RELAY_LOCAL_SSH_PORT"] ?? "")
             ?? UserDefaults.standard.integer(forKey: "RelayLocalSSHPort")
         return (1...65535).contains(port) ? port : 22

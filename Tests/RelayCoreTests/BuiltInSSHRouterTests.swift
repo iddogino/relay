@@ -193,8 +193,12 @@ struct BuiltInSSHRouterTests {
 
         let launch = try await provider.makeTerminalLaunch(for: session, project: project)
         #expect(launch.target == SSHTarget(host: "box.example", port: 2200, username: "me", credentials: .automatic))
-        #expect(launch.command.hasPrefix("sh -c '"))
-        #expect(launch.command.contains("attach-session -t rterm-abc123"))
+        // As RemoteShCommand sends a script: one line any login shell
+        // passes on untouched.
+        #expect(launch.command.hasPrefix("/bin/sh -c '"))
+        #expect(!launch.command.contains("\n"))
+        #expect(launch.command.contains(RemoteShCommand.octal("-u set-option -t rterm-abc123 status off")))
+        #expect(launch.command.contains(RemoteShCommand.octal("attach-session -t rterm-abc123")))
 
         // A host Relay can't connect to fails with the reason.
         let other = Project(name: "Q", workspace: WorkspaceRef(provider: .sshTmux, opaqueID: "orb"),

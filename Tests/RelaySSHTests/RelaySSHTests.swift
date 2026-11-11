@@ -25,9 +25,60 @@ struct RelaySSHTests {
         #expect(hosts.verify(host: "box", port: 22, keyType: "ssh-ed25519", key: Self.keyA) == .trusted)
         #expect(hosts.verify(host: "BOX", port: 22, keyType: "ssh-ed25519", key: Self.keyA) == .trusted)
         #expect(hosts.verify(host: "box", port: 22, keyType: "ssh-ed25519", key: Self.keyB) == .changed)
-        // A different key type for a known host isn't a mismatch, just unknown.
-        #expect(hosts.verify(host: "box", port: 22, keyType: "ecdsa-sha2-nistp256", key: Self.keyB) == .unknown)
         #expect(hosts.verify(host: "nowhere", port: 22, keyType: "ssh-ed25519", key: Self.keyA) == .unknown)
+    }
+
+    /// The client asks for the key types it knows a host by first, so a
+    /// host presenting a key of another type has changed: calling it new
+    /// would let someone in between trade the blocked "identity changed"
+    /// for a first-time trust prompt, just by offering another type.
+    @Test func aKnownHostPresentingAnotherKeyTypeHasChanged() {
+        let hosts = KnownHosts(entries: KnownHosts.parse([
+            Self.line("box"),
+            Self.line("both"),
+            Self.line("both", "ecdsa-sha2-nistp256", Self.keyB),
+            // A type this client can't negotiate: it could never have
+            // been presented, so another type isn't a change.
+            Self.line("old", "ssh-rsa", Self.keyB),
+            Self.line("gone", "ssh-ed25519", Self.keyA, marker: "@revoked"),
+        ].joined(separator: "\n")))
+        #expect(hosts.verify(host: "box", port: 22, keyType: "ecdsa-sha2-nistp256", key: Self.keyB) == .changed)
+        #expect(hosts.verify(host: "both", port: 22, keyType: "ecdsa-sha2-nistp256", key: Self.keyB) == .trusted)
+        #expect(hosts.verify(host: "both", port: 22, keyType: "ecdsa-sha2-nistp384", key: Self.keyB) == .changed)
+        #expect(hosts.verify(host: "old", port: 22, keyType: "ssh-ed25519", key: Self.keyA) == .unknown)
+        #expect(hosts.verify(host: "gone", port: 22, keyType: "ecdsa-sha2-nistp256", key: Self.keyB) == .unknown)
+
+        #expect(hosts.knownKeyTypes(host: "box", port: 22) == ["ssh-ed25519"])
+        #expect(Set(hosts.knownKeyTypes(host: "both", port: 22)) == ["ssh-ed25519", "ecdsa-sha2-nistp256"])
+        #expect(hosts.knownKeyTypes(host: "old", port: 22) == [])
+        #expect(hosts.knownKeyTypes(host: "gone", port: 22) == [])
+        #expect(hosts.knownKeyTypes(host: "nowhere", port: 22) == [])
+    }
+
+    @Test func trustRefusesNamesKnownHostsWouldReadAsPatterns() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("relay-kh-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: file) }
+        let key = "ssh-ed25519 \(Self.keyA.base64EncodedString())"
+        for name in ["*", "box*", "?", "!box", "|1|x|y", "@revoked", "#box", "a,b", "a b", ""] {
+            #expect(throws: (any Error).self) { try KnownHosts.trust(host: name, port: 22, presentedKey: key, in: file) }
+        }
+        try KnownHosts.trust(host: "box.example.com", port: 22, presentedKey: key, in: file)
+        try KnownHosts.trust(host: "fe80::1", port: 2222, presentedKey: key, in: file)
+        let hosts = KnownHosts.load(files: [file])
+        #expect(hosts.verify(host: "box.example.com", port: 22, keyType: "ssh-ed25519", key: Self.keyA) == .trusted)
+        #expect(hosts.verify(host: "anything", port: 22, keyType: "ssh-ed25519", key: Self.keyA) == .unknown)
+    }
+
+    @Test func oneBadByteDoesntDropTheFile() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("relay-kh-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: file) }
+        var data = Data("# caf".utf8)
+        data.append(0xE9) // Latin-1 é
+        data.append(Data("\n\(Self.line("box"))\n\(Self.line("bad", marker: "@revoked"))\n".utf8))
+        try data.write(to: URL(fileURLWithPath: file))
+        let hosts = KnownHosts.load(files: [file])
+        #expect(hosts.verify(host: "box", port: 22, keyType: "ssh-ed25519", key: Self.keyA) == .trusted)
+        #expect(hosts.verify(host: "bad", port: 22, keyType: "ssh-ed25519", key: Self.keyA) == .revoked)
     }
 
     @Test func nonDefaultPortsUseBracketedNames() {

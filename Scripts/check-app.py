@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Checks a Relay.app built from App/project.yml: what makes it Relay.
 
-  Scripts/check-app.py <scheme> <configuration> <path to .app> [--distribution]
+  Scripts/check-app.py <scheme> <configuration> <path to .app> [--distribution] [--tmux]
 
 The bundle ID, Keychain group and iCloud container must be the ones every
 Relay build shares, or the app launches fine but can't see the user's SSH
@@ -12,7 +12,13 @@ The entitlements are read from the file Xcode signs with, with its build
 settings: an unsigned build (CI) has none of its own. With --distribution,
 the app must be signed as a release is (Developer ID, notarizable), and its
 signature's entitlements are checked instead.
+
+With --tmux (implied by --distribution), the app must bundle the tmux builds
+it installs on hosts that have none (Scripts/build-tmux.sh), whole: a build
+without them still runs, and only tells a user so when they need one.
 """
+import gzip
+import hashlib
 import json
 import os
 import plistlib
@@ -30,11 +36,14 @@ RESOURCES = ["Assets.car", "Relay.icns", "ghostty", "terminfo"]
 GRAMMARS = "RelaySyntaxHighlighter_RelaySyntaxHighlighter.bundle"
 STORE, DIRECT = "Relay", "Relay Direct"
 
-args = [a for a in sys.argv[1:] if a != "--distribution"]
+FLAGS = ("--distribution", "--tmux")
+args = [a for a in sys.argv[1:] if a not in FLAGS]
 distribution = "--distribution" in sys.argv
+require_tmux = distribution or "--tmux" in sys.argv
+if len(args) != 3 or args[0] not in (STORE, DIRECT) or (distribution and args[0] != DIRECT):
+    sys.exit(f"usage: {sys.argv[0]} '{STORE}'|'{DIRECT}' <configuration> <app> "
+             f"[--distribution: {DIRECT} only] [--tmux]")
 scheme, configuration, app = args
-if scheme not in (STORE, DIRECT) or (distribution and scheme != DIRECT):
-    sys.exit(f"usage: {sys.argv[0]} '{STORE}'|'{DIRECT}' <configuration> <app> [--distribution: {DIRECT} only]")
 failures = []
 
 
@@ -93,6 +102,37 @@ check(any(path.endswith("/Grammars") and "swift.json" in files
           for path, _, files in os.walk(os.path.join(resources, GRAMMARS))),
       f"no grammars in {GRAMMARS}")
 
+# The tmux bundle: every file its manifest lists, the size and content the
+# manifest says. Checked whenever it's there; required for a release.
+TMUX_FILES = ["tmux-linux-x86_64.gz", "tmux-linux-aarch64.gz", "tmux-darwin-universal.gz", "terminfo.tar.gz"]
+tmux = os.path.join(resources, "tmux")
+tmux_summary = "no tmux bundle"
+if os.path.exists(os.path.join(tmux, "manifest.json")):
+    with open(os.path.join(tmux, "manifest.json")) as f:
+        manifest = json.load(f)
+    files = manifest.get("files", {})
+    check(bool(manifest.get("version")), "tmux bundle: the manifest has no version")
+    for name in TMUX_FILES:
+        entry, path = files.get(name), os.path.join(tmux, name)
+        if entry is None or not os.path.isfile(path):
+            check(False, f"tmux bundle: no {name}")
+            continue
+        with open(path, "rb") as f:
+            data = f.read()
+        check(len(data) == entry.get("size"), f"tmux bundle: {name} is {len(data)} bytes, the manifest says {entry.get('size')}")
+        if "sha256" in entry:
+            check(hashlib.sha256(data).hexdigest() == entry["sha256"], f"tmux bundle: {name} doesn't match its checksum")
+        else:
+            try:
+                binary = gzip.decompress(data)
+            except OSError:
+                binary = b""
+            check(hashlib.sha256(binary).hexdigest() == entry.get("uncompressedSha256"),
+                  f"tmux bundle: {name} doesn't unpack to the binary the manifest names")
+    tmux_summary = f"tmux {manifest.get('version')} bundle"
+elif require_tmux:
+    check(False, "no tmux bundle (Scripts/build-tmux.sh makes build/tmux, which the build picks up)")
+
 sparkle = os.path.join(app, "Contents", "Frameworks", "Sparkle.framework")
 sandboxed = entitlements.get("com.apple.security.app-sandbox") is True
 if scheme == STORE:
@@ -148,4 +188,4 @@ if failures:
         print(f"::error::{scheme} ({configuration}): {failure}")
     sys.exit(1)
 print(f"{scheme} ({configuration}) {info.get('CFBundleShortVersionString')}: bundle ID, "
-      f"Keychain group, iCloud container, resources OK; {summary}")
+      f"Keychain group, iCloud container, resources OK; {tmux_summary}; {summary}")

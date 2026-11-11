@@ -36,8 +36,10 @@ extension AppModel {
             hostRegistry: hostRegistry,
             builtInSSH: builtInSSH,
             cloudSync: CloudSync(containerIdentifier: AppVariant.cloudKitContainer))
+        #if DEBUG
         HostKeyDevHook.installIfDevBuild(model: model)
         SyncDevHook.installIfDevBuild(model: model)
+        #endif
         return model
     }
 }

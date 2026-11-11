@@ -34,6 +34,7 @@ public final class SSHTerminalLink: @unchecked Sendable {
     private let pool: SSHConnectionPool
     private let configuration: Configuration
     private let onEnd: (@Sendable (SSHTerminalEnd?, Error?) -> Void)?
+    private let onOpen: (@Sendable () -> Void)?
 
     private let lock = NSLock()
     private var session: SSHTerminalSession?
@@ -43,16 +44,20 @@ public final class SSHTerminalLink: @unchecked Sendable {
     private var closed = false
 
     /// `onEnd` (optional, for the app's bookkeeping) receives how the
-    /// session ended, or the error that kept it from opening.
+    /// session ended, or the error that kept it from opening. `onOpen`
+    /// is called once the session is open on the host — until then the
+    /// terminal is only connecting.
     public init(
         io: ManualTerminalIO,
         pool: SSHConnectionPool = .shared,
         configuration: Configuration,
+        onOpen: (@Sendable () -> Void)? = nil,
         onEnd: (@Sendable (SSHTerminalEnd?, Error?) -> Void)? = nil
     ) {
         self.io = io
         self.pool = pool
         self.configuration = configuration
+        self.onOpen = onOpen
         self.onEnd = onEnd
     }
 
@@ -110,6 +115,7 @@ public final class SSHTerminalLink: @unchecked Sendable {
             io.setInputHandler { session.write($0) }
             // Also delivers any size change since the request.
             io.setResizeHandler { session.resize($0) }
+            onOpen?()
         } catch {
             guard !lock.withLock({ closed }) else { return }
             let message = "\r\n[relay] Couldn't open a terminal on \(configuration.target.host): \(Self.describe(error))\r\n"

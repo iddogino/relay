@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -15,7 +18,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: GhosttyKit (cached)
         uses: ./.github/actions/ghosttykit
@@ -71,10 +74,10 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Cache Zig toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: Vendor/toolchain
           key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Scripts/build-libghostty.sh', 'patches/zig/**') }}
@@ -91,7 +94,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: GhosttyKit with iOS slices (cached)
         uses: ./.github/actions/ghosttykit
@@ -134,15 +137,25 @@ jobs:
   # the direct download, and the App Store app (RelayUI in the App Sandbox,
   # without Sparkle). macOS 26, because compiling the Icon Composer icon
   # (Resources/Relay.icon) fails on the macOS 15 image.
+  # The Linux half of the tmux bundle (macOS runners have no Docker).
+  tmux-linux:
+    uses: ./.github/workflows/tmux-linux.yml
+
   apps:
     name: Mac apps (Xcode)
+    needs: tmux-linux
     runs-on: macos-26
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: GhosttyKit (cached)
         uses: ./.github/actions/ghosttykit
+
+      # build/tmux, as a release has it: the tmux Relay installs on hosts
+      # that have none.
+      - name: tmux bundle
+        uses: ./.github/actions/tmux-bundle
 
       - name: Install XcodeGen
         env:
@@ -163,7 +176,7 @@ jobs:
             xcodebuild build -project App/Relay.xcodeproj -scheme "$scheme" -configuration Release \
               -destination 'generic/platform=macOS' ARCHS=arm64 CODE_SIGNING_ALLOWED=NO \
               -derivedDataPath .build/xcode-app -quiet
-            Scripts/check-app.py "$scheme" Release "$APP"
+            Scripts/check-app.py "$scheme" Release "$APP" --tmux
           done
 
   # The iPhone and iPad app (the App Store target's iOS destination): built
@@ -218,7 +231,7 @@ jobs:
     timeout-minutes: 20
     container: swift:6.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Run highlighter fixture suite
         working-directory: RelaySyntaxHighlighter

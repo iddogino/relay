@@ -96,12 +96,26 @@ public struct SyncState: Codable, Sendable, Equatable {
     /// Records the device's items as they are now: anything new or
     /// different is a new version made `now`, anything gone is deleted
     /// `now`. Returns the records that now have to be sent.
-    public mutating func recordLocal(_ items: [SyncItem], now: Date = Date()) -> [String] {
+    ///
+    /// `keeping` names records that are here though not among `items`
+    /// (hosts this build can't read): they're left as recorded, never
+    /// taken for deleted. So is a host that isn't valid: other devices
+    /// would refuse it, so it's neither sent nor a deletion of what
+    /// iCloud has under its name.
+    public mutating func recordLocal(_ items: [SyncItem], keeping: Set<String> = [], now: Date = Date()) -> [String] {
         let madeAt = seeded ? now : .distantPast
         seeded = true
+        var kept = keeping
         var current: [String: (kind: SyncKind, payload: Data)] = [:]
         for item in items {
-            guard let payload = try? SyncPayload.canonical(item) else { continue }
+            if case .host(let synced) = item, (try? synced.host.validate()) == nil {
+                kept.insert(item.recordName)
+                continue
+            }
+            guard let payload = try? SyncPayload.canonical(item) else {
+                kept.insert(item.recordName)
+                continue
+            }
             current[item.recordName] = (item.kind, payload)
         }
         let liveProjects = Set(items.compactMap { item -> ProjectID? in
@@ -124,7 +138,7 @@ public struct SyncState: Codable, Sendable, Equatable {
             }
             changed.append(name)
         }
-        for (name, entry) in entries where entry.payload != nil && current[name] == nil {
+        for (name, entry) in entries where entry.payload != nil && current[name] == nil && !kept.contains(name) {
             entries[name]?.payload = nil
             entries[name]?.extra = nil
             entries[name]?.modifiedAt = madeAt
@@ -167,8 +181,14 @@ public struct SyncState: Codable, Sendable, Equatable {
     public mutating func noteSaved(_ name: String, envelope: Data, serverFields: Data) -> Bool {
         guard var entry = entries[name] else { return false }
         entry.serverFields = serverFields
-        if let sent = try? SyncPayload.parse(envelope, kind: entry.kind, recordName: name),
-           sent.payload == entry.payload, sent.modifiedAt == entry.modifiedAt {
+        // Compared as sent, not by reading it back: a record this build
+        // sent but wouldn't accept (parse validates) must still count as
+        // saved, or it would be sent again forever.
+        let current = SyncPayload.envelope(payload: entry.payload, extra: entry.extra, modifiedAt: entry.modifiedAt)
+        if envelope == current {
+            entry.pending = false
+        } else if let sent = try? SyncPayload.parse(envelope, kind: entry.kind, recordName: name),
+                  sent.payload == entry.payload, sent.modifiedAt == entry.modifiedAt {
             entry.pending = false
         }
         entries[name] = entry

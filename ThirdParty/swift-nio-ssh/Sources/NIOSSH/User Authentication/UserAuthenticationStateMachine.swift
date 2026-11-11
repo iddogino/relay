@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Dispatch
 import NIOCore
 
 struct UserAuthenticationStateMachine {
@@ -379,14 +380,54 @@ extension UserAuthenticationStateMachine {
 
 private extension UserAuthenticationStateMachine {
     func requestNextAuthRequest(methods: NIOSSHAvailableUserAuthenticationMethods, delegate: NIOSSHClientUserAuthenticationDelegate) -> EventLoopFuture<SSHMessage.UserAuthRequestMessage?> {
-        let promise = self.loop.makePromise(of: NIOSSHUserAuthenticationOffer?.self)
+        // The explicit copies are here to force a copy of the buffer, rather than capturing self.
+        Self.requestNextAuthRequest(methods: methods, delegate: delegate, loop: self.loop, sessionID: self.sessionID)
+    }
+
+    // RELAY PATCH: a key offer is signed off the event loop, and one that
+    // can't be signed is skipped. Signing was done on the loop, in the
+    // promise's callback: a custom key that asks elsewhere (ssh-agent, which
+    // may wait for the user's confirmation) stalled every connection on the
+    // loop meanwhile, and its refusal failed the whole authentication with
+    // the delegate's remaining offers untried.
+    static func requestNextAuthRequest(
+        methods: NIOSSHAvailableUserAuthenticationMethods,
+        delegate: NIOSSHClientUserAuthenticationDelegate,
+        loop: EventLoop,
+        sessionID: ByteBuffer
+    ) -> EventLoopFuture<SSHMessage.UserAuthRequestMessage?> {
+        let promise = loop.makePromise(of: NIOSSHUserAuthenticationOffer?.self)
         delegate.nextAuthenticationType(availableMethods: methods, nextChallengePromise: promise)
 
-        // The explicit capture list is here to force a copy of the buffer, rather than capturing self.
-        return promise.futureResult.flatMapThrowing { [sessionID = self.sessionID] request in
-            try request.map { try SSHMessage.UserAuthRequestMessage(request: $0, sessionID: sessionID) }
+        return promise.futureResult.flatMap { request -> EventLoopFuture<SSHMessage.UserAuthRequestMessage?> in
+            guard let request = request else { return loop.makeSucceededFuture(nil) }
+            guard case .privateKey = request.offer else {
+                return loop.makeCompletedFuture { try SSHMessage.UserAuthRequestMessage(request: request, sessionID: sessionID) }
+            }
+            let signed = loop.makePromise(of: SSHMessage.UserAuthRequestMessage?.self)
+            let work = UncheckedAuthWork {
+                do {
+                    let message = try SSHMessage.UserAuthRequestMessage(request: request, sessionID: sessionID)
+                    signed.succeed(message)
+                } catch {
+                    // This key can't sign: on to the delegate's next offer.
+                    loop.execute {
+                        Self.requestNextAuthRequest(methods: methods, delegate: delegate, loop: loop, sessionID: sessionID)
+                            .cascade(to: signed)
+                    }
+                }
+            }
+            DispatchQueue.global(qos: .userInitiated).async { work.run() }
+            return signed.futureResult
         }
     }
+}
+
+/// RELAY PATCH: carries the signing work to another queue (the offer and
+/// the delegate aren't Sendable; each is used by one thread at a time).
+private struct UncheckedAuthWork: @unchecked Sendable {
+    let run: () -> Void
+    init(_ run: @escaping () -> Void) { self.run = run }
 }
 
 // MARK: Interacting with server delegate

@@ -4,6 +4,15 @@
 #
 #   Scripts/build-tmux.sh             build everything into build/tmux/, then verify
 #   Scripts/build-tmux.sh --no-verify skip the run checks (Docker/debian and local)
+#   Scripts/build-tmux.sh --linux     only what needs Docker: the Linux builds and
+#                                     terminfo, verified (runs on Linux too)
+#   Scripts/build-tmux.sh --no-docker the rest, where there's no Docker: the Linux
+#                                     pieces must already be in build/tmux-work/
+#                                     (from --linux, here or copied from where it
+#                                     ran), and aren't verified again
+#
+# The last two are how a release is built (.github/workflows): --linux on a
+# Linux runner, --no-docker on the Mac that builds the app.
 #
 # Outputs (build/tmux/):
 #   tmux-linux-x86_64.gz, tmux-linux-aarch64.gz  fully static (musl), built in
@@ -25,9 +34,13 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
 VERIFY=1
+STAGE="all"
+USE_DOCKER=1
 for arg in "$@"; do
   case "$arg" in
     --no-verify) VERIFY=0 ;;
+    --linux) STAGE="linux" ;;
+    --no-docker) USE_DOCKER=0 ;;
     *) echo "error: unknown option $arg" >&2; exit 2 ;;
   esac
 done
@@ -53,44 +66,59 @@ DOCKER="${DOCKER:-$(command -v docker || echo /usr/local/bin/docker)}"
 WORK="$ROOT/build/tmux-work"
 DL="$WORK/dl"
 OUT="$ROOT/build/tmux"
-JOBS="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+JOBS="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
 export TMUX_VERSION LIBEVENT_VERSION NCURSES_VERSION TERMINFO_ENTRIES DEFAULT_TERM JOBS
 mkdir -p "$DL" "$OUT"
 
 # 1. Fetch pinned sources; a hash mismatch is fatal, never re-downloaded over.
-fetch() { # name url sha256
-  local file="$DL/$1"
+# Further URLs are mirrors, tried in turn (a source's own site can refuse a
+# CI runner): whichever answers, the file must match the pin.
+fetch() { # name sha256 url [mirror...]
+  local name="$1" sha="$2" file="$DL/$1" url actual
+  shift 2
   if [ ! -f "$file" ]; then
-    echo "Downloading $1"
-    curl -fsSL --retry 3 -o "$file.part" "$2"
-    mv "$file.part" "$file"
+    for url in "$@"; do
+      echo "Downloading $name"
+      if curl -fsSL --retry 3 -o "$file.part" "$url"; then
+        mv "$file.part" "$file"
+        break
+      fi
+      echo "  not from $url" >&2
+    done
+    [ -f "$file" ] || { echo "error: couldn't download $name." >&2; exit 1; }
   fi
-  local actual
   actual="$(shasum -a 256 "$file" | cut -d' ' -f1)"
-  if [ "$actual" != "$3" ]; then
-    echo "error: $file has sha256 $actual, expected pinned $3." >&2
+  if [ "$actual" != "$sha" ]; then
+    echo "error: $file has sha256 $actual, expected pinned $sha." >&2
     exit 1
   fi
 }
-fetch "tmux-$TMUX_VERSION.tar.gz" \
-  "https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/tmux-$TMUX_VERSION.tar.gz" "$TMUX_SHA256"
-fetch "libevent-$LIBEVENT_VERSION.tar.gz" \
-  "https://github.com/libevent/libevent/releases/download/release-$LIBEVENT_VERSION/libevent-$LIBEVENT_VERSION.tar.gz" "$LIBEVENT_SHA256"
-fetch "utf8proc-$UTF8PROC_VERSION.tar.gz" \
-  "https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v$UTF8PROC_VERSION.tar.gz" "$UTF8PROC_SHA256"
-fetch "ncurses-$NCURSES_VERSION.tar.gz" \
-  "https://invisible-island.net/archives/ncurses/ncurses-$NCURSES_VERSION.tar.gz" "$NCURSES_SHA256"
+fetch_tmux_sources() {
+  fetch "tmux-$TMUX_VERSION.tar.gz" "$TMUX_SHA256" \
+    "https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/tmux-$TMUX_VERSION.tar.gz"
+  fetch "libevent-$LIBEVENT_VERSION.tar.gz" "$LIBEVENT_SHA256" \
+    "https://github.com/libevent/libevent/releases/download/release-$LIBEVENT_VERSION/libevent-$LIBEVENT_VERSION.tar.gz"
+}
 
 # A stamp per build dir records the pins it was built from, so re-runs skip
 # finished work and a changed pin rebuilds from scratch.
 PIN_STAMP="tmux=$TMUX_SHA256 libevent=$LIBEVENT_SHA256 utf8proc=$UTF8PROC_SHA256 ncurses=$NCURSES_SHA256 alpine=$ALPINE_IMAGE macos=$MACOS_MIN term=$DEFAULT_TERM"
 is_built() { [ "$(cat "$1/.stamp" 2>/dev/null || true)" = "$PIN_STAMP" ]; }
 fresh_dir() { rm -rf "$1"; mkdir -p "$1"; }
+need_docker() { # what
+  if [ "$USE_DOCKER" = 0 ]; then
+    echo "error: $1 isn't built for these pins, and --no-docker can't build it." >&2
+    echo "Run Scripts/build-tmux.sh --linux where there's Docker, and bring build/tmux-work/ here." >&2
+    exit 1
+  fi
+}
 
 # 2. Linux: static musl builds inside alpine, one container per arch.
 build_linux() { # docker-platform arch-name
   local dir="$WORK/linux-$2"
   if is_built "$dir"; then echo "linux-$2: up to date"; return; fi
+  need_docker "tmux for linux-$2"
+  fetch_tmux_sources
   fresh_dir "$dir"
   echo "Building tmux for linux-$2"
   "$DOCKER" run --rm --platform "$1" \
@@ -125,6 +153,10 @@ TERMINFO_DIR="$WORK/terminfo"
 if is_built "$TERMINFO_DIR"; then
   echo "terminfo: up to date"
 else
+  need_docker "terminfo"
+  fetch "ncurses-$NCURSES_VERSION.tar.gz" "$NCURSES_SHA256" \
+    "https://invisible-island.net/archives/ncurses/ncurses-$NCURSES_VERSION.tar.gz" \
+    "https://ftp.gnu.org/gnu/ncurses/ncurses-$NCURSES_VERSION.tar.gz"
   fresh_dir "$TERMINFO_DIR"
   echo "Compiling terminfo"
   "$DOCKER" run --rm -v "$DL:/dl:ro" -v "$TERMINFO_DIR:/work" \
@@ -153,11 +185,62 @@ else
   echo "$PIN_STAMP" > "$TERMINFO_DIR/.stamp"
 fi
 
+# The Linux pieces, packaged: all the --linux stage makes.
+gzip -9 -n -c "$WORK/linux-x86_64/tmux" > "$OUT/tmux-linux-x86_64.gz"
+gzip -9 -n -c "$WORK/linux-aarch64/tmux" > "$OUT/tmux-linux-aarch64.gz"
+cp "$TERMINFO_DIR/terminfo.tar.gz" "$OUT/terminfo.tar.gz"
+
+# Verifying a Linux build: it starts a server on a private socket and lists
+# it, reading only the bundled terminfo. A detached server never opens a
+# terminal, so the check also attaches a client (under script(1) for a pty),
+# which is what reads terminfo. The throwaway container's own terminfo
+# (debian's ncurses-base ships all five entries) is deleted first, so only
+# the bundled entries can satisfy it.
+verify_linux() { # docker-platform arch-name
+  echo "Verifying linux-$2 in $DEBIAN_IMAGE"
+  "$DOCKER" run --rm --platform "$1" -v "$OUT:/out:ro" "$DEBIAN_IMAGE" /bin/sh -euc '
+    rm -rf /etc/terminfo /lib/terminfo /usr/share/terminfo /usr/lib/terminfo
+    mkdir -p /tmp/ti && tar xzf /out/terminfo.tar.gz -C /tmp/ti
+    gzip -dc /out/tmux-linux-'"$2"'.gz > /tmp/tmux && chmod +x /tmp/tmux
+    /tmp/tmux -V
+    attach() { # TERM; prints the client exit code and any terminal error
+      TERM=$1 script -qec "/tmp/tmux -S /tmp/a -f /dev/null new-session true; echo rc=\$?" /dev/null </dev/null \
+        | tr -d "\033\r" | grep -aoE "missing or unsuitable terminal: [^ ]*|rc=[0-9]+" | tr "\n" " "
+    }
+    out=$(attach tmux-256color)
+    case "$out" in *"rc=0"*) echo "control: tmux-256color resolved without the bundle" >&2; exit 1 ;; esac
+    echo "control without TERMINFO_DIRS: $out"
+    export TERMINFO_DIRS=/tmp/ti
+    for term in xterm-256color tmux-256color screen-256color; do
+      out=$(attach $term)
+      echo "attach TERM=$term: $out"
+      case "$out" in *"rc=0"*) ;; *) exit 1 ;; esac
+      TERM=$term /tmp/tmux -S /tmp/s -f /dev/null new-session -d "sleep 5"
+      TERM=$term /tmp/tmux -S /tmp/s ls
+      [ "$(/tmp/tmux -S /tmp/s show -gv default-terminal)" = tmux-256color ]
+      /tmp/tmux -S /tmp/s kill-server
+    done
+  '
+}
+
+if [ "$STAGE" = "linux" ]; then
+  if [ "$VERIFY" = 1 ]; then
+    verify_linux linux/amd64 x86_64
+    verify_linux linux/arm64 aarch64
+  fi
+  echo "Done (Linux builds and terminfo; run with --no-docker on a Mac for the rest):"
+  ls -l "$OUT"
+  exit 0
+fi
+
 # 4. macOS: per-arch clang builds against static libevent/utf8proc, then lipo.
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
 build_darwin() { # arch
   local dir="$WORK/darwin-$1" host
   if is_built "$dir"; then echo "darwin-$1: up to date"; return; fi
+  fetch_tmux_sources
+  fetch "utf8proc-$UTF8PROC_VERSION.tar.gz" "$UTF8PROC_SHA256" \
+    "https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v$UTF8PROC_VERSION.tar.gz"
   fresh_dir "$dir"
   echo "Building tmux for darwin-$1"
   case "$1" in arm64) host=aarch64-apple-darwin ;; x86_64) host=x86_64-apple-darwin ;; esac
@@ -214,10 +297,7 @@ if [ -n "$bad_libs" ]; then
 fi
 
 # 5. Package and write the manifest.
-gzip -9 -n -c "$WORK/linux-x86_64/tmux" > "$OUT/tmux-linux-x86_64.gz"
-gzip -9 -n -c "$WORK/linux-aarch64/tmux" > "$OUT/tmux-linux-aarch64.gz"
 gzip -9 -n -c "$DARWIN_UNIVERSAL" > "$OUT/tmux-darwin-universal.gz"
-cp "$TERMINFO_DIR/terminfo.tar.gz" "$OUT/terminfo.tar.gz"
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 fsize() { stat -f %z "$1"; }
@@ -238,41 +318,12 @@ tmux_entry() { # gz-name uncompressed-path
   echo '}'
 } > "$OUT/manifest.json"
 
-# 6. Verify: each binary starts a server on a private socket and lists it,
-# reading only the bundled terminfo.
+# 6. Verify (the Linux builds as above, where there's Docker).
 if [ "$VERIFY" = 1 ]; then
-  # A detached server never opens a terminal, so each check also attaches a
-  # client (under script(1) for a pty), which is what reads terminfo. The
-  # throwaway container's own terminfo (debian's ncurses-base ships all five
-  # entries) is deleted first, so only the bundled entries can satisfy it.
-  verify_linux() { # docker-platform arch-name
-    echo "Verifying linux-$2 in $DEBIAN_IMAGE"
-    "$DOCKER" run --rm --platform "$1" -v "$OUT:/out:ro" "$DEBIAN_IMAGE" /bin/sh -euc '
-      rm -rf /etc/terminfo /lib/terminfo /usr/share/terminfo /usr/lib/terminfo
-      mkdir -p /tmp/ti && tar xzf /out/terminfo.tar.gz -C /tmp/ti
-      gzip -dc /out/tmux-linux-'"$2"'.gz > /tmp/tmux && chmod +x /tmp/tmux
-      /tmp/tmux -V
-      attach() { # TERM; prints the client exit code and any terminal error
-        TERM=$1 script -qec "/tmp/tmux -S /tmp/a -f /dev/null new-session true; echo rc=\$?" /dev/null </dev/null \
-          | tr -d "\033\r" | grep -aoE "missing or unsuitable terminal: [^ ]*|rc=[0-9]+" | tr "\n" " "
-      }
-      out=$(attach tmux-256color)
-      case "$out" in *"rc=0"*) echo "control: tmux-256color resolved without the bundle" >&2; exit 1 ;; esac
-      echo "control without TERMINFO_DIRS: $out"
-      export TERMINFO_DIRS=/tmp/ti
-      for term in xterm-256color tmux-256color screen-256color; do
-        out=$(attach $term)
-        echo "attach TERM=$term: $out"
-        case "$out" in *"rc=0"*) ;; *) exit 1 ;; esac
-        TERM=$term /tmp/tmux -S /tmp/s -f /dev/null new-session -d "sleep 5"
-        TERM=$term /tmp/tmux -S /tmp/s ls
-        [ "$(/tmp/tmux -S /tmp/s show -gv default-terminal)" = tmux-256color ]
-        /tmp/tmux -S /tmp/s kill-server
-      done
-    '
-  }
-  verify_linux linux/amd64 x86_64
-  verify_linux linux/arm64 aarch64
+  if [ "$USE_DOCKER" = 1 ]; then
+    verify_linux linux/amd64 x86_64
+    verify_linux linux/arm64 aarch64
+  fi
 
   if [ "$(uname -m)" = arm64 ]; then
     echo "Verifying darwin-arm64"

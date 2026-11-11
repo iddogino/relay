@@ -52,6 +52,34 @@ trimmed to match.
    `RekeyLimit` (`rekeyingMidStreamLosesNothing`,
    `rekeyingMidStreamKeepsTheTerminalWhole`).
 
+4. **Sign key offers off the event loop, and skip a key that can't sign**
+   (`Sources/NIOSSH/User Authentication/UserAuthenticationStateMachine.swift`,
+   marked `RELAY PATCH`). An offered private key was signed with on the event
+   loop, and a signing error failed the authentication. With keys held by
+   ssh-agent — where signing can wait for the user (`ssh-add -c`, 1Password,
+   Secretive) and can be refused — that froze every connection sharing the
+   loop for as long as the agent took, and one declined key ended the sign-in
+   with the other keys untried. Offers are now signed on a dispatch queue,
+   and a key that fails to sign is passed over for the delegate's next offer.
+   Relay's tests reproduce it (`aKeyTheAgentWontSignWithIsPassedOver`).
+
+5. **A preferred order for host key algorithms**
+   (`Sources/NIOSSH/SSHClientConfiguration.swift` and
+   `Sources/NIOSSH/Key Exchange/SSHKeyExchangeStateMachine.swift`, marked
+   `RELAY PATCH`). The client asked for host key algorithms in one fixed
+   order, so a server with several host keys presented whichever came first
+   in it — not necessarily the one the client had on record. Relay now asks
+   first for the types it knows the host by (`SSHConnection`), which is what
+   lets a host that presents a key of a type it isn't known by be treated as
+   changed rather than new (`KnownHosts.verify`).
+
+6. **A keepalive request** (`Sources/NIOSSH/NIOSSHHandler.swift`,
+   `sendKeepalive`, marked `RELAY PATCH`). Only TCP forwarding requests could
+   be sent as global requests. A connection through a jump host has no socket
+   of its own to detect a dead peer with (TCP keepalive covers the hop to the
+   jump host only), so Relay sends OpenSSH's `keepalive@openssh.com` on it
+   and closes it when the answers stop (`SSHConnection.startKeepalive`).
+
 ## Updating
 
 Copy `Sources/NIOSSH` from the new tag over this one, re-apply the patches
