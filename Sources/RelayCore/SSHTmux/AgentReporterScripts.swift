@@ -287,7 +287,7 @@ extension SSHTmuxScripts {
         quiet=0
         i=0
         while [ "$i" -lt \(iterations) ]; do
-          cur=$("$tmux_path" list-sessions -F "$fmt" 2>/dev/null | grep '^\(TmuxNaming.prefix)')
+          cur=$("$tmux_path" -u list-sessions -F "$fmt" 2>/dev/null | grep '^\(TmuxNaming.prefix)')
           if [ "$cur" != "$prev" ] || [ "$quiet" -ge \(heartbeat) ]; then
             printf '\(agentStatusBegin)\\n%s\\n\(agentStatusEnd)\\n' "$cur" || exit 0
             prev=$cur

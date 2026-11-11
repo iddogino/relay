@@ -77,8 +77,11 @@ public struct SSHCommandRunner: Sendable {
                 onStdout: onStdout)
             return CommandResult(
                 exitCode: result.exitCode,
-                stdout: String(data: result.stdout, encoding: .utf8) ?? "",
-                stderr: String(data: result.stderr, encoding: .utf8) ?? "")
+                // Lossy: one byte that isn't UTF-8 (a Latin-1 file in a diff,
+                // a multi-byte character cut by a size cap) must not blank
+                // the whole output, markers included.
+                stdout: String(decoding: result.stdout, as: UTF8.self),
+                stderr: String(decoding: result.stderr, as: UTF8.self))
         } catch SSHConnectionPool.ExecError.timedOut {
             throw RunnerError.timedOut
         } catch let error as SSHClientError {

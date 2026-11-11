@@ -36,9 +36,6 @@ works without changing the remote machine in any way.
   (run in every new session — `claude`, `codex`, your worktree bootstrap
   script, anything) and an optional *shutdown command* (run when you archive a
   session — e.g. clean up that worktree).
-- Aliases you never shell into (a git host, an OrbStack proxy) can be tucked
-  away with **Hide Remote** in the sidebar context menu; View ▸ Show Hidden
-  Remotes brings them back.
 - **Sessions** are ordinary remote tmux sessions owned by the app. Close the
   laptop, lose Wi-Fi, quit the app — the remote work keeps running. Select the
   session again and Relay reattaches. They stay reachable from any terminal
@@ -133,12 +130,15 @@ environment, so it never sees a release's data.
 `Scripts/build-tmux.sh` (needs Docker) builds the tmux Relay can install
 on hosts that have none, into `build/tmux`: static Linux builds and a
 universal macOS one, gzip'd. Both apps bundle it when it's there; without
-it, Relay offers only the host's package manager.
+it, Relay offers only the host's package manager. Releases always have it
+(`Scripts/check-app.py` refuses one that doesn't): CI and the release
+workflow build the Linux half on a Linux runner (`--linux`) and the rest on
+the Mac that builds the app (`--no-docker`).
 
 `Scripts/archive-app.sh` builds `build/Relay.app` as a release ships it:
 archived and exported Developer ID-signed. It needs the Developer ID
 certificate and the "Relay Developer ID" profile, as the release workflow
-has them.
+has them, and `build/tmux`.
 
 ## Testing
 
@@ -151,9 +151,9 @@ Scripts/ios-ui-tests.sh # the iPhone and iPad app on fresh simulators, driven by
                         # its UI tests against a throwaway SSH host
 ```
 
-CI runs `swift test` on every PR and push to `main`, builds both apps,
-checking each with `Scripts/check-app.py`, and runs the iPhone and iPad UI
-tests. The pinned GhosttyKit build is cached,
+CI runs `swift test` on every PR and push to `main`, builds both apps with
+the tmux bundle, checking each with `Scripts/check-app.py`, and runs the
+iPhone and iPad UI tests. The pinned GhosttyKit build is cached,
 so only the first run after a pin bump pays the from-source build.
 
 ## Releasing
@@ -167,21 +167,34 @@ git tag v0.1.0-rc.1 && git push origin v0.1.0-rc.1
 
 The [release workflow](.github/workflows/release.yml) tests, builds and
 Developer ID-signs `Relay.app` (hardened runtime, with
-`Scripts/archive-app.sh`), checks it, packages a
-drag-to-Applications DMG, and publishes a GitHub release with the DMG and
-SHA-256 checksums attached — marked *prerelease* automatically for channel
-tags. It then EdDSA-signs the DMG and commits an updated
-[`appcast.xml`](appcast.xml) to `main` (via
+`Scripts/archive-app.sh`) with the tmux bundle, checks it, packages a
+drag-to-Applications DMG, notarizes and staples it, and publishes a GitHub
+release with the DMG and SHA-256 checksums attached — marked *prerelease*
+automatically for channel tags. It then EdDSA-signs the DMG and commits an
+updated [`appcast.xml`](appcast.xml) to `main` (via
 [Scripts/update-appcast.py](Scripts/update-appcast.py)), so installed
 copies pick the release up through Sparkle; rc tags land on the `rc`
-channel, stable tags on the default channel. Required repository secrets:
-`MACOS_CERTIFICATE_P12` (base64 `.p12` with a Developer ID Application
-identity), `MACOS_CERTIFICATE_PASSWORD`, `MACOS_PROVISIONING_PROFILE`
-(base64 of the "Relay Developer ID" profile, which grants the Keychain
-group and iCloud), and `SPARKLE_ED_PRIVATE_KEY` (Sparkle `generate_keys -x`
-export). Optional: `APPLE_ID`,
-`APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD` — when set, the DMG is also
-notarized and stapled.
+channel, stable tags on the default channel.
+
+The build number Sparkle compares follows from the version
+([Scripts/release-version.py](Scripts/release-version.py):
+`major·1,000,000 + minor·10,000 + patch·100 + sequence`, a stable release
+taking sequence 99), so a later version is always a later build — a patch
+to an older line is never offered to a newer one — whenever it's built.
+That caps minor and patch at 99 and a prerelease sequence at 98.
+
+If a run fails after the release is published (the appcast step, say), run
+it again: a DMG that's already out is never rebuilt, and the run finishes
+what's missing.
+
+Required repository secrets: `MACOS_CERTIFICATE_P12` (base64 `.p12` with a
+Developer ID Application identity), `MACOS_CERTIFICATE_PASSWORD`,
+`MACOS_PROVISIONING_PROFILE` (base64 of the "Relay Developer ID" profile,
+which grants the Keychain group and iCloud), `SPARKLE_ED_PRIVATE_KEY`
+(Sparkle `generate_keys -x` export), and `APPLE_ID`, `APPLE_TEAM_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD` for notarization. A release that can't be
+notarized fails rather than ship, unless the repository variable
+`RELAY_ALLOW_UNNOTARIZED` is `true`.
 
 iCloud sync needs, once: iCloud (CloudKit, with the
 `iCloud.com.iddogino.Relay` container) and Push Notifications on the

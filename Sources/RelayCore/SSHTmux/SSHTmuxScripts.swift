@@ -165,7 +165,7 @@ enum SSHTmuxScripts {
             // NOTE: set-option rejects the `=` exact-match prefix (unlike
             // has-session/kill-session); the generated name is unique and
             // fixed-length so a plain-name target cannot prefix-collide.
-            setOptions += "\"$tmux_path\" set-option -t \(ctx.tmuxName) \(key) \(POSIXShellQuote.quote(value)) || meta_fail=1\n"
+            setOptions += "\"$tmux_path\" -u set-option -t \(ctx.tmuxName) \(key) \(POSIXShellQuote.quote(value)) || meta_fail=1\n"
         }
 
         // A failed launch command keeps its dead pane (and the error it
@@ -173,7 +173,7 @@ enum SSHTmuxScripts {
         // end the session normally. Best-effort: option value needs tmux 3.2+.
         var remainOnExit = ""
         if ctx.launchCommand?.isEmpty == false {
-            remainOnExit = "\"$tmux_path\" set-option -w -t \(ctx.tmuxName) remain-on-exit failed 2>/dev/null || true\n"
+            remainOnExit = "\"$tmux_path\" -u set-option -w -t \(ctx.tmuxName) remain-on-exit failed 2>/dev/null || true\n"
         }
 
         return """
@@ -190,27 +190,27 @@ enum SSHTmuxScripts {
         # below would be lost before the session exists: keep it up until
         # then, remembering its exit-empty to restore.
         fresh_server=
-        if ! "$tmux_path" list-sessions >/dev/null 2>&1; then
-          fresh_server=$("$tmux_path" start-server ';' show-option -sv exit-empty ';' set-option -s exit-empty off 2>/dev/null)
+        if ! "$tmux_path" -u list-sessions >/dev/null 2>&1; then
+          fresh_server=$("$tmux_path" -u start-server ';' show-option -sv exit-empty ';' set-option -s exit-empty off 2>/dev/null)
         fi
-        "$tmux_path" start-server 2>/dev/null || true
-        if ! "$tmux_path" list-sessions -F '#{session_name}' 2>/dev/null | grep -qv '^rterm-'; then
-          [ "$("$tmux_path" show-option -gv history-limit 2>/dev/null)" = "2000" ] \\
-            && "$tmux_path" set-option -g history-limit 50000 2>/dev/null || true
-          [ "$("$tmux_path" show-option -sv escape-time 2>/dev/null)" = "500" ] \\
-            && "$tmux_path" set-option -s escape-time 10 2>/dev/null || true
-          "$tmux_path" set-option -s focus-events on 2>/dev/null || true
+        "$tmux_path" -u start-server 2>/dev/null || true
+        if ! "$tmux_path" -u list-sessions -F '#{session_name}' 2>/dev/null | grep -qv '^rterm-'; then
+          [ "$("$tmux_path" -u show-option -gv history-limit 2>/dev/null)" = "2000" ] \\
+            && "$tmux_path" -u set-option -g history-limit 50000 2>/dev/null || true
+          [ "$("$tmux_path" -u show-option -sv escape-time 2>/dev/null)" = "500" ] \\
+            && "$tmux_path" -u set-option -s escape-time 10 2>/dev/null || true
+          "$tmux_path" -u set-option -s focus-events on 2>/dev/null || true
           # Programs' OSC 52 copies reach the local clipboard (the default,
           # "external", drops them).
-          [ "$("$tmux_path" show-option -sv set-clipboard 2>/dev/null)" = "external" ] \\
-            && "$tmux_path" set-option -s set-clipboard on 2>/dev/null || true
-          "$tmux_path" set-option -sa terminal-features ',xterm-256color:RGB' 2>/dev/null || true
+          [ "$("$tmux_path" -u show-option -sv set-clipboard 2>/dev/null)" = "external" ] \\
+            && "$tmux_path" -u set-option -s set-clipboard on 2>/dev/null || true
+          "$tmux_path" -u set-option -sa terminal-features ',xterm-256color:RGB' 2>/dev/null || true
           # Keep attach clients out of the alternate screen so scrolled lines
           # land in the local terminal's native scrollback (and history can
           # be replayed into it on attach).
-          case "$("$tmux_path" show-options -sv terminal-overrides 2>/dev/null)" in
+          case "$("$tmux_path" -u show-options -sv terminal-overrides 2>/dev/null)" in
             *smcup@*) ;;
-            *) "$tmux_path" set-option -sa terminal-overrides ',xterm-256color:smcup@:rmcup@' 2>/dev/null || true ;;
+            *) "$tmux_path" -u set-option -sa terminal-overrides ',xterm-256color:smcup@:rmcup@' 2>/dev/null || true ;;
           esac
         fi
         # Pager polish, when the user hasn't set LESS: less (so man and git
@@ -223,23 +223,26 @@ enum SSHTmuxScripts {
         if [ -z "${LESS+x}" ] && [ "${lv:-0}" -ge 551 ]; then
           set -- -e 'LESS=-FRX --mouse --wheel-lines=1'
         fi
-        "$tmux_path" new-session -d -s \(ctx.tmuxName) -n \(POSIXShellQuote.quote(ctx.windowName)) -c "$rp"\(envFlags) "$@"\(paneCommand)
+        # tmux expands formats in -c: a folder named `c#Sharp` (#S) would
+        # otherwise start the session somewhere else.
+        rp_fmt=$(printf '%sx' "$rp" | sed 's/#/##/g'); rp_fmt=${rp_fmt%x}
+        "$tmux_path" -u new-session -d -s \(ctx.tmuxName) -n \(POSIXShellQuote.quote(ctx.windowName)) -c "$rp_fmt"\(envFlags) "$@"\(paneCommand)
         created=$?
-        [ -n "$fresh_server" ] && "$tmux_path" set-option -s exit-empty "$fresh_server" 2>/dev/null
+        [ -n "$fresh_server" ] && "$tmux_path" -u set-option -s exit-empty "$fresh_server" 2>/dev/null
         [ "$created" -eq 0 ] || { printf 'RTERM_STATUS=create_failed\\n'; exit 23; }
         # Native-terminal polish, session-scoped half (never affects the
         # user's own sessions): no status strip, mouse left entirely to the
         # terminal (native selection and scrolling — tmux never intercepts),
         # passthrough sequences (image protocols etc.), and pane-title
         # forwarding so the app header can show what's running.
-        "$tmux_path" set-option -t \(ctx.tmuxName) status off 2>/dev/null || true
-        "$tmux_path" set-option -t \(ctx.tmuxName) mouse off 2>/dev/null || true
-        "$tmux_path" set-option -t \(ctx.tmuxName) allow-passthrough on 2>/dev/null || true
-        "$tmux_path" set-option -t \(ctx.tmuxName) set-titles on 2>/dev/null || true
-        "$tmux_path" set-option -t \(ctx.tmuxName) set-titles-string '#T' 2>/dev/null || true
+        "$tmux_path" -u set-option -t \(ctx.tmuxName) status off 2>/dev/null || true
+        "$tmux_path" -u set-option -t \(ctx.tmuxName) mouse off 2>/dev/null || true
+        "$tmux_path" -u set-option -t \(ctx.tmuxName) allow-passthrough on 2>/dev/null || true
+        "$tmux_path" -u set-option -t \(ctx.tmuxName) set-titles on 2>/dev/null || true
+        "$tmux_path" -u set-option -t \(ctx.tmuxName) set-titles-string '#T' 2>/dev/null || true
         \(remainOnExit)meta_fail=0
         \(setOptions)if [ "$meta_fail" -ne 0 ]; then
-          "$tmux_path" kill-session -t =\(ctx.tmuxName) 2>/dev/null
+          "$tmux_path" -u kill-session -t =\(ctx.tmuxName) 2>/dev/null
           printf 'RTERM_STATUS=meta_failed\\n'
           exit 24
         fi
@@ -254,7 +257,7 @@ enum SSHTmuxScripts {
         set -u
         \(tmuxPreamble(knownTmuxPath: knownTmuxPath))
         printf 'RTERM_STATUS=ok\\n'
-        "$tmux_path" list-sessions -F \(POSIXShellQuote.quote(TmuxSessionCodec.listFormat)) 2>/dev/null || true
+        "$tmux_path" -u list-sessions -F \(POSIXShellQuote.quote(TmuxSessionCodec.listFormat)) 2>/dev/null || true
         """
     }
 
@@ -263,7 +266,7 @@ enum SSHTmuxScripts {
         return """
         set -u
         \(tmuxPreamble(knownTmuxPath: knownTmuxPath))
-        if "$tmux_path" has-session -t =\(tmuxName) 2>/dev/null; then
+        if "$tmux_path" -u has-session -t =\(tmuxName) 2>/dev/null; then
           printf 'RTERM_EXISTS=1\\n'
         else
           printf 'RTERM_EXISTS=0\\n'
@@ -279,8 +282,8 @@ enum SSHTmuxScripts {
         return """
         set -u
         \(tmuxPreamble(knownTmuxPath: knownTmuxPath))
-        "$tmux_path" kill-session -t =\(tmuxName) 2>/dev/null || true
-        if "$tmux_path" has-session -t =\(tmuxName) 2>/dev/null; then
+        "$tmux_path" -u kill-session -t =\(tmuxName) 2>/dev/null || true
+        if "$tmux_path" -u has-session -t =\(tmuxName) 2>/dev/null; then
           printf 'RTERM_STATUS=kill_failed\\n'
           exit 25
         fi
@@ -308,18 +311,18 @@ enum SSHTmuxScripts {
         return """
         set -u
         \(tmuxPreamble(knownTmuxPath: knownTmuxPath))
-        if ! "$tmux_path" has-session -t =\(tmuxName) 2>/dev/null; then
+        if ! "$tmux_path" -u has-session -t =\(tmuxName) 2>/dev/null; then
           printf 'RTERM_STATUS=not_found\\n'
           exit 24
         fi
-        slug=$("$tmux_path" show-options -qv -t \(tmuxName) @rterm_slug 2>/dev/null) || slug=""
+        slug=$("$tmux_path" -u show-options -qv -t \(tmuxName) @rterm_slug 2>/dev/null) || slug=""
         if [ -z "$slug" ]; then
-          if ! "$tmux_path" set-option -t \(tmuxName) @rterm_slug \(POSIXShellQuote.quote(fallbackSlug)); then
+          if ! "$tmux_path" -u set-option -t \(tmuxName) @rterm_slug \(POSIXShellQuote.quote(fallbackSlug)); then
             printf 'RTERM_STATUS=rename_failed\\n'
             exit 25
           fi
         fi
-        if ! "$tmux_path" set-option -t \(tmuxName) @rterm_session_name_b64 \(POSIXShellQuote.quote(displayNameB64)); then
+        if ! "$tmux_path" -u set-option -t \(tmuxName) @rterm_session_name_b64 \(POSIXShellQuote.quote(displayNameB64)); then
           printf 'RTERM_STATUS=rename_failed\\n'
           exit 25
         fi
@@ -345,7 +348,7 @@ enum SSHTmuxScripts {
     private static func gitContextFragment(tmuxName: String) -> String {
         precondition(TmuxNaming.isSafeSessionName(tmuxName))
         return """
-        p=$("$tmux_path" display-message -p -t \(tmuxName) -F '#{pane_current_path}' 2>/dev/null) || p=""
+        p=$("$tmux_path" -u display-message -p -t \(tmuxName) -F '#{pane_current_path}' 2>/dev/null) || p=""
         [ -n "$p" ] && [ -d "$p" ] || { printf 'RTERM_GIT=none\\n'; exit 0; }
         command -v git >/dev/null 2>&1 || { printf 'RTERM_GIT=none\\n'; exit 0; }
         git -C "$p" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { printf 'RTERM_GIT=none\\n'; exit 0; }
@@ -411,7 +414,7 @@ enum SSHTmuxScripts {
         printf 'RTERM_GIT_BRANCH=%s\\n' "$branch"
         [ -n "$base" ] && printf 'RTERM_GIT_BASE=%s\\n' "$base"
         printf 'RTERM_DIFF_BEGIN\\n'
-        git -C "$p" diff --no-color --no-ext-diff "$mb" -- 2>/dev/null | head -c \(diffByteCap)
+        git -C "$p" -c core.quotepath=false diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$mb" -- 2>/dev/null | head -c \(diffByteCap)
         exit 0
         """
     }
@@ -466,7 +469,7 @@ enum SSHTmuxScripts {
           /*) f="$raw" ;;
           '~/'*) f="$HOME${raw#'~'}" ;;
           *)
-            p=$("$tmux_path" display-message -p -t \(tmuxName) -F '#{pane_current_path}' 2>/dev/null) || p=""
+            p=$("$tmux_path" -u display-message -p -t \(tmuxName) -F '#{pane_current_path}' 2>/dev/null) || p=""
             [ -n "$p" ] || { printf 'RTERM_PREVIEW=missing\\n'; exit 0; }
             f="$p/$raw"
             ;;

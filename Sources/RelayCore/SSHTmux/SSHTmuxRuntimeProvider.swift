@@ -289,14 +289,20 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         guard TmuxNaming.isSafeSessionName(session.backendID) else {
             throw RuntimeProviderError.invalidInput("Unsafe session identifier.")
         }
-        var tmuxWord = knownTmuxPath(for: project) ?? "tmux"
-        if !Self.isSafeExecutablePath(tmuxWord) { tmuxWord = "tmux" }
+        // The path is quoted, so any path is safe here; an unusable one
+        // (stale, or never stored) falls back to looking for tmux again,
+        // as every management script does.
+        let knownTmux = knownTmuxPath(for: project) ?? ""
 
-        // The attach runs a small POSIX script via `sh -c` (single-quoted, so
-        // the remote login shell never interprets its contents; every dynamic
-        // value in it is validated-safe or quoted).
+        // The attach runs a small POSIX script (RemoteShCommand: the remote
+        // login shell never interprets its contents, whichever shell it is;
+        // every dynamic value in it is validated-safe or quoted).
         //
         // The terminal is the app's chrome; tmux stays invisible:
+        // - `-u`: tmux decides whether its client speaks UTF-8 from the
+        //   locale, which a host that accepts no forwarded LANG (sshd's
+        //   AcceptEnv) may not have — it would then draw every non-ASCII
+        //   character as `_`. Relay's terminal always speaks UTF-8.
         // - When the server carries the smcup@ override (Relay-only servers;
         //   the client then runs in the main screen, so scrolled lines land
         //   in the terminal's native scrollback), the pane's tmux history is
@@ -308,18 +314,19 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
         //   selection, app-owned scrolling).
         let name = session.backendID
         let attachScript = """
-        tp=\(POSIXShellQuote.quote(tmuxWord))
-        if "$tp" show-options -s terminal-overrides 2>/dev/null | grep -q smcup@; then
-          "$tp" capture-pane -e -p -S -2000 -t \(name) 2>/dev/null || true
+        \(SSHTmuxScripts.findTmuxFunction)
+        tp=\(POSIXShellQuote.quote(knownTmux))
+        if [ ! -x "$tp" ]; then
+          tp=$(find_tmux) || { printf 'Relay: tmux was not found on this host.\\n' >&2; exit 127; }
         fi
-        exec "$tp" set-option -t \(name) status off ';' set-option -t \(name) mouse off ';' attach-session -t \(name)
+        if "$tp" -u show-options -s terminal-overrides 2>/dev/null | grep -q smcup@; then
+          "$tp" -u capture-pane -e -p -S -2000 -t \(name) 2>/dev/null || true
+        fi
+        exec "$tp" -u set-option -t \(name) status off ';' set-option -t \(name) mouse off ';' attach-session -t \(name)
         """
-        // ssh would send its remote arguments joined by spaces as one
-        // command line; this is that line.
-        let remoteCommand = ["sh", "-c", POSIXShellQuote.quote(attachScript)]
         return TerminalLaunchSpec(
             target: target,
-            command: remoteCommand.joined(separator: " "),
+            command: RemoteShCommand.line(attachScript),
             environment: BuiltInSSHRouter.forwardedEnvironment,
             pool: runner.builtIn.pool)
     }
@@ -734,13 +741,12 @@ public struct SSHTmuxRuntimeProvider: RuntimeProvider {
     }
 
     /// A command line running `script` under `/bin/sh` with the remote
-    /// `path` in `$p`. The remote login shell parses the line, so the path
-    /// travels base64-encoded (its alphabet reads the same in every shell)
-    /// and sh decodes it. Pure; unit-tested.
+    /// `path` in `$p`. The remote login shell parses the line, so script
+    /// and path travel encoded (RemoteShCommand) and sh decodes them.
+    /// Pure; unit-tested.
     static func pathCommand(_ script: String, path: String) -> String {
-        let encoded = Data(path.utf8).base64EncodedString()
-        let body = #"p=$(printf '%s' "$0" | base64 -d) && [ -n "$p" ] || exit 97; "# + script
-        return "/bin/sh -c \(POSIXShellQuote.quote(body)) \(encoded)"
+        RemoteShCommand.line(
+            RemoteShCommand.assignment("p", value: path) + #"; [ -n "$p" ] || exit 97; "# + script)
     }
 
     /// What a dropped item set turns into on the remote: directories to

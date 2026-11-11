@@ -27,7 +27,7 @@ enum TerminalSnapshots {
 
     private struct WeakView { weak var view: TerminalSurfaceView? }
 
-    static var isAvailable: Bool { AppVariant.bundleIdentifier.hasSuffix(".dev") }
+    static var isAvailable: Bool { AppVariant.isDevBuild }
 
     static func installIfDevBuild() {
         guard isAvailable, !installed else { return }

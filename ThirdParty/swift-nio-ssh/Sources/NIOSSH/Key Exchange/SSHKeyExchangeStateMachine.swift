@@ -480,8 +480,15 @@ struct SSHKeyExchangeStateMachine {
     // The host key algorithms supported by this peer, in order of preference.
     private var supportedHostKeyAlgorithms: [Substring] {
         switch self.role {
-        case .client:
-            return Self.supportedServerHostKeyAlgorithms
+        case .client(let configuration):
+            // RELAY PATCH: the configuration's preferred algorithms first.
+            let supported = Self.supportedServerHostKeyAlgorithms
+            var ordered: [Substring] = []
+            for name in configuration.preferredServerHostKeyAlgorithms.map({ Substring($0) }) + supported
+            where supported.contains(name) && !ordered.contains(name) {
+                ordered.append(name)
+            }
+            return ordered
         case .server(let configuration):
             return configuration.hostKeys.flatMap { $0.hostKeyAlgorithms }
         }

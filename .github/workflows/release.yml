@@ -5,10 +5,21 @@ name: Release
 #   v<semver>-<channel>.<seq>     e.g. v0.1.0-rc.1   -> prerelease
 #
 # The workflow tests, builds and Developer ID-signs Relay.app (the Xcode
-# project's Relay Direct, with Scripts/archive-app.sh), packages a
-# drag-to-Applications DMG, optionally notarizes it (when the APPLE_ID /
-# APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD secrets are configured), and
-# publishes a GitHub release with the DMG and checksums attached.
+# project's Relay Direct, with Scripts/archive-app.sh) with the tmux builds
+# it installs on hosts, packages a drag-to-Applications DMG, notarizes it
+# (the APPLE_ID / APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD secrets), and
+# publishes a GitHub release with the DMG and checksums attached, then the
+# appcast item that offers it to installed copies.
+#
+# A release that isn't notarized isn't published: without those secrets the
+# run fails, unless the repository variable RELAY_ALLOW_UNNOTARIZED is
+# "true" (the release notes then say so).
+#
+# Running a tag's workflow again is safe. The build number follows from the
+# version (Scripts/release-version.py), and a DMG that's already published
+# is never rebuilt — installed copies may have it, and the appcast's
+# signature is of those bytes — so a re-run picks up where the last one
+# stopped: it signs the published DMG and updates the appcast.
 #
 # The MACOS_PROVISIONING_PROFILE secret (base64 of the "Relay Developer ID"
 # provisioning profile for com.iddogino.Relay) is embedded in the app and
@@ -20,8 +31,15 @@ on:
   push:
     tags: ["v*"]
 
+# Least privilege: only the release job writes (the release, the appcast).
 permissions:
-  contents: write
+  contents: read
+
+# One release at a time: two tags pushed together would race for the
+# appcast.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   # The tests, as CI runs them.
@@ -30,7 +48,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: GhosttyKit (cached)
         uses: ./.github/actions/ghosttykit
@@ -59,41 +77,66 @@ jobs:
           RELAY_TEST_REQUIRE_OPENSSH10: "1"
         run: swift test
 
+  # The Linux half of the tmux bundle (macOS runners have no Docker).
+  tmux-linux:
+    uses: ./.github/workflows/tmux-linux.yml
+
   release:
     name: Build, sign & publish
-    needs: test
+    needs: [test, tmux-linux]
+    permissions:
+      contents: write
     # macOS 26, as CI builds the apps: compiling the Icon Composer icon
     # (Resources/Relay.icon) fails on the macOS 15 image.
     runs-on: macos-26
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # The tag's version and the build number that follows from it
+      # (Scripts/release-version.py also refuses a tag that isn't one).
       - name: Parse release tag
         id: ver
+        run: Scripts/release-version.py "$GITHUB_REF_NAME" | tee -a "$GITHUB_OUTPUT"
+
+      # A DMG that's already out is the release: this run only finishes
+      # what an earlier one didn't (the appcast).
+      - name: Look for a published DMG
+        id: published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          TAG="$GITHUB_REF_NAME"
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z]+\.[0-9]+)?$ ]]; then
-            echo "error: tag '$TAG' is not v<semver> or v<semver>-<channel>.<sequence> (e.g. v0.1.0, v0.1.0-rc.1)" >&2
-            exit 1
+          DMG_NAME="Relay-$VERSION.dmg"
+          echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+          echo "DMG_PATH=build/$DMG_NAME" >> "$GITHUB_ENV"
+          mkdir -p build
+          if gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$DMG_NAME" --dir build 2>/dev/null; then
+            echo "Release $TAG already has $DMG_NAME: not building it again."
+            echo "dmg=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dmg=false" >> "$GITHUB_OUTPUT"
           fi
-          VERSION="${TAG#v}"
-          {
-            echo "tag=$TAG"
-            echo "version=$VERSION"
-            if [[ "$VERSION" == *-* ]]; then echo "prerelease=true"; else echo "prerelease=false"; fi
-          } >> "$GITHUB_OUTPUT"
 
       - name: GhosttyKit (cached)
+        if: steps.published.outputs.dmg != 'true'
         uses: ./.github/actions/ghosttykit
 
+      # build/tmux, which the app bundles (Scripts/check-app.py insists).
+      - name: tmux bundle
+        if: steps.published.outputs.dmg != 'true'
+        uses: ./.github/actions/tmux-bundle
+
       - name: Install XcodeGen
+        if: steps.published.outputs.dmg != 'true'
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: brew install xcodegen
 
       - name: Import signing certificate
+        if: steps.published.outputs.dmg != 'true'
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -123,6 +166,7 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN"
 
       - name: Install provisioning profile
+        if: steps.published.outputs.dmg != 'true'
         env:
           MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
         run: |
@@ -141,15 +185,16 @@ jobs:
       # piece of code signed for notarization, iCloud and push in
       # Production.
       - name: Build & sign Relay.app
+        if: steps.published.outputs.dmg != 'true'
         env:
           RELAY_VERSION: ${{ steps.ver.outputs.version }}
-          RELAY_BUILD_NUMBER: ${{ github.run_number }}
+          RELAY_BUILD_NUMBER: ${{ steps.ver.outputs.build }}
         run: ./Scripts/archive-app.sh
 
       - name: Package DMG
+        if: steps.published.outputs.dmg != 'true'
         run: |
           brew install create-dmg
-          DMG_NAME="Relay-${{ steps.ver.outputs.version }}.dmg"
           STAGING="build/dmg-staging"
           rm -rf "$STAGING" && mkdir -p "$STAGING"
           cp -R build/Relay.app "$STAGING/"
@@ -175,18 +220,26 @@ jobs:
           done
           test -f "build/$DMG_NAME"
           codesign --force --sign "Developer ID Application" --timestamp "build/$DMG_NAME"
-          echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
-          echo "DMG_PATH=build/$DMG_NAME" >> "$GITHUB_ENV"
 
+      # The app inside is notarized with the DMG; the ticket is stapled to
+      # the DMG.
       - name: Notarize DMG
         id: notarize
+        if: steps.published.outputs.dmg != 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          ALLOW_UNNOTARIZED: ${{ vars.RELAY_ALLOW_UNNOTARIZED }}
         run: |
           if [ -z "$APPLE_ID" ] || [ -z "$APPLE_TEAM_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ]; then
-            echo "Skipping notarization: APPLE_ID / APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD secrets not configured."
+            if [ "$ALLOW_UNNOTARIZED" != "true" ]; then
+              echo "error: can't notarize: the APPLE_ID / APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD secrets aren't all set." >&2
+              echo "A release that isn't notarized would reach every installed copy through the appcast." >&2
+              echo "Set the secrets, or the repository variable RELAY_ALLOW_UNNOTARIZED=true to publish one anyway." >&2
+              exit 1
+            fi
+            echo "::warning::Publishing without notarization (RELAY_ALLOW_UNNOTARIZED)."
             echo "notarized=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -199,6 +252,7 @@ jobs:
           echo "notarized=true" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub release
+        if: steps.published.outputs.dmg != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.ver.outputs.tag }}
@@ -229,56 +283,82 @@ jobs:
 
           FLAGS=(--title "Relay $TAG" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag)
           if [ "$PRERELEASE" = "true" ]; then FLAGS+=(--prerelease); fi
-          gh release create "$TAG" "${FLAGS[@]}" "$DMG_PATH" build/SHA256SUMS.txt
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # An earlier run made the release but didn't get the DMG up.
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$DMG_PATH" build/SHA256SUMS.txt
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$TAG" "${FLAGS[@]}" "$DMG_PATH" build/SHA256SUMS.txt
+          fi
+
+      # The appcast lives on main: checked out with the job's token
+      # (never written into a URL or a file of ours).
+      - name: Check out the appcast
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          path: appcast-repo
+          fetch-depth: 1
 
       - name: Update appcast
         env:
-          GH_TOKEN: ${{ github.token }}
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
           TAG: ${{ steps.ver.outputs.tag }}
           VERSION: ${{ steps.ver.outputs.version }}
           PRERELEASE: ${{ steps.ver.outputs.prerelease }}
-          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_NUMBER: ${{ steps.ver.outputs.build }}
+          # Sparkle's own release archive, pinned: what signs the update
+          # is handed the signing key.
+          SPARKLE_VERSION: "2.9.6"
+          SPARKLE_SHA256: 52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192
         run: |
           if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
             echo "error: SPARKLE_ED_PRIVATE_KEY secret is not set (Sparkle appcast signing)." >&2
             exit 1
           fi
           curl -fsSLo "$RUNNER_TEMP/sparkle.tar.xz" \
-            https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6.tar.xz
+            "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+          echo "$SPARKLE_SHA256  $RUNNER_TEMP/sparkle.tar.xz" | shasum -a 256 -c - >/dev/null || {
+            echo "error: Sparkle-$SPARKLE_VERSION.tar.xz doesn't match its pinned checksum." >&2
+            exit 1
+          }
           mkdir -p "$RUNNER_TEMP/sparkle"
-          tar -xf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle" bin/sign_update
-          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/ed.key"
-          SIG_LINE=$("$RUNNER_TEMP/sparkle/bin/sign_update" --ed-key-file "$RUNNER_TEMP/ed.key" "$DMG_PATH")
-          rm -f "$RUNNER_TEMP/ed.key"
+          tar -xf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle" ./bin/sign_update
+          # The key goes in on stdin: never on disk, never in an argument.
+          SIG_LINE=$(printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle/bin/sign_update" --ed-key-file - "$DMG_PATH")
           SIGNATURE=$(printf '%s' "$SIG_LINE" | sed -n 's/.*edSignature="\([^"]*\)".*/\1/p')
           LENGTH=$(printf '%s' "$SIG_LINE" | sed -n 's/.*length="\([^"]*\)".*/\1/p')
           if [ -z "$SIGNATURE" ] || [ -z "$LENGTH" ]; then
             echo "error: could not parse sign_update output: $SIG_LINE" >&2
             exit 1
           fi
-          git clone --depth 1 --branch main \
-            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            "$RUNNER_TEMP/appcast-repo"
           CHANNEL_ARG=""
           if [ "$PRERELEASE" = "true" ]; then CHANNEL_ARG="--channel rc"; fi
-          python3 Scripts/update-appcast.py \
-            --appcast "$RUNNER_TEMP/appcast-repo/appcast.xml" \
-            --version "$BUILD_NUMBER" \
-            --short-version "$VERSION" \
-            --tag "$TAG" \
-            --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/$DMG_NAME" \
-            --length "$LENGTH" \
-            --signature "$SIGNATURE" \
-            $CHANNEL_ARG
-          cd "$RUNNER_TEMP/appcast-repo"
+          cd appcast-repo
           git config user.name "relay-release[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add appcast.xml
-          git commit -m "appcast: $TAG (build $BUILD_NUMBER)"
-          for attempt in 1 2 3; do
-            if git push origin main; then exit 0; fi
-            git pull --rebase origin main
+          # Made on the latest main each time, so a push that loses a race
+          # is simply made again (the script replaces this build's item).
+          for attempt in 1 2 3 4 5; do
+            git fetch --depth 1 origin main
+            git reset --hard FETCH_HEAD
+            python3 ../Scripts/update-appcast.py \
+              --appcast appcast.xml \
+              --version "$BUILD_NUMBER" \
+              --short-version "$VERSION" \
+              --tag "$TAG" \
+              --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/$DMG_NAME" \
+              --length "$LENGTH" \
+              --signature "$SIGNATURE" \
+              $CHANNEL_ARG
+            if git diff --quiet -- appcast.xml; then
+              echo "appcast already has build $BUILD_NUMBER as published."
+              exit 0
+            fi
+            git add appcast.xml
+            git commit -m "appcast: $TAG (build $BUILD_NUMBER)"
+            if git push origin HEAD:main; then exit 0; fi
+            sleep $((attempt * 3))
           done
           echo "error: could not push appcast update" >&2
           exit 1

@@ -112,11 +112,18 @@ final class ThisMacSetup {
         // The key was read from this Mac's own sshd over loopback, so it
         // can be trusted without asking — under the name other devices
         // use, and for loopback (where the one-time sign-in goes).
+        // Checked before anything is trusted or saved under it: a host
+        // that isn't valid would be refused by every other device.
+        do {
+            try host.validate()
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
         var loopback = host
         loopback.hostname = "127.0.0.1"
         loopback.port = port
         do {
-            try model.trustHostKey(hostKey, for: host)
             try model.trustHostKey(hostKey, for: loopback)
         } catch {
             errorMessage = "Couldn\u{2019}t save this Mac\u{2019}s identity: \(error.localizedDescription)"
@@ -146,6 +153,16 @@ final class ThisMacSetup {
             // No Relay key in this build: the password is saved instead.
             host.auth = .password
             savedPassword = password
+        }
+        // Under the name other devices use, only now that the host is
+        // being saved: a failed setup leaves nothing trusted under a name
+        // the user may yet change.
+        do {
+            try model.trustHostKey(hostKey, for: host)
+        } catch {
+            step = .details
+            errorMessage = "Couldn\u{2019}t save this Mac\u{2019}s identity: \(error.localizedDescription)"
+            return
         }
         await model.saveHost(host, password: savedPassword)
         password = ""

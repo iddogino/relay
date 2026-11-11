@@ -275,17 +275,28 @@ public enum SSHKeyInstaller {
         """
 
     /// Drops every line holding `publicKeyBlob`, rewriting the file in
-    /// place (same file, owner and mode).
+    /// place (same file, owner and mode). The file is only touched once
+    /// its replacement is known to be whole: a full disk or quota must
+    /// never leave an empty authorized_keys (and a locked-out user)
+    /// behind. `RTERM_STATUS=failed` (exit 26) when it can't be done.
     public static func removeScript(publicKeyBlob: String) -> String {
-        """
+        let blob = POSIXShellQuote.quote(publicKeyBlob)
+        return """
         set -eu
         umask 077
         f="$HOME/.ssh/authorized_keys"
         if [ ! -f "$f" ]; then printf 'RTERM_STATUS=ok\\n'; exit 0; fi
         tmp="$f.relay-$$"
-        grep -vF -- \(POSIXShellQuote.quote(publicKeyBlob)) "$f" > "$tmp" || true
-        cat "$tmp" > "$f"
-        rm -f "$tmp"
+        trap 'rm -f "$tmp"' EXIT
+        fail() { printf 'RTERM_STATUS=failed\\n'; printf '%s\\n' "$1" >&2; exit 26; }
+        total=$(grep -c '' "$f") || [ $? -eq 1 ] || fail "Couldn't read authorized_keys."
+        gone=$(grep -cF -- \(blob) "$f") || [ $? -eq 1 ] || fail "Couldn't read authorized_keys."
+        if [ "$gone" -eq 0 ]; then printf 'RTERM_STATUS=ok\\n'; exit 0; fi
+        # grep exits 1 when no line is left (the file held only this key).
+        grep -vF -- \(blob) "$f" > "$tmp" || [ $? -eq 1 ] || fail "Couldn't write beside authorized_keys."
+        kept=$(grep -c '' "$tmp") || [ $? -eq 1 ] || fail "Couldn't write beside authorized_keys."
+        [ $((kept + gone)) -eq "$total" ] || fail "Couldn't write beside authorized_keys (is the disk full?)."
+        cat "$tmp" > "$f" || fail "Couldn't rewrite authorized_keys."
         printf 'RTERM_STATUS=ok\\n'
         """
     }

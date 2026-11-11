@@ -128,6 +128,46 @@ final class SSHConnection: @unchecked Sendable {
         channel.close(promise: nil)
     }
 
+    /// Dead-peer detection for a connection with no socket of its own (one
+    /// through a jump host: TCP keepalive there covers the hop to the jump
+    /// host only). Asks the server to answer every `interval`, and closes
+    /// the connection — which ends its terminals and commands as a lost
+    /// connection does — once `allowedMisses` requests in a row have gone
+    /// unanswered: ssh's ServerAliveInterval and ServerAliveCountMax.
+    func startKeepalive(interval: TimeAmount = .seconds(10), allowedMisses: Int = 2) {
+        let channel = channel
+        let state = KeepaliveState()
+        let task = channel.eventLoop.scheduleRepeatedTask(initialDelay: interval, delay: interval) { task in
+            guard channel.isActive else {
+                task.cancel()
+                return
+            }
+            if state.awaitingAnswer {
+                state.misses += 1
+                if state.misses >= allowedMisses {
+                    task.cancel()
+                    channel.close(promise: nil)
+                }
+                return
+            }
+            guard let handler = try? channel.pipeline.syncOperations.handler(type: NIOSSHHandler.self) else { return }
+            state.awaitingAnswer = true
+            let answered = channel.eventLoop.makePromise(of: Void.self)
+            answered.futureResult.whenComplete { _ in
+                state.awaitingAnswer = false
+                state.misses = 0
+            }
+            handler.sendKeepalive(promise: answered)
+        }
+        channel.closeFuture.whenComplete { _ in task.cancel() }
+    }
+
+    /// Event-loop confined.
+    private final class KeepaliveState: @unchecked Sendable {
+        var awaitingAnswer = false
+        var misses = 0
+    }
+
     static func connect(
         target: SSHTarget,
         offers: [NIOSSHUserAuthenticationOffer.Offer],
@@ -140,6 +180,11 @@ final class SSHConnection: @unchecked Sendable {
         let authenticated = group.next().makePromise(of: Void.self)
         let userAuth = OfferingAuthDelegate(username: target.username, offers: offers, failure: failure)
         let serverAuth = KnownHostsDelegate(host: target.hostKeyName.host, port: target.hostKeyName.port, knownHosts: knownHosts, failure: failure)
+        var clientConfiguration = SSHClientConfiguration(userAuthDelegate: userAuth, serverAuthDelegate: serverAuth)
+        // The key types the host is known by first, so it presents a key
+        // that can be checked (see KnownHosts.verify).
+        clientConfiguration.preferredServerHostKeyAlgorithms = knownHosts.knownKeyTypes(
+            host: target.hostKeyName.host, port: target.hostKeyName.port)
 
         var bootstrap = ClientBootstrap(group: group)
             .connectTimeout(connectTimeout)
@@ -157,7 +202,7 @@ final class SSHConnection: @unchecked Sendable {
             channel.eventLoop.makeCompletedFuture {
                 let sync = channel.pipeline.syncOperations
                 try sync.addHandler(NIOSSHHandler(
-                    role: .client(.init(userAuthDelegate: userAuth, serverAuthDelegate: serverAuth)),
+                    role: .client(clientConfiguration),
                     allocator: channel.allocator,
                     inboundChildChannelInitializer: nil))
                 try sync.addHandler(HandshakeWatcher(authenticated: authenticated))
@@ -191,6 +236,11 @@ final class SSHConnection: @unchecked Sendable {
         let authenticated = jump.channelEventLoop.makePromise(of: Void.self)
         let userAuth = OfferingAuthDelegate(username: target.username, offers: offers, failure: failure)
         let serverAuth = KnownHostsDelegate(host: target.hostKeyName.host, port: target.hostKeyName.port, knownHosts: knownHosts, failure: failure)
+        var clientConfiguration = SSHClientConfiguration(userAuthDelegate: userAuth, serverAuthDelegate: serverAuth)
+        // The key types the host is known by first, so it presents a key
+        // that can be checked (see KnownHosts.verify).
+        clientConfiguration.preferredServerHostKeyAlgorithms = knownHosts.knownKeyTypes(
+            host: target.hostKeyName.host, port: target.hostKeyName.port)
         let forward = SSHChannelType.DirectTCPIP(
             targetHost: target.host, targetPort: target.port,
             originatorAddress: try SocketAddress(ipAddress: "127.0.0.1", port: 0))
@@ -201,7 +251,7 @@ final class SSHConnection: @unchecked Sendable {
                     let sync = child.pipeline.syncOperations
                     try sync.addHandler(ForwardedBytesHandler())
                     try sync.addHandler(NIOSSHHandler(
-                        role: .client(.init(userAuthDelegate: userAuth, serverAuthDelegate: serverAuth)),
+                        role: .client(clientConfiguration),
                         allocator: child.allocator,
                         inboundChildChannelInitializer: nil))
                     try sync.addHandler(HandshakeWatcher(authenticated: authenticated))
@@ -211,8 +261,10 @@ final class SSHConnection: @unchecked Sendable {
             authenticated.fail(error)
             throw error
         }
-        return try await finishHandshake(
+        let connection = try await finishHandshake(
             target: target, channel: channel, authenticated: authenticated, failure: failure, timeout: handshakeTimeout)
+        connection.startKeepalive()
+        return connection
     }
 
     /// Waits out key exchange and authentication on a connected `channel`.

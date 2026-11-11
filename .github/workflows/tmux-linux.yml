@@ -1,0 +1,59 @@
+name: tmux (Linux builds)
+
+# The half of Scripts/build-tmux.sh that needs Docker: the static Linux tmux
+# builds and the terminfo entries Relay bundles for hosts that have no tmux.
+# macOS runners have no Docker, so this runs on Linux and hands its work
+# (build/tmux-work/) to the job that builds the app, as the artifact
+# "tmux-linux" (.github/actions/tmux-bundle picks it up).
+#
+# Cached by the script's own contents: the pins are in it, so only a pin
+# bump (or a change to how they're built) builds again.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: tmux for Linux hosts
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Cache the builds
+        id: cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            build/tmux-work/linux-x86_64
+            build/tmux-work/linux-aarch64
+            build/tmux-work/terminfo
+          key: tmux-linux-${{ hashFiles('Scripts/build-tmux.sh') }}
+
+      # The aarch64 build and its check run emulated.
+      - name: Set up QEMU
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+
+      # Built, then run in a clean container that has only the bundled
+      # terminfo (the script's verification).
+      - name: Build and verify
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: Scripts/build-tmux.sh --linux
+
+      # The stamps (.stamp) are what tell the Mac half these are current.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tmux-linux
+          path: |
+            build/tmux-work/linux-x86_64
+            build/tmux-work/linux-aarch64
+            build/tmux-work/terminfo
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

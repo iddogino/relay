@@ -1,0 +1,20 @@
+name: tmux bundle
+description: >
+  Makes build/tmux — the tmux builds Relay bundles for hosts that have none —
+  on a Mac runner: the Linux builds and terminfo come from the "tmux-linux"
+  artifact (the tmux-linux workflow, which the calling job must need), the
+  macOS build is made here (Scripts/build-tmux.sh --no-docker). The apps
+  bundle build/tmux when it's there (App/project.yml), and
+  Scripts/check-app.py --tmux checks that they did.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: tmux-linux
+        path: build/tmux-work
+
+    - name: Build the macOS tmux and package the bundle
+      shell: bash
+      run: Scripts/build-tmux.sh --no-docker

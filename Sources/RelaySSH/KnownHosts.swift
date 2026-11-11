@@ -36,8 +36,10 @@ public struct KnownHosts: Sendable {
         var entries: [Entry] = []
         for file in files {
             let path = UserHome.expand(file)
-            guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
-            entries += parse(text)
+            // Lossy: one byte that isn't UTF-8 (a Latin-1 comment) must not
+            // drop the whole file, its @revoked lines included.
+            guard let data = FileManager.default.contents(atPath: path) else { continue }
+            entries += parse(String(decoding: data, as: UTF8.self))
         }
         return KnownHosts(entries: entries)
     }
@@ -51,7 +53,10 @@ public struct KnownHosts: Sendable {
         // other devices too): a plain algorithm name, base64, a plain host.
         guard fields.count >= 2, Data(base64Encoded: String(fields[1])) != nil,
               fields[0].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "-@.".contains($0)) }),
-              !host.contains(where: { $0.isWhitespace || $0.isNewline || $0 == "," }) else {
+              !host.isEmpty,
+              // Nothing known_hosts would read as a pattern, a marker, a
+              // hashed name or a comment: the line must name this host only.
+              !host.contains(where: { $0.isWhitespace || $0.isNewline || ",*?!|@#".contains($0) }) else {
             throw CocoaError(.fileWriteInvalidFileName)
         }
         let path = UserHome.expand(file)
@@ -118,9 +123,16 @@ public struct KnownHosts: Sendable {
 
     /// `keyType`/`key` as in an OpenSSH public key line (algorithm name and
     /// decoded blob).
+    ///
+    /// A host known by keys of other types only is `.changed`, not
+    /// `.unknown`: the client asks for the types it knows the host by
+    /// first (`knownKeyTypes`), so a server that still had one of those
+    /// keys would have presented it. Calling that a new host would let
+    /// someone in between swap a blocked "identity changed" for a
+    /// harmless-looking first-time prompt, just by offering another type.
     public func verify(host: String, port: Int, keyType: String, key: Data) -> Verdict {
         let name = Self.lookupName(host: host, port: port).lowercased()
-        var sawSameType = false
+        var sawKey = false
         var trusted = false
         for entry in entries where Self.matches(patterns: entry.patterns, name: name) {
             switch entry.marker {
@@ -129,13 +141,31 @@ public struct KnownHosts: Sendable {
             case .certAuthority:
                 continue
             case .none:
-                guard entry.keyType == keyType else { continue }
-                sawSameType = true
-                if entry.key == key { trusted = true }
+                // Only keys the host could have been asked for count:
+                // one known by an RSA key alone (which this client can't
+                // check) presenting another type is not a change.
+                if entry.keyType == keyType || Self.negotiableKeyTypes.contains(entry.keyType) { sawKey = true }
+                if entry.keyType == keyType, entry.key == key { trusted = true }
             }
         }
         if trusted { return .trusted }
-        return sawSameType ? .changed : .unknown
+        return sawKey ? .changed : .unknown
+    }
+
+    /// The host key types the client can negotiate (NIOSSH's).
+    static let negotiableKeyTypes: Set<String> = [
+        "ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
+    ]
+
+    /// The key types host:port is known by (revoked keys left out): what
+    /// to ask the server for first.
+    public func knownKeyTypes(host: String, port: Int) -> [String] {
+        var types: [String] = []
+        for key in trustedKeys(host: host, port: port) {
+            let type = String(key.prefix { $0 != " " })
+            if Self.negotiableKeyTypes.contains(type), !types.contains(type) { types.append(type) }
+        }
+        return types
     }
 
     /// OpenSSH host-pattern semantics: comma-separated globs (`*`, `?`),

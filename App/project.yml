@@ -96,6 +96,8 @@ targetTemplates:
         NSPrincipalClass: NSApplication
         NSSupportsAutomaticGraphicsSwitching: true
         NSHumanReadableCopyright: Terminal emulation by libghostty (MIT). Not affiliated with the Ghostty project.
+        # Asked the first time a host on the local network is dialed.
+        NSLocalNetworkUsageDescription: Relay connects to the hosts you add, including ones on your local network.
         RelayDataDirectory: $(RELAY_DATA_DIRECTORY)
         # The entitlements grant the same group and container.
         RelayKeychainAccessGroup: $(DEVELOPMENT_TEAM).$(PRODUCT_BUNDLE_IDENTIFIER)

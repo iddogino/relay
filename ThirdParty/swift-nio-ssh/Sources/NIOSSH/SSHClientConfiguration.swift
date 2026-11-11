@@ -29,6 +29,13 @@ public struct SSHClientConfiguration {
     /// The enabled KeyExchangeAlgorithms
     public var keyExchangeAlgorithms: [NIOSSHKeyExchangeAlgorithmProtocol.Type] = SSHKeyExchangeStateMachine.bundledKeyExchangeImplementations
 
+    /// RELAY PATCH: host key algorithms to ask for first, most wanted
+    /// first (the ones the client already holds a key of, for this host, as
+    /// OpenSSH orders HostKeyAlgorithms). A server with several host keys
+    /// then presents one the client can check, rather than one it has
+    /// never seen. Names this build doesn't support are ignored.
+    public var preferredServerHostKeyAlgorithms: [String] = []
+
     /// The maximum packet size that this NIOSSH client will accept
     public var maximumPacketSize = SSHPacketParser.defaultMaximumPacketSize
 

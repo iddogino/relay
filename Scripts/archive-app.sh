@@ -6,11 +6,14 @@
 #
 # Needs the Developer ID Application certificate in a keychain and the
 # "Relay Developer ID" provisioning profile (the release workflow's
-# MACOS_CERTIFICATE_P12 and MACOS_PROVISIONING_PROFILE).
+# MACOS_CERTIFICATE_P12 and MACOS_PROVISIONING_PROFILE), and build/tmux
+# (Scripts/build-tmux.sh): a release always bundles it.
 #
 # Environment:
 #   RELAY_VERSION       CFBundleShortVersionString (e.g. 0.1.0, 0.1.0-rc.1)
-#   RELAY_BUILD_NUMBER  CFBundleVersion (monotonic integer: Sparkle compares it)
+#   RELAY_BUILD_NUMBER  CFBundleVersion (the integer Sparkle compares; a
+#                       release's follows from its version:
+#                       Scripts/release-version.py)
 #   RELAY_PROVISIONING_PROFILE
 #                       the profile, when Xcode doesn't have it yet: it's
 #                       installed where Xcode looks.

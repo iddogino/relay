@@ -322,6 +322,33 @@ extension NIOSSHHandler {
         self.sendGlobalRequestsIfPossible()
     }
 
+    /// RELAY PATCH: asks the peer to answer (OpenSSH's
+    /// `keepalive@openssh.com` global request, which every server answers:
+    /// with a refusal if it doesn't know it). `promise` succeeds when the
+    /// peer answers either way, and fails if the connection ends first.
+    ///
+    /// This function is **not** thread-safe: it may only be called from on the channel.
+    public func sendKeepalive(promise: EventLoopPromise<Void>?) {
+        guard let context = self.context else {
+            promise?.fail(ChannelError.ioOnClosedChannel)
+            return
+        }
+        let answered = context.eventLoop.makePromise(of: ByteBuffer?.self)
+        answered.futureResult.whenComplete { result in
+            switch result {
+            case .success:
+                promise?.succeed(())
+            case .failure(let error as NIOSSHError) where error.type == .globalRequestRefused:
+                promise?.succeed(())
+            case .failure(let error):
+                promise?.fail(error)
+            }
+        }
+        self.sendGlobalRequestMessage(
+            .init(wantReply: true, type: .unknown("keepalive@openssh.com", context.channel.allocator.buffer(capacity: 0))),
+            promise: answered)
+    }
+
     private func dropAllPendingGlobalRequests(_ error: Error) {
         while let next = self.pendingGlobalRequests.popFirst() {
             next.1?.fail(error)

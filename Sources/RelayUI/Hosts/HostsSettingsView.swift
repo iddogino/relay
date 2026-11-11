@@ -95,7 +95,7 @@ struct HostsSettingsView: View {
                     .contextMenu {
                         Button("Edit…") { edit(host) }
                         Button("Remove…") { confirmRemove = host }
-                            .disabled(!model.projects(on: host).isEmpty)
+                            .disabled(model.removalBlocker(for: host) != nil)
                     }
             }
             .listStyle(.bordered)
@@ -126,7 +126,7 @@ struct HostsSettingsView: View {
                     Image(systemName: "minus")
                 }
                 .help(removeHelp)
-                .disabled(selectedHost.map { !model.projects(on: $0).isEmpty } ?? true)
+                .disabled(selectedHost.map { model.removalBlocker(for: $0) != nil } ?? true)
                 Button("Edit…") {
                     if let host = selectedHost { edit(host) }
                 }
@@ -159,8 +159,7 @@ struct HostsSettingsView: View {
 
     private var removeHelp: String {
         guard let host = selectedHost else { return "Remove Host" }
-        let count = model.projects(on: host).count
-        return count == 0 ? "Remove Host" : "In use by \(count) project\(count == 1 ? "" : "s")"
+        return model.removalBlocker(for: host) ?? "Remove Host"
     }
 
     private func edit(_ host: SSHHost) {
