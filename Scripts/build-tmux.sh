@@ -71,28 +71,34 @@ export TMUX_VERSION LIBEVENT_VERSION NCURSES_VERSION TERMINFO_ENTRIES DEFAULT_TE
 mkdir -p "$DL" "$OUT"
 
 # 1. Fetch pinned sources; a hash mismatch is fatal, never re-downloaded over.
-fetch() { # name url sha256
-  local file="$DL/$1"
+# Further URLs are mirrors, tried in turn (a source's own site can refuse a
+# CI runner): whichever answers, the file must match the pin.
+fetch() { # name sha256 url [mirror...]
+  local name="$1" sha="$2" file="$DL/$1" url actual
+  shift 2
   if [ ! -f "$file" ]; then
-    echo "Downloading $1"
-    curl -fsSL --retry 3 -o "$file.part" "$2"
-    mv "$file.part" "$file"
+    for url in "$@"; do
+      echo "Downloading $name"
+      if curl -fsSL --retry 3 -o "$file.part" "$url"; then
+        mv "$file.part" "$file"
+        break
+      fi
+      echo "  not from $url" >&2
+    done
+    [ -f "$file" ] || { echo "error: couldn't download $name." >&2; exit 1; }
   fi
-  local actual
   actual="$(shasum -a 256 "$file" | cut -d' ' -f1)"
-  if [ "$actual" != "$3" ]; then
-    echo "error: $file has sha256 $actual, expected pinned $3." >&2
+  if [ "$actual" != "$sha" ]; then
+    echo "error: $file has sha256 $actual, expected pinned $sha." >&2
     exit 1
   fi
 }
-fetch "tmux-$TMUX_VERSION.tar.gz" \
-  "https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/tmux-$TMUX_VERSION.tar.gz" "$TMUX_SHA256"
-fetch "libevent-$LIBEVENT_VERSION.tar.gz" \
-  "https://github.com/libevent/libevent/releases/download/release-$LIBEVENT_VERSION/libevent-$LIBEVENT_VERSION.tar.gz" "$LIBEVENT_SHA256"
-fetch "utf8proc-$UTF8PROC_VERSION.tar.gz" \
-  "https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v$UTF8PROC_VERSION.tar.gz" "$UTF8PROC_SHA256"
-fetch "ncurses-$NCURSES_VERSION.tar.gz" \
-  "https://invisible-island.net/archives/ncurses/ncurses-$NCURSES_VERSION.tar.gz" "$NCURSES_SHA256"
+fetch_tmux_sources() {
+  fetch "tmux-$TMUX_VERSION.tar.gz" "$TMUX_SHA256" \
+    "https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/tmux-$TMUX_VERSION.tar.gz"
+  fetch "libevent-$LIBEVENT_VERSION.tar.gz" "$LIBEVENT_SHA256" \
+    "https://github.com/libevent/libevent/releases/download/release-$LIBEVENT_VERSION/libevent-$LIBEVENT_VERSION.tar.gz"
+}
 
 # A stamp per build dir records the pins it was built from, so re-runs skip
 # finished work and a changed pin rebuilds from scratch.
@@ -112,6 +118,7 @@ build_linux() { # docker-platform arch-name
   local dir="$WORK/linux-$2"
   if is_built "$dir"; then echo "linux-$2: up to date"; return; fi
   need_docker "tmux for linux-$2"
+  fetch_tmux_sources
   fresh_dir "$dir"
   echo "Building tmux for linux-$2"
   "$DOCKER" run --rm --platform "$1" \
@@ -147,6 +154,9 @@ if is_built "$TERMINFO_DIR"; then
   echo "terminfo: up to date"
 else
   need_docker "terminfo"
+  fetch "ncurses-$NCURSES_VERSION.tar.gz" "$NCURSES_SHA256" \
+    "https://invisible-island.net/archives/ncurses/ncurses-$NCURSES_VERSION.tar.gz" \
+    "https://ftp.gnu.org/gnu/ncurses/ncurses-$NCURSES_VERSION.tar.gz"
   fresh_dir "$TERMINFO_DIR"
   echo "Compiling terminfo"
   "$DOCKER" run --rm -v "$DL:/dl:ro" -v "$TERMINFO_DIR:/work" \
@@ -228,6 +238,9 @@ SDK="$(xcrun --sdk macosx --show-sdk-path)"
 build_darwin() { # arch
   local dir="$WORK/darwin-$1" host
   if is_built "$dir"; then echo "darwin-$1: up to date"; return; fi
+  fetch_tmux_sources
+  fetch "utf8proc-$UTF8PROC_VERSION.tar.gz" "$UTF8PROC_SHA256" \
+    "https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v$UTF8PROC_VERSION.tar.gz"
   fresh_dir "$dir"
   echo "Building tmux for darwin-$1"
   case "$1" in arm64) host=aarch64-apple-darwin ;; x86_64) host=x86_64-apple-darwin ;; esac
