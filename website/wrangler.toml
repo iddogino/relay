@@ -1,0 +1,6 @@
+# relayapp.sh — a Cloudflare Pages project (static, no Functions).
+# Built by `node build.mjs` into dist/, deployed by `wrangler pages deploy`
+# (locally: `npm run deploy`; on main: .github/workflows/website.yml).
+name = "relayapp"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-11-01"

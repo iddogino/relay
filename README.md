@@ -81,8 +81,8 @@ is the force escape hatch — it skips the shutdown command.
 
 ## Install
 
-Grab the latest `Relay-<version>.dmg` from
-[Releases](https://github.com/iddogino/relay/releases), open it, and drag
+Grab the latest `Relay-<version>.dmg` from [relayapp.sh](https://relayapp.sh)
+or [Releases](https://github.com/iddogino/relay/releases), open it, and drag
 **Relay** into **Applications**. Builds are Developer ID-signed and
 notarized. After that the app keeps itself current via
 [Sparkle](https://sparkle-project.org): updates are offered in-app
@@ -219,6 +219,10 @@ Development environment) deployed to Production in the CloudKit Console.
   `Direct/` adds Sparkle auto-updates; `Store/` is the App Store app, in
   the App Sandbox. Debug builds are Relay Dev, with its own Keychain group
   and data.
+- `website/` — [relayapp.sh](https://relayapp.sh): the landing page and the
+  release notes, generated from GitHub Releases and deployed to Cloudflare
+  Pages on every push to `main` and after every release
+  ([website/README.md](website/README.md)).
 - Sessions you visit stay **warm**: the last 4 viewed sessions keep their
   ssh attachment and terminal state in the background, so switching between
   them is instant, their scrollback survives, and their sidebar titles stay

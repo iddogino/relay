@@ -1,0 +1,19 @@
+{
+  "name": "relay-website",
+  "private": true,
+  "type": "module",
+  "description": "relayapp.sh — the landing page and release notes for Relay",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --serve",
+    "preview": "node build.mjs && wrangler pages dev dist",
+    "deploy": "node build.mjs && wrangler pages deploy dist --project-name relayapp --branch main --commit-dirty=true"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "wrangler": "^4.160.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

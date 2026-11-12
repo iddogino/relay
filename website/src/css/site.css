@@ -1,0 +1,5 @@
+/* relayapp.sh — one stylesheet for both pages, bundled by build.mjs. */
+@import './base.css';
+@import './mock.css';
+@import './home.css';
+@import './releases.css';

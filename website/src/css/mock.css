@@ -1,0 +1,1027 @@
+/* The app's mockups: the Mac window, the iPad, the iPhone, and the
+   terminal inside each. Everything is sized in em and each device takes
+   its font size from the width of the .stage around it, so a mockup
+   scales like a picture. Colors are macOS's and iOS's dark appearance;
+   the terminal's are Ghostty's defaults. */
+
+.stage {
+  container-type: inline-size;
+}
+
+.ui,
+.mac,
+.pad,
+.phone {
+  --t1: rgb(255 255 255 / 0.86);
+  --t2: rgb(235 235 245 / 0.56);
+  --t3: rgb(235 235 245 / 0.28);
+  color: var(--t1);
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.25;
+  text-align: left;
+  letter-spacing: 0;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+/* ── Mac window ────────────────────────────────────────────────────── */
+
+.mac {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20.4em minmax(0, 1fr);
+  aspect-ratio: 1120 / 690;
+  /* 13px at the window's natural 1120px. */
+  font-size: 13px;
+  font-size: clamp(6px, 1.1607cqw, 13.5px);
+  border-radius: 1.25em;
+  background: #1c1c1e;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.7),
+    0 2.4em 5em -1em rgb(0 0 0 / 0.75),
+    0 5em 10em -3em rgb(0 0 0 / 0.8);
+}
+/* The window's hairline highlight, over its content. */
+.mac::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.16);
+  pointer-events: none;
+  z-index: 5;
+}
+.mac.solo {
+  grid-template-columns: minmax(0, 1fr);
+  aspect-ratio: auto;
+}
+
+.mac-side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin: 0.6em 0 0.6em 0.6em;
+  border-radius: 1em;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.075), rgb(255 255 255 / 0.05));
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.08),
+    0 0.4em 1.4em rgb(0 0 0 / 0.28);
+}
+.mac-chrome {
+  display: flex;
+  align-items: center;
+  gap: 0.615em;
+  height: 3.1em;
+  padding: 0 0.95em;
+  flex: none;
+}
+.mac-toolbar .mac-chrome {
+  padding: 0 0.4em 0 0;
+}
+.light {
+  width: 0.923em;
+  height: 0.923em;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.2);
+}
+.light.r {
+  background: #ff5f57;
+}
+.light.y {
+  background: #febc2e;
+}
+.light.g {
+  background: #28c840;
+}
+.side-toggle {
+  margin-left: auto;
+  font-size: 1.3em;
+  color: var(--t2);
+}
+.mac-toolbar .side-toggle {
+  margin-left: 0.5em;
+}
+
+/* The sidebar's rows: a fixed glyph gutter, then text (SidebarGrid). */
+.list {
+  padding: 0.15em 0.7em 0.7em;
+  overflow: hidden;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.385em;
+  min-height: 2.15em;
+  padding: 0.3em 0.62em;
+  border-radius: 0.6em;
+  transition: background-color 0.15s;
+}
+.row .name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row.head {
+  min-height: 2em;
+  font-size: 0.846em;
+  font-weight: 600;
+  color: var(--t2);
+}
+.row.head .acts {
+  display: flex;
+  gap: 1em;
+  margin-left: auto;
+  padding-right: 0.25em;
+  font-size: 1.2em;
+}
+.glyph {
+  display: grid;
+  place-items: center;
+  width: 1.385em;
+  flex: none;
+}
+.row.project .chev {
+  width: 0.9em;
+  margin-right: 0.15em;
+  font-size: 0.78em;
+  color: var(--t2);
+}
+.row.project .glyph {
+  color: var(--t2);
+  font-size: 1.12em;
+  width: 1.24em;
+}
+.row.project .name {
+  font-weight: 500;
+}
+.row .host {
+  margin-left: auto;
+  padding-left: 0.6em;
+  font-size: 0.846em;
+  color: var(--t3);
+  white-space: nowrap;
+}
+.row .host.needs {
+  color: var(--sys-orange);
+}
+.dot {
+  width: 0.54em;
+  height: 0.54em;
+  border-radius: 50%;
+  flex: none;
+  background: var(--sys-green);
+  transition: background-color 0.3s;
+}
+.dot.grey {
+  background: rgb(235 235 245 / 0.3);
+}
+.dot.yellow {
+  background: var(--sys-yellow);
+}
+.dot.red {
+  background: var(--sys-red);
+}
+.row.session,
+.row.new {
+  margin-left: 1.25em;
+}
+.row.session {
+  cursor: pointer;
+}
+.row.session .text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.08em;
+  min-width: 0;
+  flex: 1;
+}
+.row.session .cap {
+  font-size: 0.846em;
+  color: var(--t2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row.session .cap:empty {
+  display: none;
+}
+.row.session:hover {
+  background: rgb(255 255 255 / 0.05);
+}
+/* The terminal has the keyboard, so the list's selection is the
+   unemphasized grey, as in the app. */
+.row.session.selected {
+  background: rgb(255 255 255 / 0.115);
+}
+.row.session.unseen .name {
+  font-weight: 600;
+}
+.row.new {
+  color: var(--t2);
+}
+.row.new .glyph {
+  font-size: 1.05em;
+}
+.trail {
+  display: grid;
+  place-items: center;
+  width: 1.08em;
+  height: 1.08em;
+  flex: none;
+}
+.trail i {
+  display: block;
+}
+.ring,
+.spin {
+  width: 0.846em;
+  height: 0.846em;
+  border-radius: 50%;
+  border: 0.123em solid var(--t2);
+  border-right-color: transparent;
+  animation: spin 1.2s linear infinite;
+}
+.target {
+  width: 1em;
+  height: 1em;
+  border-radius: 50%;
+  border: 0.115em solid var(--sys-orange);
+  background: radial-gradient(circle, var(--sys-orange) 0 32%, transparent 36%);
+  animation: pop 0.5s var(--ease);
+}
+.done {
+  font-size: 0.8em;
+  color: var(--t3);
+  line-height: 0;
+}
+.done.unseen {
+  font-size: 1.04em;
+  color: var(--t1);
+  animation: pop 0.5s var(--ease);
+}
+.unread {
+  width: 0.615em;
+  height: 0.615em;
+  border-radius: 50%;
+  background: var(--t1);
+}
+@keyframes spin {
+  to {
+    rotate: 1turn;
+  }
+}
+@keyframes pop {
+  from {
+    scale: 0.4;
+    opacity: 0;
+  }
+}
+/* A project arriving over iCloud. */
+.group.arriving {
+  animation: arrive 0.7s var(--ease) both;
+}
+@keyframes arrive {
+  from {
+    opacity: 0;
+    translate: 0 -0.5em;
+    max-height: 0;
+  }
+  to {
+    max-height: 9em;
+  }
+}
+.group.arriving .row.project {
+  animation: flash 1.6s ease-out both;
+}
+@keyframes flash {
+  from {
+    background: rgb(48 209 88 / 0.28);
+  }
+}
+
+.mac-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.mac-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.9em;
+  height: 3.9em;
+  padding: 0 0.85em 0 1.25em;
+  flex: none;
+}
+.mac-title {
+  font-size: 1.154em;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 0.15em;
+  height: 2.62em;
+  margin-left: auto;
+  padding: 0 0.35em;
+  border-radius: 1.31em;
+  background: rgb(255 255 255 / 0.075);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.09),
+    0 0.15em 0.6em rgb(0 0 0 / 0.2);
+}
+.tool {
+  display: flex;
+  align-items: center;
+  gap: 0.31em;
+  height: 2em;
+  padding: 0 0.62em;
+  border-radius: 1em;
+  white-space: nowrap;
+}
+.tool.load {
+  gap: 0.385em;
+}
+.donut {
+  --c: var(--sys-green);
+  display: block;
+  width: 0.923em;
+  height: 0.923em;
+  border-radius: 50%;
+  background: conic-gradient(var(--c) calc(var(--f) * 1turn), color-mix(in srgb, var(--c) 24%, transparent) 0);
+  -webkit-mask: radial-gradient(closest-side, transparent 54%, #000 60%);
+  mask: radial-gradient(closest-side, transparent 54%, #000 60%);
+}
+.donut.orange {
+  --c: var(--sys-orange);
+}
+.donut.red {
+  --c: var(--sys-red);
+}
+.tool.pr {
+  font: 400 0.846em var(--mono);
+}
+.tool.pr svg {
+  font-size: 1.3em;
+}
+.pr-state {
+  display: block;
+  width: 0.64em;
+  height: 0.64em;
+  border-radius: 50%;
+  background: var(--sys-green);
+}
+.pr-state.pending {
+  width: 0.8em;
+  height: 0.8em;
+  background: none;
+  border: 0.14em solid var(--t2);
+  border-right-color: transparent;
+  animation: spin 0.9s linear infinite;
+}
+.pr-state.failed {
+  background: var(--sys-red);
+}
+.tool.diff,
+.diff {
+  display: inline-flex;
+  gap: 0.3em;
+  font: 400 0.846em var(--mono);
+}
+.add {
+  color: var(--sys-green);
+}
+.del {
+  color: var(--sys-red);
+}
+
+/* TerminalHeaderBar: 12pt text, the connection's dot, the pane title. */
+.hbar {
+  display: flex;
+  align-items: center;
+  gap: 0.667em;
+  padding: 0.5em 1em;
+  font-size: 0.923em;
+  background: rgb(255 255 255 / 0.045);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    inset 0 -1px 0 rgb(0 0 0 / 0.55);
+  flex: none;
+}
+.hbar .dot {
+  width: 0.667em;
+  height: 0.667em;
+}
+.crumbs {
+  display: flex;
+  gap: 0.417em;
+  white-space: nowrap;
+}
+.crumbs b {
+  font-weight: 500;
+}
+.t2 {
+  color: var(--t2);
+}
+.t3 {
+  color: var(--t3);
+}
+.htitle {
+  margin-left: auto;
+  font-size: 0.917em;
+  color: var(--t3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Terminal ──────────────────────────────────────────────────────── */
+
+.term {
+  --term-bg: #282c34;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--term-bg);
+  overflow: hidden;
+}
+.term-body {
+  position: absolute;
+  inset: 0;
+  padding: 0.55em 0.75em;
+  overflow: hidden;
+  font: 400 1em/1.32 var(--mono);
+  font-variant-ligatures: none;
+  color: #fff;
+  white-space: pre;
+  cursor: text;
+}
+.term-body .l {
+  display: block;
+  height: 1.32em;
+}
+/* Ghostty's default palette. */
+.term-body .k {
+  color: #666;
+}
+.term-body .r {
+  color: #cc6666;
+}
+.term-body .g {
+  color: #b5bd68;
+}
+.term-body .y {
+  color: #f0c674;
+}
+.term-body .b {
+  color: #81a2be;
+}
+.term-body .m {
+  color: #b294bb;
+}
+.term-body .c {
+  color: #8abeb7;
+}
+.term-body .w {
+  color: #c5c8c6;
+}
+.term-body .o {
+  color: #de935f;
+}
+.term-body .B {
+  font-weight: 700;
+}
+.term-body .D {
+  opacity: 0.55;
+}
+.term-body .I {
+  font-style: italic;
+}
+.term-body .hl {
+  background: rgb(255 255 255 / 0.09);
+}
+.term-body .ok {
+  background: rgb(181 189 104 / 0.16);
+  color: #b5bd68;
+}
+.term-body .no {
+  background: rgb(204 102 102 / 0.16);
+  color: #cc6666;
+}
+.term-body a,
+.term-body .lnk {
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  pointer-events: auto;
+}
+.term-body a:hover,
+.term-body .lnk:hover,
+.term-body .lnk.hover {
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+.cur {
+  display: inline-block;
+  width: 0.6em;
+  height: 1.18em;
+  margin-bottom: -0.2em;
+  background: #fff;
+  animation: blink 1.15s steps(1) infinite;
+}
+.cur.bar {
+  width: 0.12em;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* What the app lays over a terminal: connecting, reconnecting, a drop. */
+.term-over {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+.term-over.show {
+  opacity: 1;
+}
+.over-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.85em;
+  max-width: 80%;
+  padding: 1.7em 1.9em;
+  border-radius: 0.95em;
+  background: rgb(58 58 62 / 0.78);
+  -webkit-backdrop-filter: blur(1.5em) saturate(150%);
+  backdrop-filter: blur(1.5em) saturate(150%);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.1),
+    0 0.6em 1.4em rgb(0 0 0 / 0.35);
+  text-align: center;
+  white-space: normal;
+}
+.over-card .t2 {
+  color: var(--t2);
+}
+.over-card small {
+  font-size: 0.846em;
+  color: var(--t2);
+  font-variant-numeric: tabular-nums;
+}
+.over-card .spin {
+  width: 1.25em;
+  height: 1.25em;
+  border-width: 0.15em;
+  animation-duration: 0.8s;
+}
+.over-card .push {
+  padding: 0.22em 0.9em;
+  border-radius: 0.5em;
+  background: rgb(255 255 255 / 0.16);
+  box-shadow: inset 0 0.5px 0 rgb(255 255 255 / 0.18);
+  font-size: 1em;
+}
+.over-card .bar {
+  width: 21.5em;
+  max-width: 100%;
+  height: 0.46em;
+  border-radius: 0.23em;
+  background: rgb(255 255 255 / 0.14);
+  overflow: hidden;
+}
+.over-card .bar i {
+  display: block;
+  width: calc(var(--p, 0) * 100%);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--sys-blue);
+  transition: width 0.3s linear;
+}
+.drop-target {
+  position: absolute;
+  inset: 0.46em;
+  display: grid;
+  place-items: center;
+  border-radius: 0.77em;
+  border: 0.154em dashed var(--sys-blue);
+  background: rgb(10 132 255 / 0.08);
+}
+.drop-target .over-card {
+  padding: 1.4em;
+  gap: 0.46em;
+}
+.drop-target .over-card svg {
+  font-size: 1.9em;
+}
+.drop-target .over-card b {
+  font-weight: 500;
+}
+
+/* ── iOS pieces (iPhone and iPad) ──────────────────────────────────── */
+
+.glass {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6em;
+  height: 2.6em;
+  padding: 0 0.85em;
+  border-radius: 1.3em;
+  background: rgb(255 255 255 / 0.1);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.1),
+    0 0.2em 0.8em rgb(0 0 0 / 0.25);
+  white-space: nowrap;
+  flex: none;
+}
+.glass.round {
+  width: 2.6em;
+  padding: 0;
+}
+.glass svg {
+  font-size: 1.2em;
+}
+.glass .diff {
+  font-size: 0.765em;
+}
+.glass .donut {
+  width: 0.8em;
+  height: 0.8em;
+}
+.ios-bar {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.3em 0.95em;
+  flex: none;
+}
+.ios-large {
+  padding: 0.25em 0.6em 0.3em;
+  font-size: 2em;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  flex: none;
+}
+.list.ios {
+  padding: 0 0.95em;
+}
+.list.ios .row {
+  min-height: 2.6em;
+  padding: 0.42em 0.7em;
+  border-radius: 0.75em;
+}
+.list.ios .row.session.selected {
+  background: rgb(255 255 255 / 0.13);
+}
+.list.ios .row.project .chev {
+  order: 9;
+  margin: 0 0 0 0.5em;
+  color: var(--sys-blue);
+}
+.list.ios .row.project .glyph {
+  color: var(--sys-blue);
+}
+.list.ios .row.new {
+  color: var(--sys-blue);
+}
+.ios-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 0.25em 0.95em 0.5em;
+  flex: none;
+}
+.ios-title {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1em;
+  min-width: 0;
+}
+.ios-title b {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ios-title > span {
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
+  font-size: 0.72em;
+  color: var(--t2);
+  white-space: nowrap;
+}
+.ios-title .dot {
+  width: 0.5em;
+  height: 0.5em;
+}
+.ios-tools {
+  display: flex;
+  gap: 0.5em;
+}
+
+/* TerminalKeyBar. */
+.keybar {
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
+  height: 2.7em;
+  padding: 0 0.35em 0 0.25em;
+  background: rgb(44 44 48 / 0.96);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+  flex: none;
+}
+.keybar .keys {
+  display: flex;
+  gap: 0.24em;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 1.2em), transparent);
+  mask-image: linear-gradient(90deg, #000 calc(100% - 1.2em), transparent);
+}
+.key {
+  display: grid;
+  place-items: center;
+  min-width: 1.9em;
+  height: 2.1em;
+  padding: 0 0.42em;
+  border-radius: 0.42em;
+  background: rgb(255 255 255 / 0.22);
+  box-shadow: 0 1px 0 rgb(0 0 0 / 0.3);
+  font: 500 1em var(--mono);
+  flex: none;
+  transition:
+    background-color 0.12s,
+    scale 0.12s;
+}
+.key.word {
+  font-size: 0.765em;
+  min-width: 2.5em;
+  height: 2.75em;
+  padding: 0 0.55em;
+}
+.key.icon {
+  min-width: 2.4em;
+}
+.key.icon svg {
+  font-size: 1.05em;
+}
+.key.down,
+.kbd i.down {
+  background: rgb(255 255 255 / 0.55);
+  scale: 0.94;
+}
+.keybar .sep {
+  width: 1px;
+  height: 1.6em;
+  background: rgb(255 255 255 / 0.16);
+  flex: none;
+}
+
+.kbd {
+  display: flex;
+  flex-direction: column;
+  gap: 0.62em;
+  padding: 0.5em 0.2em 0.3em;
+  background: rgb(36 36 40 / 0.98);
+  flex: none;
+}
+.kbd div {
+  display: flex;
+  justify-content: center;
+  gap: 0.36em;
+}
+.kbd i {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  height: 2.5em;
+  border-radius: 0.32em;
+  background: rgb(255 255 255 / 0.3);
+  box-shadow: 0 1px 0 rgb(0 0 0 / 0.35);
+  font-style: normal;
+  font-size: 1.3em;
+  height: 1.95em;
+  transition:
+    background-color 0.12s,
+    scale 0.12s;
+}
+.kbd .inset {
+  padding: 0 1.15em;
+}
+.kbd i.mod {
+  flex: 1.35;
+  background: rgb(255 255 255 / 0.14);
+  font-size: 1em;
+  height: 2.53em;
+}
+.kbd i.wide {
+  flex: 2.4;
+  font-size: 0.9em;
+  height: 2.82em;
+}
+.kbd i.space {
+  flex: 5.2;
+  font-size: 0.9em;
+  height: 2.82em;
+}
+.kbd i.go {
+  background: var(--sys-blue);
+}
+
+/* ── iPhone ────────────────────────────────────────────────────────── */
+
+.phone {
+  position: relative;
+  aspect-ratio: 393 / 830;
+  /* 17px at 393pt wide. */
+  font-size: 8px;
+  font-size: 4.02cqw;
+  padding: 0.62em;
+  border-radius: 3.5em;
+  background: linear-gradient(145deg, #3a3a3d, #151517 40%, #2a2a2c);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.2),
+    inset 0 0 0 0.2em #0a0a0b,
+    0 2em 4em -1em rgb(0 0 0 / 0.8),
+    0 0 0 1px #000;
+}
+.phone-screen {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  border-radius: 2.95em;
+  background: #000;
+  overflow: hidden;
+}
+.island {
+  position: absolute;
+  top: 0.66em;
+  left: 50%;
+  translate: -50%;
+  width: 7.3em;
+  height: 2.15em;
+  border-radius: 1.1em;
+  background: #000;
+  z-index: 4;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.04);
+}
+.ios-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 3.15em;
+  padding: 0.5em 2em 0 2.5em;
+  flex: none;
+}
+.ios-status b {
+  font-weight: 600;
+}
+.ios-status-icons {
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
+}
+.ios-status-icons svg {
+  height: 0.72em;
+  width: auto;
+  fill: currentColor;
+}
+.phone-stack {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  width: 200%;
+  transition: translate 0.55s cubic-bezier(0.3, 0.9, 0.3, 1);
+}
+.phone-stack.pushed {
+  translate: -50%;
+}
+.screen {
+  width: 50%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.phone .term-body {
+  font-size: 0.74em;
+  padding: 0.5em 0.6em;
+}
+.phone .ios-nav {
+  padding: 0.25em 0.8em 0.5em;
+}
+.home-bar {
+  position: absolute;
+  bottom: 0.45em;
+  left: 50%;
+  translate: -50%;
+  width: 8em;
+  height: 0.3em;
+  border-radius: 0.15em;
+  background: rgb(255 255 255 / 0.5);
+  z-index: 4;
+}
+.phone .kbd {
+  padding-bottom: 1.6em;
+}
+
+/* ── iPad ──────────────────────────────────────────────────────────── */
+
+.pad {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  /* Drawn a little large for its size, so the terminal stays legible. */
+  font-size: 7px;
+  font-size: 1.62cqw;
+  padding: 0.95em;
+  border-radius: 2.3em;
+  background: linear-gradient(145deg, #38383b, #141416 40%, #28282a);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.18),
+    inset 0 0 0 0.22em #0a0a0b,
+    0 2em 4.5em -1em rgb(0 0 0 / 0.8),
+    0 0 0 1px #000;
+}
+.pad-screen {
+  display: grid;
+  grid-template-columns: 17.5em minmax(0, 1fr);
+  height: 100%;
+  border-radius: 1.4em;
+  background: #000;
+  overflow: hidden;
+}
+.pad-side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin: 0.5em 0 0.5em 0.5em;
+  padding-top: 0.5em;
+  border-radius: 1.4em;
+  background: rgb(255 255 255 / 0.085);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.08);
+}
+.pad-side .ios-bar {
+  padding: 0.2em 0.7em;
+}
+.pad-side .list.ios {
+  padding: 0 0.5em;
+}
+.pad-side .row .host {
+  display: none;
+}
+.pad-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.pad .ios-nav {
+  padding: 0.75em 0.9em 0.6em;
+}
+.pad .ios-title {
+  align-items: center;
+}
+.pad .term-body {
+  font-size: 0.78em;
+}
+.pad .keybar {
+  height: 3em;
+  padding-inline: 0.6em;
+  gap: 0.5em;
+}
+.pad .keybar .keys {
+  gap: 0.4em;
+}
+
+/* Narrow stages: the Mac window with its sidebar hidden, type a little
+   larger. */
+@container (max-width: 620px) {
+  .mac:not(.solo) {
+    grid-template-columns: minmax(0, 1fr);
+    aspect-ratio: 10 / 11;
+    font-size: clamp(8px, 2.75cqw, 13px);
+  }
+  .mac:not(.solo) .mac-side {
+    display: none;
+  }
+  .mac:not(.solo) .mac-toolbar {
+    padding-left: 5.4em;
+    background:
+      radial-gradient(circle at 1.45em 50%, #ff5f57 0.46em, transparent 0.5em),
+      radial-gradient(circle at 2.98em 50%, #febc2e 0.46em, transparent 0.5em),
+      radial-gradient(circle at 4.52em 50%, #28c840 0.46em, transparent 0.5em);
+  }
+}
