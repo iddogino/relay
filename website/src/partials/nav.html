@@ -1,0 +1,22 @@
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/" aria-label="Relay — home">
+      <span class="brand-icon">{{{icon.mark}}}</span>
+      Relay
+    </a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="/#machines">Machines</a>
+      <a href="/#persistent">Sessions</a>
+      <a href="/#sync">Sync</a>
+      <a href="/#local">Feels local</a>
+      <a href="/#github">GitHub</a>
+      <a href="/releases" data-nav="releases">Releases</a>
+    </nav>
+    <div class="nav-actions">
+      <a class="gh-link" href="{{repo}}" aria-label="Relay on GitHub — {{stars}} stars">
+        {{{icon.github}}}<span class="stars {{starsClass}}">{{{icon.star}}}{{starsLabel}}</span>
+      </a>
+      <a class="btn primary nav-cta" href="{{stable.dmg.url}}" data-download>Download</a>
+    </div>
+  </div>
+</header>

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>Releases — Relay</title>
+<meta name="description" content="Every version of Relay for Mac, with downloads, checksums and release notes. The latest is {{stable.version}}.">
+<link rel="canonical" href="{{site}}/releases">
+<meta property="og:title" content="Relay releases">
+<meta property="og:description" content="Every version of Relay, with downloads and release notes. The latest is {{stable.version}}.">
+<meta property="og:url" content="{{site}}/releases">
+<link rel="alternate" type="application/atom+xml" title="Relay releases" href="{{repo}}/releases.atom">
+<!-- @include head -->
+</head>
+<body class="page-releases">
+<div class="field" id="field" aria-hidden="true"></div>
+<!-- @include nav -->
+
+<main class="wrap narrow">
+  <header class="releases-head">
+    <p class="eyebrow"><b>{{releaseCount}}</b> builds so far</p>
+    <h1 class="h2">Releases</h1>
+    <p class="lede">
+      Every build of Relay, newest first. Installed copies update themselves; these are here for a first install,
+      a rollback, or a look at what changed.
+    </p>
+  </header>
+
+  <section class="latest" aria-label="Latest downloads">
+    <a class="latest-card stable" href="{{stable.dmg.url}}" data-download>
+      <span class="latest-label"><i class="live"></i>Latest release</span>
+      <span class="latest-version">{{stable.version}}</span>
+      <span class="latest-meta">macOS 15 or later · {{stable.dmg.size}} · signed &amp; notarized</span>
+      <span class="btn primary">{{{icon.download}}}Download for Mac</span>
+    </a>
+    <a class="latest-card candidate {{candidateClass}}" href="{{candidate.dmg.url}}" data-download>
+      <span class="latest-label">Release candidate</span>
+      <span class="latest-version">{{candidate.version}}</span>
+      <span class="latest-meta">What’s coming next, a little early · {{candidate.dmg.size}}</span>
+      <span class="btn ghost">{{{icon.download}}}Download the candidate</span>
+    </a>
+  </section>
+
+  <div class="release-tools">
+    <div class="segmented" role="group" aria-label="Show">
+      <button type="button" data-filter="all" aria-pressed="true">All</button>
+      <button type="button" data-filter="stable" aria-pressed="false">Releases</button>
+      <button type="button" data-filter="pre" aria-pressed="false">Pre-releases</button>
+    </div>
+    <p>
+      In the app: <b>Relay ▸ Check for Updates…</b> Turn on <b>Receive Early Builds</b> to get release candidates.
+    </p>
+  </div>
+
+  <div class="release-list" id="release-list">
+    {{{releaseList}}}
+  </div>
+  <p class="quiet" id="release-empty" hidden>Nothing on this channel yet.</p>
+
+  <p class="releases-foot">
+    Release notes come from <a href="{{repo}}/releases">GitHub Releases</a>, where there’s also an
+    <a href="{{repo}}/releases.atom">Atom feed</a>. To check a download:
+    <code>shasum -a 256 Relay-{{stable.version}}.dmg</code>
+  </p>
+</main>
+
+<!-- @include footer -->
+<script type="module" src="{{asset.releases}}"></script>
+</body>
+</html>

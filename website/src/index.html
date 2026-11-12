@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>Relay — every machine, one terminal</title>
+<meta name="description" content="Relay is a free, open-source terminal for Mac, iPhone and iPad that keeps persistent sessions on the machines you SSH into — and syncs your hosts and keys through iCloud, so you can start on one device and continue on another.">
+<link rel="canonical" href="{{site}}/">
+<meta property="og:title" content="Relay — every machine, one terminal">
+<meta property="og:description" content="Persistent terminal sessions on all your machines, synced across your Mac, iPad and iPhone. Free and open source.">
+<meta property="og:url" content="{{site}}/">
+<!-- @include head -->
+</head>
+<body>
+<div class="field" id="field" aria-hidden="true"></div>
+<!-- @include nav -->
+
+<main>
+
+<!-- ─────────────────────────────────────────────────────────── Hero -->
+<section class="hero">
+  <div class="wrap hero-copy">
+    <a class="pill {{candidateClass}}" href="/releases#{{candidate.tag}}">
+      <i></i><b>{{candidate.version}}</b><span>The next release candidate is out</span>{{{icon.arrowRight}}}
+    </a>
+    <h1>Every machine.<br><em>One terminal.</em><i class="caret" aria-hidden="true"></i></h1>
+    <p class="lede">
+      Relay is a native terminal for the machines you SSH into. Sessions keep running when you close the lid,
+      and follow you from your Mac to your iPad to your iPhone.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="{{stable.dmg.url}}" data-download>
+        {{{icon.download}}}<span>Download for Mac</span><small>{{stable.version}}</small>
+      </a>
+      <a class="btn ghost" href="{{repo}}">{{{icon.github}}}<span>View on GitHub</span></a>
+    </div>
+    <p class="fineprint">
+      <span>Free &amp; open source</span><span>macOS 15 or later</span><span>{{stable.dmg.size}}, signed &amp; notarized</span>
+    </p>
+  </div>
+
+  <div class="wrap hero-shot">
+    <div class="glow" aria-hidden="true"></div>
+    <div class="stage tilt" id="hero-stage" aria-hidden="true">
+      {{{mock.hero}}}
+    </div>
+    <div class="chips" id="hero-chips" role="group" aria-label="Sessions"></div>
+    <p class="shot-note" aria-hidden="true">
+      <span class="live"></span>
+      <span class="wide-only">It’s live — pick a session in the sidebar, or press <kbd>1</kbd>–<kbd>5</kbd></span>
+      <span class="narrow-only">It’s live — pick a session</span>
+    </p>
+  </div>
+</section>
+
+<!-- ───────────────────────────────────────────────────────── Basics -->
+<section class="basics wrap" aria-label="Relay in four lines">
+  <div class="basic reveal" style="--i:0">
+    {{{icon.server}}}
+    <h3>Many machines</h3>
+    <p>Every host you can SSH into, its projects and their sessions, in one sidebar.</p>
+  </div>
+  <div class="basic reveal" style="--i:1">
+    {{{icon.bolt}}}
+    <h3>Never interrupted</h3>
+    <p>Sessions live in tmux on the host. Relay makes tmux disappear.</p>
+  </div>
+  <div class="basic reveal" style="--i:2">
+    {{{icon.cloud}}}
+    <h3>On every device</h3>
+    <p>Hosts, projects and keys sync through your iCloud, end-to-end encrypted.</p>
+  </div>
+  <div class="basic reveal" style="--i:3">
+    {{{icon.heart}}}
+    <h3>Free and open</h3>
+    <p>MIT licensed. No account, no subscription, no servers in between.</p>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────────────── Machines -->
+<section class="section wrap split" id="machines">
+  <div class="section-copy">
+    <p class="eyebrow reveal"><b>01</b> Machines</p>
+    <h2 class="h2 reveal">All your machines in&nbsp;one sidebar.</h2>
+    <p class="lede reveal">
+      Point Relay at a folder on anything you can SSH into: the Mac mini in the closet, a GPU box in the cloud,
+      the laptop in front of you. Each project keeps its sessions, and every session is one keystroke away.
+    </p>
+    <ul class="ticks reveal">
+      <li>{{{icon.check}}}<span><b>Bring your <code>~/.ssh/config</code>.</b> Hosts import with their <code>Include</code>s, <code>Match</code> blocks and jump hosts.</span></li>
+      <li>{{{icon.check}}}<span><b>A built-in SSH client.</b> Keys, certificates, your agent, passwords, <code>ProxyJump</code> — no <code>ssh</code> process involved.</span></li>
+      <li>{{{icon.check}}}<span><b><kbd>⌘</kbd><kbd>1</kbd> … <kbd>⌘</kbd><kbd>9</kbd> switch instantly.</b> Recent sessions stay connected in the background, scrollback and all.</span></li>
+      <li>{{{icon.check}}}<span><b>Nothing to set up on the host.</b> All it needs is tmux — and from 0.2, Relay can install that for you, no sudo.</span></li>
+    </ul>
+  </div>
+
+  <div class="fleet reveal" id="fleet" aria-hidden="true">
+    <article class="host-card" data-host="mac-mini" style="--i:0">
+      <header><i class="dot"></i><b>mac-mini</b><span>macOS · 10 cores</span><span class="pill-load"><i class="donut" style="--f:.34"></i><i class="donut" style="--f:.52"></i></span></header>
+      <svg class="spark" viewBox="0 0 300 44" preserveAspectRatio="none"><path class="area"/><path class="stroke"/></svg>
+      <div class="tree">
+        <div class="tree-project">{{{icon.folder}}}<b>api</b><span>~/code/api</span></div>
+        <div class="tree-session"><i class="dot"></i>auth-refactor<em>✳ Refactor token refresh</em><i class="ring"></i></div>
+        <div class="tree-session"><i class="dot"></i>fix-flaky-tests<em>✳ Fix flaky upload test</em><i class="target"></i></div>
+        <div class="tree-session"><i class="dot"></i>dev-server<em>npm run dev</em></div>
+      </div>
+    </article>
+    <article class="host-card" data-host="gpu-box" style="--i:1">
+      <header><i class="dot"></i><b>gpu-box</b><span>Linux · 32 cores · 2 GPUs</span><span class="pill-load"><i class="donut orange" style="--f:.81"></i><i class="donut" style="--f:.67"></i></span></header>
+      <svg class="spark hot" viewBox="0 0 300 44" preserveAspectRatio="none"><path class="area"/><path class="stroke"/></svg>
+      <div class="tree">
+        <div class="tree-project">{{{icon.folder}}}<b>trainer</b><span>/data/trainer</span></div>
+        <div class="tree-session"><i class="dot"></i>sweep-lr<em>python train.py</em></div>
+      </div>
+    </article>
+    <article class="host-card" data-host="macbook" style="--i:2">
+      <header><i class="dot"></i><b>macbook</b><span>This Mac</span><span class="pill-load"><i class="donut" style="--f:.12"></i><i class="donut" style="--f:.44"></i></span></header>
+      <svg class="spark" viewBox="0 0 300 44" preserveAspectRatio="none"><path class="area"/><path class="stroke"/></svg>
+      <div class="tree">
+        <div class="tree-project">{{{icon.folder}}}<b>dotfiles</b><span>~/.dotfiles</span></div>
+        <div class="tree-session"><i class="dot grey"></i>scratch<em>zsh</em></div>
+      </div>
+    </article>
+  </div>
+</section>
+
+<!-- ───────────────────────────────────────────────────── Persistent -->
+<section class="section wrap" id="persistent">
+  <div class="section-head">
+    <p class="eyebrow reveal"><b>02</b> Sessions</p>
+    <h2 class="h2 reveal">Close the lid. Nothing&nbsp;stops.</h2>
+    <p class="lede reveal">
+      Every session is a tmux session on the host; Relay is just the window onto it. Lose the Wi-Fi, quit the app,
+      board a plane — the work carries on, and when you’re back Relay reattaches with the scrollback you missed.
+    </p>
+  </div>
+
+  <div class="persist reveal" id="persist">
+    <div class="persist-pane local">
+      <p class="pane-label">{{{icon.laptop}}}<b>Your Mac</b><span data-local-state>connected</span></p>
+      <div class="persist-window" data-window>
+        <div class="stage" aria-hidden="true">{{{mock.persist}}}</div>
+        <div class="veil" data-veil aria-hidden="true">
+          <span class="veil-icon" data-veil-icon></span>
+          <b data-veil-title></b>
+          <span data-veil-note></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="wire" data-wire aria-hidden="true">
+      <svg viewBox="0 0 120 24" preserveAspectRatio="none"><path d="M0 12H120"/></svg>
+      <span>ssh</span>
+    </div>
+
+    <div class="persist-pane remote">
+      <p class="pane-label">{{{icon.server}}}<b>mac-mini</b><span>tmux · never noticed</span></p>
+      <div class="remote-box" aria-hidden="true">
+        <div class="remote-head"><i class="dot"></i><span>rterm-9f3c21d07ab44e10</span><span class="uptime" data-uptime>up 3d 04:12:09</span></div>
+        <div class="term"><div class="term-body" data-remote-body></div></div>
+      </div>
+    </div>
+
+    <div class="persist-controls" role="group" aria-label="Interrupt the connection">
+      <span>Go on, break it:</span>
+      <button type="button" class="cut" data-cut="lid" aria-pressed="false">{{{icon.moon}}}Close the lid</button>
+      <button type="button" class="cut" data-cut="wifi" aria-pressed="false">{{{icon.wifiOff}}}Drop the Wi-Fi</button>
+      <button type="button" class="cut" data-cut="quit" aria-pressed="false">{{{icon.power}}}Quit Relay</button>
+      <span class="missed" data-missed aria-live="polite"></span>
+    </div>
+  </div>
+
+  <ul class="facts">
+    <li class="reveal" style="--i:0"><h3>tmux, but invisible</h3><p>No status bar, no prefix key. Scrolling, selection and copy are the terminal’s own — tmux only keeps the session alive.</p></li>
+    <li class="reveal" style="--i:1"><h3>Still just tmux</h3><p>Sessions are ordinary tmux sessions. From any other terminal: <code>ssh host</code>, <code>tmux attach</code>.</p></li>
+    <li class="reveal" style="--i:2"><h3>Clean endings</h3><p>Archive a session and Relay runs your shutdown command — remove the worktree, stop the containers.</p></li>
+  </ul>
+</section>
+
+<!-- ─────────────────────────────────────────────────────────── Sync -->
+<section class="section wrap" id="sync">
+  <div class="section-head center">
+    <p class="eyebrow reveal"><b>03</b> Sync</p>
+    <h2 class="h2 reveal">Start on your Mac. Finish&nbsp;on&nbsp;your&nbsp;phone.</h2>
+    <p class="lede reveal">
+      Your hosts, projects and SSH keys sync through your own iCloud, end-to-end encrypted. Sessions don’t need to:
+      they live on your machines, so every device finds them exactly as you left them.
+    </p>
+  </div>
+
+  <div class="family reveal" id="family" aria-hidden="true">
+    <div class="cloud" data-cloud>
+      <span class="cloud-chip">{{{icon.cloud}}}<b>iCloud</b><span>end-to-end encrypted</span></span>
+    </div>
+    <div class="family-devices">
+      <svg class="cloud-lines" viewBox="0 0 1000 320" preserveAspectRatio="none">
+        <path data-line="mac" d="M500 0 C 500 70, 305 40, 305 150"/>
+        <path data-line="pad" d="M500 0 C 500 150, 660 150, 660 320"/>
+        <path data-line="phone" d="M500 0 C 500 110, 922 90, 922 320"/>
+      </svg>
+      <div class="family-mac stage" data-on="mac">{{{mock.syncMac}}}</div>
+      <div class="family-pad stage" data-on="pad">{{{mock.syncPad}}}</div>
+      <div class="family-phone stage" data-on="phone">{{{mock.syncPhone}}}</div>
+    </div>
+    <p class="family-caption"><span class="live"></span><span data-caption>One session, on every device</span></p>
+  </div>
+
+  <ul class="facts">
+    <li class="reveal" style="--i:0">{{{icon.key}}}<h3>Keys that travel, or don’t</h3><p>A Relay key syncs through iCloud Keychain and works everywhere at once. Or keep one in a device’s Secure Enclave, where it can never leave.</p></li>
+    <li class="reveal" style="--i:1">{{{icon.lock}}}<h3>Your iCloud, nobody’s server</h3><p>Hosts, projects and trusted host keys are encrypted on your device and stored in your private iCloud database.</p></li>
+    <li class="reveal" style="--i:2">{{{icon.phone}}}<h3>A real terminal on iOS</h3><p>The same renderer as the Mac, a key bar with <kbd>esc</kbd> <kbd>tab</kbd> <kbd>ctrl</kbd> and arrows, and full hardware-keyboard support.</p></li>
+  </ul>
+  <p class="aside reveal">Relay for iPhone and iPad is on its way to the App Store. Until then, <a href="{{repo}}#building">build it from source</a>.</p>
+</section>
+
+<!-- ────────────────────────────────────────────────────── Feels local -->
+<section class="section wrap" id="local">
+  <div class="section-head">
+    <p class="eyebrow reveal"><b>04</b> Feels local</p>
+    <h2 class="h2 reveal">Work remotely. Feel&nbsp;local.</h2>
+    <p class="lede reveal">The small things that usually break the moment you SSH somewhere — files, links, clipboard, scrollback — just work.</p>
+  </div>
+
+  <div class="bento">
+    <article class="card span-7 reveal" id="demo-upload">
+      <div class="card-copy">
+        <h3>Drop a file, get a path</h3>
+        <p>Drag anything onto the terminal. Relay uploads it to the host and types the remote path for you. <span class="try">Try it — drop a file on the terminal. It stays in your browser.</span></p>
+      </div>
+      <div class="card-demo">
+        <div class="demo-window ui" data-drop aria-hidden="true">
+          <div class="hbar"><i class="dot green"></i><span class="crumbs"><span class="t2">api</span><span class="t3">/</span><b>auth-refactor</b><span class="t3">·</span><span class="t2">mac-mini</span></span></div>
+          <div class="term"><div class="term-body" data-body></div><div class="term-over" data-over></div></div>
+          <div class="fly" data-fly>{{{icon.doc}}}<span data-fly-name>mockup.png</span></div>
+        </div>
+      </div>
+    </article>
+
+    <article class="card span-5 reveal" id="demo-links" style="--i:1">
+      <div class="card-copy">
+        <h3><kbd>⌘</kbd>-click, and it opens here</h3>
+        <p><code>localhost</code> links open against the right machine. File paths open in Quick Look, fetched from the host.</p>
+      </div>
+      <div class="card-demo" aria-hidden="true">
+        <div class="links-term term ui">
+          <div class="term-body"><span class="l"><span class="g">➜</span>  <span class="B">Local:</span>   <span class="c lnk" data-link="url">http://localhost:5173/</span></span><span class="l"> </span><span class="l"><span class="r">FAIL</span> <span class="lnk" data-link="file">src/auth/refresh.ts:42</span></span><span class="l"><span class="k">  expected 200, received 401</span></span></div>
+        </div>
+        <div class="browser" data-browser>
+          <div class="browser-bar"><i></i><i></i><i></i><span class="url">{{{icon.lock}}}<span>http://<b data-url-host>localhost</b>:5173/</span></span></div>
+          <div class="browser-page"><i></i><i></i><i></i><i></i></div>
+        </div>
+        <div class="quicklook" data-quicklook>
+          <div class="ql-bar"><i></i><i></i><i></i><b>refresh.ts</b><span>mac-mini</span></div>
+          <pre><span class="ln">40</span><span class="kw">export async function</span> <span class="fn">refresh</span>(user: <span class="ty">User</span>) {
+<span class="ln">41</span>  <span class="kw">const</span> session = <span class="kw">await</span> sessions.<span class="fn">find</span>(user.id)
+<span class="ln mark">42</span><span class="hit">  <span class="kw">return</span> session.<span class="fn">rotate</span>()</span>
+<span class="ln">43</span>}</pre>
+        </div>
+        <span class="pointer" data-pointer>{{{icon.cursor}}}</span>
+      </div>
+    </article>
+
+    <article class="card span-5 reveal" id="demo-agents">
+      <div class="card-copy">
+        <h3>Know when an agent needs you</h3>
+        <p>Claude Code and Codex sessions report what they’re doing: working, waiting on you, or done — in the sidebar and as notifications.</p>
+      </div>
+      <div class="card-demo" aria-hidden="true">
+        <div class="notif ui" data-notif>
+          <span class="notif-icon">{{{icon.mark}}}</span>
+          <span class="notif-text"><b data-notif-title>Claude Code needs you</b><span data-notif-sub>api / fix-flaky-tests</span><span class="t2" data-notif-body>Fix flaky upload test</span></span>
+          <time>now</time>
+        </div>
+        <div class="mini-side ui">
+          <div class="list">
+            <div class="row project"><span class="chev">{{{icon.chevronDown}}}</span><span class="glyph">{{{icon.folder}}}</span><span class="name">api</span><span class="host" data-agents-host>mac-mini</span><i class="dot green"></i></div>
+            <div class="row session" data-agent-row="0"><span class="glyph"><i class="dot green"></i></span><span class="text"><span class="name">auth-refactor</span><span class="cap">✳ Refactor token refresh</span></span><span class="trail"><i class="ring"></i></span></div>
+            <div class="row session" data-agent-row="1"><span class="glyph"><i class="dot green"></i></span><span class="text"><span class="name">fix-flaky-tests</span><span class="cap">✳ Fix flaky upload test</span></span><span class="trail"><i class="ring"></i></span></div>
+            <div class="row session" data-agent-row="2"><span class="glyph"><i class="dot grey"></i></span><span class="text"><span class="name">write-docs</span><span class="cap">✳ Document the session store</span></span><span class="trail"><i class="ring"></i></span></div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <article class="card span-7 reveal" id="demo-load" style="--i:1">
+      <div class="card-copy">
+        <h3>See how hard the machine is working</h3>
+        <p>Load and memory sit in the title bar for the machine you’re on. Hover for history, disk, GPUs and the processes eating it.</p>
+      </div>
+      <div class="card-demo" aria-hidden="true">
+        <div class="popover load-pop ui">
+          <div class="pop-title"><b>gpu-box</b><span>Linux · 32 cores · up 41 days</span></div>
+          <div class="metric" data-metric="load"><div><b>Load</b><span data-value>81% of capacity</span></div><svg viewBox="0 0 300 40" preserveAspectRatio="none"><path class="area"/><path class="stroke"/></svg></div>
+          <div class="metric" data-metric="memory"><div><b>Memory</b><span data-value>67% · 86 GB of 128 GB</span></div><svg viewBox="0 0 300 40" preserveAspectRatio="none"><path class="area"/><path class="stroke"/></svg></div>
+          <div class="metric" data-metric="gpu"><div><b>GPU</b><span data-value>2× RTX 4090 · 97%</span></div><svg viewBox="0 0 300 40" preserveAspectRatio="none"><path class="area"/><path class="stroke"/></svg></div>
+          <div class="procs"><b>Top processes</b>
+            <div><span>python</span><i>×4</i><em data-proc="0">1840%</em></div>
+            <div><span>tensorboard</span><i></i><em data-proc="1">38%</em></div>
+            <div><span>tmux: server</span><i></i><em data-proc="2">2%</em></div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <article class="card small span-4 reveal">
+      {{{icon.terminal}}}
+      <h3>Ghostty inside</h3>
+      <p>A real libghostty terminal, drawn with Metal. Your own Ghostty config — font, theme, keybinds — applies if you want it to.</p>
+    </article>
+    <article class="card small span-4 reveal" style="--i:1">
+      {{{icon.branch}}}
+      <h3>One worktree per session</h3>
+      <p>Give a project a launch command and every new session starts your agent in a fresh git worktree, and cleans it up when archived.</p>
+      <code class="snippet">claude --worktree="$RTERM_SESSION_SLUG"</code>
+    </article>
+    <article class="card small span-4 reveal" style="--i:2">
+      {{{icon.copy}}}
+      <h3>Clipboard and scrollback, native</h3>
+      <p>Copy on the host lands on your Mac’s clipboard. The wheel scrolls real history. Select text like in any other window.</p>
+    </article>
+    <article class="card small span-4 reveal">
+      {{{icon.laptop}}}
+      <h3>This Mac counts too <span class="tag-new">New in 0.2</span></h3>
+      <p>Run sessions on the Mac in front of you the same way, and pick them up from your phone. Relay can keep it awake for you.</p>
+    </article>
+    <article class="card small span-4 reveal" style="--i:1">
+      {{{icon.shield}}}
+      <h3>Signed, notarized, verified</h3>
+      <p>Developer ID-signed and notarized by Apple. Updates arrive in the app and are verified twice before they install. Host keys are checked on every connection.</p>
+    </article>
+    <article class="card small span-4 reveal" style="--i:2">
+      {{{icon.sparkle}}}
+      <h3>Light on its feet</h3>
+      <p>Around 100 MB of memory and no measurable CPU when idle. Background sessions stop drawing until you look at them.</p>
+    </article>
+  </div>
+</section>
+
+<!-- ───────────────────────────────────────────────────────── GitHub -->
+<section class="section wrap split flip" id="github">
+  <div class="section-copy">
+    <p class="eyebrow reveal"><b>05</b> GitHub</p>
+    <h2 class="h2 reveal">Your pull request, in&nbsp;the&nbsp;title&nbsp;bar.</h2>
+    <p class="lede reveal">
+      Relay finds the pull request for the branch a session is on, follows its checks as they run,
+      and shows you what the session changed — without leaving the terminal.
+    </p>
+    <ul class="ticks reveal">
+      <li>{{{icon.check}}}<span><b>Checks and mergeability</b>, refreshed while they’re running, quiet once they’ve settled.</span></li>
+      <li>{{{icon.check}}}<span><b>A diff tray</b> with syntax highlighting: every changed file against your base branch.</span></li>
+      <li>{{{icon.check}}}<span><b>No token needed to find the PR.</b> Sign in to GitHub once for check status; the sign-in syncs to your other devices.</span></li>
+    </ul>
+  </div>
+
+  <div class="gh reveal" id="gh-demo" aria-hidden="true">
+    <div class="gh-bar ui">
+      <span class="mac-title">Relay</span>
+      <span class="tools">
+        <span class="tool load"><i class="donut" style="--f:.34"></i><i class="donut" style="--f:.52"></i></span>
+        <span class="tool pr hot">{{{icon.pull}}}<span>#482</span><i class="pr-state pending" data-pr-state></i></span>
+        <span class="tool diff"><span class="add">+86</span><span class="del">−31</span></span>
+      </span>
+    </div>
+    <div class="popover checks ui" data-checks>
+      <div class="pop-head">
+        <div><b data-headline>Some checks haven’t completed yet</b><span data-summary>3 in progress and 1 successful checks</span></div>
+        <span class="t2">{{{icon.refresh}}}</span>
+      </div>
+      <div class="check-list">
+        <div class="check" data-check="ok"><i class="st"></i><b>lint</b><span>Successful in 41s</span><a>Details</a></div>
+        <div class="check" data-check="run"><i class="st"></i><b>unit tests</b><span>In progress</span><a>Details</a></div>
+        <div class="check" data-check="run"><i class="st"></i><b>integration (postgres 17)</b><span>In progress</span><a>Details</a></div>
+        <div class="check" data-check="run"><i class="st"></i><b>build · macos-15</b><span>In progress</span><a>Details</a></div>
+      </div>
+      <div class="pop-foot">{{{icon.external}}}Open in GitHub</div>
+    </div>
+    <div class="tray ui">
+      <div class="tray-head"><b>Changes</b><span>auth-refactor vs origin/main</span><span class="t2">{{{icon.refresh}}}</span></div>
+      <div class="tray-file">{{{icon.chevronDown}}}<span>src/auth/refresh.ts</span><span class="add">+23</span><span class="del">−9</span></div>
+      <div class="tray-code">
+<div class="dl"><i>38</i><i>38</i><b> </b><code><span class="kw">export async function</span> <span class="fn">refresh</span>(user: <span class="ty">User</span>) {</code></div>
+<div class="dl rm"><i>39</i><i></i><b>−</b><code>  <span class="kw">const</span> token = <span class="kw">await</span> <span class="fn">legacyRefresh</span>(user)</code></div>
+<div class="dl rm"><i>40</i><i></i><b>−</b><code>  cache.<span class="fn">set</span>(user.id, token)</code></div>
+<div class="dl ad"><i></i><i>39</i><b>+</b><code>  <span class="kw">const</span> session = <span class="kw">await</span> sessions.<span class="fn">find</span>(user.id)</code></div>
+<div class="dl ad"><i></i><i>40</i><b>+</b><code>  <span class="kw">if</span> (!session) <span class="kw">throw new</span> <span class="ty">Unauthorized</span>()</code></div>
+<div class="dl ad"><i></i><i>41</i><b>+</b><code>  <span class="kw">const</span> token = <span class="kw">await</span> session.<span class="fn">rotate</span>()</code></div>
+<div class="dl"><i>41</i><i>42</i><b> </b><code>  <span class="kw">return</span> token</code></div>
+<div class="dl"><i>42</i><i>43</i><b> </b><code>}</code></div>
+      </div>
+      <div class="tray-file">{{{icon.chevronRight}}}<span>src/auth/session-store.ts</span><span class="add">+51</span><span class="del">−14</span></div>
+      <div class="tray-file">{{{icon.chevronRight}}}<span>test/auth/refresh.test.ts</span><span class="add">+12</span><span class="del">−8</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ──────────────────────────────────────────────────── Open source -->
+<section class="section wrap" id="open">
+  <div class="open reveal">
+    <div class="open-copy">
+      <p class="eyebrow"><b>06</b> Open source</p>
+      <h2 class="h2">Free. Open&nbsp;source. No&nbsp;catch.</h2>
+      <p class="lede">
+        Relay is MIT licensed and built in the open. There’s no account to create and nothing to subscribe to.
+        Your devices talk straight to your machines; your settings live in your own iCloud.
+      </p>
+      <div class="cta">
+        <a class="btn ghost" href="{{repo}}">{{{icon.github}}}<span>Star on GitHub</span><small class="{{starsClass}}">{{starsLabel}}</small></a>
+        <a class="btn ghost" href="{{repo}}/issues">{{{icon.arrowUpRight}}}<span>Report an issue</span></a>
+      </div>
+    </div>
+    <dl class="open-facts">
+      <div><dt>License</dt><dd>MIT</dd></div>
+      <div><dt>Price</dt><dd>$0</dd></div>
+      <div><dt>Accounts</dt><dd>None</dd></div>
+      <div><dt>Analytics in the app</dt><dd>None</dd></div>
+      <div><dt>Servers between you and your hosts</dt><dd>None</dd></div>
+      <div><dt>Terminal</dt><dd><a href="https://github.com/ghostty-org/ghostty">libghostty</a></dd></div>
+    </dl>
+  </div>
+</section>
+
+<!-- ────────────────────────────────────────────────────────── Close -->
+<section class="closer wrap">
+  <span class="app-icon reveal" aria-hidden="true">{{{icon.mark}}}</span>
+  <h2 class="h2 reveal">Pick up where you&nbsp;left&nbsp;off.</h2>
+  <p class="lede reveal">On whichever machine. From whichever device.</p>
+  <div class="cta reveal">
+    <a class="btn primary" href="{{stable.dmg.url}}" data-download>
+      {{{icon.download}}}<span>Download for Mac</span><small>{{stable.version}}</small>
+    </a>
+    <a class="btn ghost" href="/releases">{{{icon.arrowRight}}}<span>All releases</span></a>
+  </div>
+  <p class="fineprint reveal"><span>macOS 15 or later</span><span>Updates itself</span><span>MIT licensed</span></p>
+</section>
+
+</main>
+
+<!-- @include footer -->
+<script type="module" src="{{asset.home}}"></script>
+</body>
+</html>
