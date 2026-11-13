@@ -22,4 +22,40 @@ public enum SessionOrdering {
             }
             .map(\.element)
     }
+
+    /// What a fresh read of a project's sessions means for its sidebar rows.
+    public struct Reconciliation: Equatable, Sendable {
+        /// The rows to show, in sidebar order.
+        public let sessions: [RemoteSession]
+        /// Rows shown before that the host no longer has, apart from a kept
+        /// on-screen one.
+        public let vanished: [SessionID]
+    }
+
+    /// Merges a fresh read from the host into the rows already shown. The
+    /// read wins: names, titles, and sessions created or ended elsewhere
+    /// (another device, a terminal on the host). The exception is the session
+    /// on screen, `keeping`: once it's gone from the host its row stays as
+    /// last known, in place, so its "session ended" overlay can explain what
+    /// happened rather than the terminal vanishing under the user.
+    public static func reconcile(
+        previous: [RemoteSession],
+        fresh: [RemoteSession],
+        order: [SessionID],
+        keeping onScreen: SessionID?
+    ) -> Reconciliation {
+        let liveIDs = Set(fresh.map(\.id))
+        var rows = apply(order: order, to: fresh)
+        var kept: SessionID?
+        if let onScreen, !liveIDs.contains(onScreen),
+           let index = previous.firstIndex(where: { $0.id == onScreen }) {
+            // After the nearest surviving row above it, so it doesn't jump.
+            let anchor = previous[..<index].last { liveIDs.contains($0.id) }?.id
+            let position = anchor.flatMap { id in rows.firstIndex { $0.id == id } }.map { $0 + 1 } ?? 0
+            rows.insert(previous[index], at: position)
+            kept = onScreen
+        }
+        let vanished = previous.map(\.id).filter { !liveIDs.contains($0) && $0 != kept }
+        return Reconciliation(sessions: rows, vanished: vanished)
+    }
 }
