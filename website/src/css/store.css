@@ -87,6 +87,68 @@ body {
   position: relative;
 }
 
+/* The three devices together (store.js places them), under what syncs
+   between them. */
+.family {
+  position: relative;
+  flex: none;
+  margin-top: var(--lead);
+}
+.family .stage {
+  position: absolute;
+  margin: 0;
+}
+.sync-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.sync-lines path {
+  fill: none;
+  stroke: rgb(48 209 88 / 0.55);
+  stroke-width: 1.4;
+  stroke-dasharray: 3 6;
+}
+/* The name alone: Apple's cloud is Apple's. */
+.sync-chip {
+  position: absolute;
+  top: 0;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 40px;
+  padding: 0 17px 0 14px;
+  translate: -50%;
+  border-radius: 999px;
+  border: 1px solid rgb(48 209 88 / 0.55);
+  background: var(--bg-2);
+  box-shadow:
+    0 0 0 6px rgb(7 8 10 / 0.6),
+    0 0 34px rgb(48 209 88 / 0.3);
+  font-size: 15px;
+  white-space: nowrap;
+}
+.sync-chip .dot {
+  width: 8px;
+  height: 8px;
+}
+.sync-chip b {
+  font-weight: 600;
+}
+.sync-chip span {
+  font: 400 12.5px var(--mono);
+  color: var(--fg-2);
+}
+.shot-family .copy p {
+  max-width: 33em;
+}
+.shot-iphone.shot-family .copy p {
+  max-width: 21em;
+}
+
 /* A Mac: 1440 × 900, the window at its natural size. */
 .shot-mac {
   --top: 46px;

@@ -202,6 +202,25 @@ const screens = [
     tray: diff,
     phone: 'sheet',
   },
+  // The three devices together, showing one session. Apple's names here
+  // follow its guidelines for third parties (App Store Marketing
+  // Guidelines; Guidelines for Using Apple Trademarks and Copyrights): none
+  // in the headline, "works with" in the text, each spelled as Apple spells
+  // it and never plural, possessive or a verb, and no cloud beside "iCloud"
+  // — Apple's logos and icons aren't a third party's to use. The credit
+  // line they ask for goes once, where the legal text is: it closes the App
+  // Store description ("iCloud, iCloud Keychain, Mac, Mac mini, iPad and
+  // iPhone are trademarks of Apple Inc., registered in the U.S. and other
+  // countries and regions.").
+  {
+    name: 'sync',
+    title: 'Start on one device. <em>Finish on another.</em>',
+    text: 'Relay works with iCloud and iCloud Keychain: your hosts, projects and SSH keys follow you from Mac to iPad to iPhone.',
+    session: 'auth',
+    terminal: tests,
+    phone: 'terminal',
+    family: 'hosts · projects · SSH keys',
+  },
 ];
 
 /**
@@ -233,14 +252,50 @@ function device(kind, screen) {
   return screen.phone === 'keyboard' ? pushed : pushed.replace('class="phone"', 'class="phone no-kbd"');
 }
 
+/**
+ * The Mac, the iPad and the iPhone on one session, under what syncs between
+ * them. Each is drawn narrow, so each shows the terminal as a phone does.
+ */
+function family(screen, kind) {
+  const narrow = { ...screen, terminal: () => screen.terminal('phone') };
+  const { width, height, chip, ...places } = families[kind];
+  // Each in a layer of its own, the smaller in front.
+  const place = ([left, top, wide], layer) => `left:${left}px;top:${top}px;width:${wide}px;z-index:${layer}`;
+  // From under the chip to the top of each device, which hides the end.
+  const line = ([left, top, wide]) => {
+    const x = left + wide / 2;
+    return `<path d="M${chip} 40 C ${chip} ${40 + (top - 40) * 0.6}, ${x} ${top * 0.4}, ${x} ${top + 8}"/>`;
+  };
+  return `<div class="family" style="width:${width}px;height:${height}px">
+    <div class="glow"></div>
+    <svg class="sync-lines" viewBox="0 0 ${width} ${height}">${Object.values(places).map(line).join('')}</svg>
+    <p class="sync-chip" style="left:${chip}px"><i class="dot green"></i><b>iCloud</b><span>${screen.family}</span></p>
+    <div class="stage" style="${place(places.mac, 1)}">${device('mac', narrow)}</div>
+    <div class="stage" style="${place(places.pad, 2)}">${device('ipad', narrow)}</div>
+    <div class="stage" style="${place(places.phone, 3)}">${device('iphone', narrow)}</div>
+  </div>`;
+}
+
+/**
+ * Where the three stand on each canvas: [left, top, width] in a box of
+ * `width` × `height`, the chip centered at `chip`. The iPad and the iPhone
+ * keep their real sizes relative to each other (281.6 mm and 78 mm wide),
+ * as Apple asks of pictures of its products together.
+ */
+const families = {
+  mac: { width: 1240, height: 660, chip: 620, mac: [0, 60, 760], pad: [540, 250, 540], phone: [1090, 338, 150] },
+  ipad: { width: 1220, height: 780, chip: 610, mac: [0, 60, 800], pad: [420, 320, 610], phone: [1051, 420, 169] },
+  iphone: { width: 600, height: 1015, chip: 300, mac: [0, 60, 600], pad: [0, 420, 600], phone: [425, 660, 167] },
+};
+
 /** Every screenshot: its file name, its canvas and its page's body. */
 export const shots = Object.entries(canvases).flatMap(([kind, canvas]) =>
   screens.map((screen, index) => ({
     name: `${kind}-${index + 1}-${screen.name}`,
     ...canvas,
-    body: `<main class="shot shot-${kind}">
+    body: `<main class="shot shot-${kind}${screen.family ? ' shot-family' : ''}">
   <header class="copy"><h1>${screen.title}</h1><p>${screen.text}</p></header>
-  <div class="stage"><div class="glow"></div>${device(kind, screen)}</div>
+  ${screen.family ? family(screen, kind) : `<div class="stage"><div class="glow"></div>${device(kind, screen)}</div>`}
 </main>`,
   })),
 );
