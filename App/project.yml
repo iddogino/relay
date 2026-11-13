@@ -53,6 +53,10 @@ targetTemplates:
     platform: macOS
     sources:
       - ../Resources/Relay.icon
+      # What the apps collect (nothing) and the system APIs they use: the
+      # App Store requires it.
+      - path: PrivacyInfo.xcprivacy
+        buildPhase: resources
       # Ghostty's runtime resources: themes for user configs, and the
       # terminfo it uses locally (nothing is installed on hosts).
       - path: ../Vendor/ghostty/zig-out/share/ghostty
@@ -96,6 +100,11 @@ targetTemplates:
         NSPrincipalClass: NSApplication
         NSSupportsAutomaticGraphicsSwitching: true
         NSHumanReadableCopyright: Terminal emulation by libghostty (MIT). Not affiliated with the Ghostty project.
+        # Export compliance: SSH's encryption is the system's (CryptoKit,
+        # CommonCrypto), plus bcrypt for passphrase-protected key files, a
+        # standard algorithm the system doesn't provide. That needs no
+        # documentation anywhere the app is sold: it isn't sold in France.
+        ITSAppUsesNonExemptEncryption: false
         # Asked the first time a host on the local network is dialed.
         NSLocalNetworkUsageDescription: Relay connects to the hosts you add, including ones on your local network.
         RelayDataDirectory: $(RELAY_DATA_DIRECTORY)

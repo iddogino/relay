@@ -395,7 +395,7 @@ async function build() {
       : '',
   };
 
-  for (const page of ['index', 'releases', '404']) {
+  for (const page of ['index', 'releases', 'privacy', 'support', '404']) {
     let html = await render(await readFile(join(src, `${page}.html`), 'utf8'), { ...values, page });
     // The navigation's link to the page you're on.
     html = html.replace(` data-nav="${page}"`, ' aria-current="page"').replace(/ data-nav="[\w-]+"/g, '');
@@ -417,7 +417,7 @@ async function build() {
   await writeFile(
     join(dist, 'sitemap.xml'),
     `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-      ['/', '/releases'].map((p) => `  <url><loc>${SITE}${p}</loc></url>`).join('\n') +
+      ['/', '/releases', '/support', '/privacy'].map((p) => `  <url><loc>${SITE}${p}</loc></url>`).join('\n') +
       `\n</urlset>\n`,
   );
   await writeFile(join(dist, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap: ${SITE}/sitemap.xml\n`);

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- How Scripts/archive-store.sh exports the App Store app (the Mac's
+	     .pkg, and the iPhone and iPad .ipa): signed for App Store Connect
+	     with the team's distribution certificates and Xcode-managed
+	     profiles, which puts iCloud and push in Production. The script
+	     sets "destination" to upload when asked to. -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>export</string>
+	<key>teamID</key>
+	<string>HL9SP7TJ3J</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<!-- The version and build are the release's (RELAY_VERSION,
+	     RELAY_BUILD_NUMBER): never renumbered on the way out. -->
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+	<key>uploadSymbols</key>
+	<true/>
+</dict>
+</plist>

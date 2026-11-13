@@ -32,7 +32,7 @@ KEYCHAIN_GROUP = f"{TEAM}.{BUNDLE_ID}"
 CLOUDKIT_CONTAINER = "iCloud.com.iddogino.Relay"
 SPARKLE_FEED = "https://raw.githubusercontent.com/iddogino/relay/main/appcast.xml"
 SPARKLE_KEY = "83fVWPb/G/hc2hYzYyoKW7eB/abuYzTSIJJYvMwIdvA="
-RESOURCES = ["Assets.car", "Relay.icns", "ghostty", "terminfo"]
+RESOURCES = ["Assets.car", "Relay.icns", "ghostty", "terminfo", "PrivacyInfo.xcprivacy"]
 GRAMMARS = "RelaySyntaxHighlighter_RelaySyntaxHighlighter.bundle"
 STORE, DIRECT = "Relay", "Relay Direct"
 

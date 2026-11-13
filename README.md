@@ -196,6 +196,27 @@ which grants the Keychain group and iCloud), `SPARKLE_ED_PRIVATE_KEY`
 notarized fails rather than ship, unless the repository variable
 `RELAY_ALLOW_UNNOTARIZED` is `true`.
 
+### The App Store
+
+The App Store app (Mac, iPhone and iPad) is built and uploaded from a Mac,
+by hand:
+
+```sh
+RELAY_VERSION=0.2.0 RELAY_BUILD_NUMBER=20001 Scripts/archive-store.sh macos --upload
+RELAY_VERSION=0.2.0 RELAY_BUILD_NUMBER=20001 Scripts/archive-store.sh ios --upload
+```
+
+[Scripts/archive-store.sh](Scripts/archive-store.sh) archives the `Relay`
+target and exports it signed for App Store Connect (the Mac's `.pkg`, the
+`.ipa`), and [Scripts/check-store-export.py](Scripts/check-store-export.py)
+checks what would be sent; without `--upload`, nothing is. It needs Xcode
+signed in to the team, the Apple Distribution and Mac Installer
+Distribution certificates, libghostty's slices for the platform, and
+`build/tmux`. The version is three numbers (no prerelease suffix), and each
+upload of a version needs a higher build number.
+`Scripts/store-screenshots.sh <folder>` takes the iPhone and iPad
+screenshots, of a demo workspace on a throwaway SSH host.
+
 iCloud sync needs, once: iCloud (CloudKit, with the
 `iCloud.com.iddogino.Relay` container) and Push Notifications on the
 `com.iddogino.Relay` App ID, in the Developer ID profile; and Relay's
