@@ -1,4 +1,4 @@
-/* /releases, and the 404 page. */
+/* /releases, the 404 page, and the pages of prose (/privacy, /support). */
 
 .narrow {
   width: min(880px, 100% - 2 * var(--gutter));
@@ -372,4 +372,28 @@
   .checksum code {
     max-width: 14ch;
   }
+}
+
+/* /privacy and /support: a page of prose under the same heading. */
+.doc {
+  padding-bottom: clamp(72px, 12vh, 128px);
+}
+.doc .prose {
+  max-width: 68ch;
+  margin-top: 44px;
+  line-height: 1.65;
+}
+.doc .prose h2 {
+  margin-top: 38px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+.doc .prose b {
+  font-weight: 600;
+  color: var(--fg);
+}
+.doc .cta {
+  justify-content: flex-start;
 }

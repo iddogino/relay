@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>Privacy — Relay</title>
+<meta name="description" content="Relay collects nothing. Your devices talk straight to your machines, and your settings sync through your own iCloud.">
+<link rel="canonical" href="{{site}}/privacy">
+<meta property="og:title" content="Relay and your privacy">
+<meta property="og:description" content="Relay collects nothing. Your devices talk straight to your machines, and your settings sync through your own iCloud.">
+<meta property="og:url" content="{{site}}/privacy">
+<!-- @include head -->
+</head>
+<body class="page-doc">
+<div class="field" id="field" aria-hidden="true"></div>
+<!-- @include nav -->
+
+<main class="wrap narrow doc">
+  <header class="releases-head">
+    <p class="eyebrow">Last updated November 12, 2026</p>
+    <h1 class="h2">Privacy</h1>
+    <p class="lede">
+      Relay collects nothing. There is no Relay account, no analytics, no advertising, and no server of ours
+      between you and your machines. This page says what the app stores, where, and who it talks to.
+    </p>
+  </header>
+
+  <div class="prose">
+    <h2>What we collect</h2>
+    <p>
+      Nothing. The app doesn’t send us usage data, crash reports, identifiers or anything else, and it contains
+      no third-party analytics or advertising code. We can’t see your hosts, your sessions, your keys, or what
+      you type.
+    </p>
+
+    <h2>What the app stores, and where</h2>
+    <ul>
+      <li><b>On your device:</b> the hosts and projects you add, the host keys you’ve trusted, and your settings.</li>
+      <li>
+        <b>In your device’s Keychain:</b> SSH keys Relay makes or imports, the passwords of hosts you sign in to
+        with one, and your GitHub sign-in. Keys kept in the Secure Enclave never leave that device.
+      </li>
+      <li>
+        <b>In your iCloud, if sync is on:</b> hosts, projects and trusted host keys are kept in your private
+        iCloud database, and keys, passwords and the GitHub sign-in in iCloud Keychain, so your other devices
+        have them. That data is stored by Apple under your Apple Account and
+        <a href="https://www.apple.com/legal/privacy/">Apple’s privacy policy</a>; we have no access to it.
+        You can turn sync off in Settings ▸ iCloud, and Relay then keeps everything on the device.
+      </li>
+    </ul>
+    <p>Your sessions themselves run on your own machines, in tmux. Relay keeps no copy of what’s in them.</p>
+
+    <h2>Who the app talks to</h2>
+    <ul>
+      <li><b>Your hosts,</b> over SSH, directly from your device. Nothing is relayed through us.</li>
+      <li>
+        <b>GitHub, if you sign in:</b> to show a session’s pull request and its checks, Relay asks GitHub’s API
+        about the repositories your sessions are in, with the sign-in you gave it. That’s between your device
+        and GitHub, under <a href="https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement">GitHub’s privacy statement</a>.
+        Sign out in Settings and the sign-in is deleted.
+      </li>
+      <li><b>iCloud,</b> if sync is on, as above.</li>
+      <li>
+        <b>Updates:</b> the App Store updates the App Store version. The version downloaded from this site
+        checks for updates by fetching a file from GitHub and downloads new versions from there; GitHub sees
+        the request, as any web server would.
+      </li>
+    </ul>
+
+    <h2>Permissions the app asks for</h2>
+    <ul>
+      <li><b>Local network,</b> to reach hosts on the network you’re on.</li>
+      <li><b>Notifications,</b> if you want to hear when a session needs you. They’re made on your device.</li>
+      <li>
+        <b>Files and folders,</b> only the ones you pick: a key file, a folder like <code>~/.ssh</code>, or a
+        file you drop on a terminal to upload to your host.
+      </li>
+    </ul>
+
+    <h2>This website</h2>
+    <p>
+      relayapp.sh has no analytics, no cookies and no tracking. It’s served by Cloudflare, which processes
+      requests (including IP addresses) to deliver and protect the site. Download links go to GitHub.
+    </p>
+
+    <h2>Children</h2>
+    <p>Relay is a developer tool. It isn’t directed at children, and collects no data from anyone.</p>
+
+    <h2>Changes and questions</h2>
+    <p>
+      If this changes, this page will say so, with a new date above. Relay is open source, so everything here
+      can be checked against <a href="{{repo}}">the code</a>. Questions:
+      <a href="{{repo}}/issues">open an issue on GitHub</a>.
+    </p>
+  </div>
+</main>
+
+<!-- @include footer -->
+<script type="module" src="{{asset.plain}}"></script>
+</body>
+</html>

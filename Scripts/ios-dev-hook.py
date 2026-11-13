@@ -5,7 +5,9 @@ SyncDevHook) in an iOS Simulator and prints its result.
 
 The request goes to the app's data folder in its container, a Darwin
 notification triggers it (simctl spawn notifyutil), and the result file is
-awaited. HOOK_TIMEOUT (seconds, default 60) bounds the wait."""
+awaited. HOOK_TIMEOUT (seconds, default 60) bounds the wait.
+RELAY_DATA_DIRECTORY names the app's data folder when the build was given
+another (Scripts/store-screenshots.sh builds one that calls itself Relay)."""
 import json, os, subprocess, sys, time
 
 BUNDLE = "com.iddogino.Relay.dev"
@@ -20,7 +22,8 @@ HOOKS = {
 def data_dir(device):
     container = subprocess.check_output(
         ["xcrun", "simctl", "get_app_container", device, BUNDLE, "data"], text=True).strip()
-    path = os.path.join(container, "Library", "Application Support", "Relay Dev")
+    path = os.path.join(container, "Library", "Application Support",
+                        os.environ.get("RELAY_DATA_DIRECTORY", "Relay Dev"))
     os.makedirs(path, exist_ok=True)
     return path
 

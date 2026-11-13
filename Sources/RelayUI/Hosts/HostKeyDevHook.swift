@@ -377,6 +377,62 @@ enum HostKeyDevHook {
                 NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
                 result["shown"] = true
 
+            case "showChanges":
+                model.diffTrayVisible = request["visible"] as? Bool ?? true
+                result["visible"] = model.diffTrayVisible
+
+            case "window":
+                // The main window at a given size and appearance, in front:
+                // posed for a picture. Its number is what `screencapture -l`
+                // takes.
+                if let appearance = request["appearance"] as? String {
+                    NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua)
+                }
+                guard let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else {
+                    throw HookError("no window")
+                }
+                if let width = request["width"] as? Double, let height = request["height"] as? Double {
+                    let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? .zero
+                    window.setFrame(
+                        NSRect(x: visible.midX - width / 2, y: visible.midY - height / 2, width: width, height: height),
+                        display: true)
+                }
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                result["number"] = window.windowNumber
+                result["frame"] = "\(window.frame)"
+                result["scale"] = Double(window.backingScaleFactor)
+
+            case "windowCapture":
+                // The main window as the window server composites it: the
+                // sidebar's material and (with "shadow") the window's
+                // shadow, which drawing the views (windowShots) leaves out.
+                // An app's own windows need no screen recording permission.
+                // CGWindowListCreateImage is gone from the SDK's Swift
+                // interface, not from the system.
+                guard let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else {
+                    throw HookError("no window")
+                }
+                typealias Capture = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+                guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else {
+                    throw HookError("no CGWindowListCreateImage")
+                }
+                // Only this window (1 << 3), at the display's resolution
+                // (1 << 3), within its frame (1 << 0) unless the shadow is
+                // wanted.
+                let options: UInt32 = request["shadow"] as? Bool == true ? 8 : 9
+                guard let image = unsafeBitCast(symbol, to: Capture.self)(.null, 8, UInt32(window.windowNumber), options)?
+                    .takeRetainedValue() else {
+                    throw HookError("no image")
+                }
+                let shots = dir.appendingPathComponent("window-shots", isDirectory: true)
+                try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
+                let name = "\(try string(request, "name")).png"
+                try NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
+                    .write(to: shots.appendingPathComponent(name))
+                result["shot"] = name
+                result["size"] = "\(image.width)x\(image.height)"
+
             case "windowShots":
                 // Each visible window (sheets included) as the app draws
                 // it — no screen recording needed.

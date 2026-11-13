@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<title>Support — Relay</title>
+<meta name="description" content="Help with Relay for Mac, iPhone and iPad: what it needs, setting up a host, and where to ask.">
+<link rel="canonical" href="{{site}}/support">
+<meta property="og:title" content="Relay support">
+<meta property="og:description" content="Help with Relay for Mac, iPhone and iPad: what it needs, setting up a host, and where to ask.">
+<meta property="og:url" content="{{site}}/support">
+<!-- @include head -->
+</head>
+<body class="page-doc">
+<div class="field" id="field" aria-hidden="true"></div>
+<!-- @include nav -->
+
+<main class="wrap narrow doc">
+  <header class="releases-head">
+    <p class="eyebrow">Mac, iPhone and iPad</p>
+    <h1 class="h2">Support</h1>
+    <p class="lede">
+      Something not working, or not clear? Ask on GitHub: that’s where Relay is built, and where questions and
+      bug reports are answered.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="{{repo}}/issues/new">{{{icon.arrowUpRight}}}Ask a question or report a bug</a>
+      <a class="btn ghost" href="{{repo}}/issues">Open issues</a>
+    </div>
+  </header>
+
+  <div class="prose">
+    <h2>What Relay needs</h2>
+    <ul>
+      <li>A Mac with macOS 15 or later (Apple silicon), or an iPhone or iPad with iOS 18 or later.</li>
+      <li>
+        A machine to work on that you can reach over SSH: a Mac with Remote Login on, a Linux server, a cloud
+        machine. Relay isn’t a hosting service; it connects to machines you already have.
+      </li>
+      <li>
+        tmux on that machine, which keeps sessions running when you’re away. If it’s missing, Relay offers to
+        install it for you, without needing an administrator password.
+      </li>
+    </ul>
+
+    <h2>Adding a machine</h2>
+    <p>
+      Choose <b>New Project</b>, then <b>Add Host</b>, and give the machine’s address and your user name there.
+      The first time, sign in with your password or an existing key; Relay can then set up a key of its own,
+      kept in iCloud Keychain so your other devices sign in without asking again. <b>Test Connection</b> says
+      what’s wrong when something is.
+    </p>
+
+    <h2>Using this Mac as a host</h2>
+    <p>
+      Turn on <b>System Settings ▸ General ▸ Sharing ▸ Remote Login</b>, then in Relay choose
+      <b>Settings ▸ This Mac ▸ Add This Mac</b>. Sessions on this Mac then keep running after Relay quits, and
+      you can pick them up from your iPhone or iPad when the Mac is reachable from where you are (the same
+      network, or a VPN such as Tailscale).
+    </p>
+
+    <h2>A host says it “needs setup” on iPhone or iPad</h2>
+    <p>
+      That host signs in on your Mac with a key file or an SSH agent, which the phone doesn’t have. Tap
+      <b>Set Up…</b> under the host and choose a Relay key in iCloud Keychain; after one sign-in, every device
+      can use it.
+    </p>
+
+    <h2>Hosts and projects don’t appear on another device</h2>
+    <p>
+      Check that both devices are signed in to the same Apple Account with iCloud on, and that
+      <b>Settings ▸ iCloud</b> in Relay shows sync turned on. <b>Sync Now</b> there fetches right away.
+    </p>
+
+    <h2>Privacy</h2>
+    <p>Relay collects nothing. The details are on the <a href="/privacy">privacy page</a>.</p>
+  </div>
+</main>
+
+<!-- @include footer -->
+<script type="module" src="{{asset.plain}}"></script>
+</body>
+</html>

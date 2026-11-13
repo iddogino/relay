@@ -30,6 +30,12 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>Terminal emulation by libghostty (MIT). Not affiliated with the Ghostty project.</string>
 	<!-- Hosts can be on the local network (iOS asks before an app reaches it). -->
+	<!-- Export compliance: SSH's encryption is the system's (CryptoKit,
+	     CommonCrypto), plus bcrypt for passphrase-protected key files, a
+	     standard algorithm the system doesn't provide. That needs no
+	     documentation anywhere the app is sold: it isn't sold in France. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Relay connects to the machines you add, including ones on your local network.</string>
 	<!-- One window: the app has one selection. -->

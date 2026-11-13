@@ -511,6 +511,14 @@
   background: rgb(204 102 102 / 0.16);
   color: #cc6666;
 }
+/* A progress bar of block characters: --n cells of --of filled. */
+.term-body .bar {
+  display: inline-block;
+  width: calc(var(--of) * 1ch);
+  height: 1.05em;
+  vertical-align: -0.2em;
+  background: linear-gradient(90deg, #c5c8c6 calc(var(--n) / var(--of) * 100%), rgb(255 255 255 / 0.16) 0);
+}
 .term-body a,
 .term-body .lnk {
   color: inherit;
@@ -686,13 +694,10 @@
 .list.ios .row.project .chev {
   order: 9;
   margin: 0 0 0 0.5em;
-  color: var(--sys-blue);
+  color: var(--t1);
 }
-.list.ios .row.project .glyph {
-  color: var(--sys-blue);
-}
-.list.ios .row.new {
-  color: var(--sys-blue);
+.ios-inline {
+  font-weight: 600;
 }
 .ios-nav {
   display: flex;
@@ -937,6 +942,34 @@
 .phone .kbd {
   padding-bottom: 1.6em;
 }
+/* The iPhone's list is a card of rows with hairlines between them, and
+   has no selection: a tap pushes the terminal. */
+.phone .list.ios {
+  margin: 0 0.95em;
+  padding: 0.25em 0.3em;
+  border-radius: 1.55em;
+  background: #1c1c1e;
+}
+.phone .list.ios .row {
+  position: relative;
+  border-radius: 0;
+}
+.phone .list.ios .row::after {
+  content: '';
+  position: absolute;
+  inset: auto 0.7em 0 2.75em;
+  height: 1px;
+  background: rgb(84 84 88 / 0.55);
+}
+.phone .list.ios .row.project::after {
+  left: 0.7em;
+}
+.phone .list.ios .group:last-child .row:last-child::after {
+  display: none;
+}
+.phone .list.ios .row.session.selected {
+  background: none;
+}
 
 /* ── iPad ──────────────────────────────────────────────────────────── */
 
@@ -979,8 +1012,20 @@
 .pad-side .list.ios {
   padding: 0 0.5em;
 }
-.pad-side .row .host {
-  display: none;
+/* The sidebar's selection is the accent's, as a sidebar's is. */
+.pad .list.ios .row.session.selected {
+  background: var(--sys-blue);
+}
+.pad .list.ios .row.session.selected .cap {
+  color: rgb(255 255 255 / 0.7);
+}
+.pad-side .ios-bar {
+  align-items: center;
+  gap: 0.5em;
+}
+.pad-side .ios-inline {
+  flex: 1;
+  text-align: center;
 }
 .pad-main {
   display: flex;
@@ -1024,4 +1069,180 @@
       radial-gradient(circle at 2.98em 50%, #febc2e 0.46em, transparent 0.5em),
       radial-gradient(circle at 4.52em 50%, #28c840 0.46em, transparent 0.5em);
   }
+}
+
+/* ── Diff tray (DiffTrayView) ──────────────────────────────────────── */
+
+/* On the Mac it shares the window with the terminal, under the toolbar. */
+.mac-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38%;
+  flex: 1;
+  min-height: 0;
+}
+.mac-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.tray {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: #1e1e1f;
+  box-shadow: inset 1px 0 0 rgb(0 0 0 / 0.55);
+}
+.tray-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7em;
+  padding: 0.5em 1em;
+  font-size: 0.923em;
+  box-shadow: inset 0 -1px 0 rgb(255 255 255 / 0.1);
+  flex: none;
+}
+.tray-head b {
+  font-size: 1.08em;
+  font-weight: 600;
+}
+.tray-refresh {
+  margin-left: auto;
+  align-self: center;
+  color: var(--t2);
+}
+.tray-body {
+  flex: 1;
+  min-height: 0;
+  padding-top: 0.9em;
+  overflow: hidden;
+  font: 400 0.846em/1.5 var(--mono);
+  font-variant-ligatures: none;
+}
+.tray-file {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 0.4em 0.9em;
+  background: rgb(255 255 255 / 0.075);
+}
+.tray-file .chev {
+  font-size: 0.85em;
+  color: var(--t2);
+}
+.tray-acts {
+  display: flex;
+  align-items: center;
+  gap: 0.7em;
+  margin-left: auto;
+  color: var(--t2);
+}
+.tray-acts .diff {
+  font-size: 1em;
+}
+.tray-gap {
+  padding: 0.1em 1.1em;
+  color: var(--t3);
+  background: rgb(255 255 255 / 0.035);
+}
+.tray-lines {
+  white-space: pre;
+}
+/* A changed line is tinted as far as its text runs, as the app draws it. */
+.dl {
+  display: flex;
+  width: fit-content;
+  height: 1.5em;
+  padding-right: 0.3em;
+  color: #dfdfe0;
+}
+.dl.plus {
+  background: rgb(48 209 88 / 0.17);
+}
+.dl.minus {
+  background: rgb(255 69 58 / 0.2);
+}
+.dl i {
+  flex: none;
+  width: 2.1em;
+  font-style: normal;
+  text-align: right;
+  color: var(--t3);
+}
+.dl i.sign {
+  width: 1.7em;
+  text-align: center;
+  color: var(--t2);
+}
+/* The highlighter's colors (Xcode's default dark theme). */
+.code .kw {
+  color: #ff7ab2;
+}
+.code .ty {
+  color: #dabaff;
+}
+.code .fn {
+  color: #6bdfff;
+}
+.code .st {
+  color: #ff8170;
+}
+.code .nu {
+  color: #d9c97c;
+}
+.code .op {
+  color: #ffa14f;
+}
+.code .cm {
+  color: #7f8c98;
+}
+.code .pu {
+  color: rgb(255 255 255 / 0.4);
+}
+
+/* The iPad's inspector: a third column, the toolbar's buttons above it. */
+.pad.with-tray .pad-screen {
+  position: relative;
+  grid-template-columns: 17.5em minmax(0, 1fr) 31%;
+}
+.pad.with-tray .ios-tools {
+  position: absolute;
+  top: 0.75em;
+  right: 0.9em;
+  z-index: 2;
+}
+.pad .tray {
+  padding-top: 3.6em;
+  background: #1c1c1e;
+}
+.pad .tray-refresh,
+.phone .tray-refresh {
+  color: var(--sys-blue);
+}
+.pad .tray-body {
+  font-size: 0.7em;
+}
+
+/* The iPhone's sheet. */
+.sheet {
+  position: absolute;
+  inset: 3.5em 0 0;
+  z-index: 3;
+  display: flex;
+  border-radius: 2.2em 2.2em 0 0;
+  background: #1c1c1e;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.12);
+  overflow: hidden;
+}
+.sheet .tray {
+  flex: 1;
+  background: none;
+  box-shadow: none;
+}
+.phone .tray-head {
+  padding: 1em 1.1em 0.7em;
+}
+.phone .tray-body {
+  font-size: 0.72em;
 }
