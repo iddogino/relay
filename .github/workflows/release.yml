@@ -123,11 +123,6 @@ jobs:
         if: steps.published.outputs.dmg != 'true'
         uses: ./.github/actions/ghosttykit
 
-      # build/tmux, which the app bundles (Scripts/check-app.py insists).
-      - name: tmux bundle
-        if: steps.published.outputs.dmg != 'true'
-        uses: ./.github/actions/tmux-bundle
-
       - name: Install XcodeGen
         if: steps.published.outputs.dmg != 'true'
         env:
@@ -178,6 +173,15 @@ jobs:
           printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 --decode > "$PROFILE"
           security cms -D -i "$PROFILE" > /dev/null
           echo "RELAY_PROVISIONING_PROFILE=$PROFILE" >> "$GITHUB_ENV"
+
+      # build/tmux, which the app bundles (Scripts/check-app.py insists).
+      # After the certificate: its macOS tmux is signed with it, as the
+      # notary service requires of the binary inside the bundle's .gz.
+      - name: tmux bundle
+        if: steps.published.outputs.dmg != 'true'
+        uses: ./.github/actions/tmux-bundle
+        with:
+          signing-identity: Developer ID Application
 
       # Archived and exported Developer ID-signed, then checked as a
       # release must be (Scripts/check-app.py --distribution): Relay's

@@ -12,7 +12,9 @@
 #                                     ran), and aren't verified again
 #
 # The last two are how a release is built (.github/workflows): --linux on a
-# Linux runner, --no-docker on the Mac that builds the app.
+# Linux runner, --no-docker on the Mac that builds the app — there with
+# RELAY_TMUX_SIGNING_IDENTITY naming the Developer ID identity the macOS
+# build is signed with, as notarization requires (ad hoc otherwise).
 #
 # Outputs (build/tmux/):
 #   tmux-linux-x86_64.gz, tmux-linux-aarch64.gz  fully static (musl), built in
@@ -286,7 +288,16 @@ build_darwin x86_64
 
 DARWIN_UNIVERSAL="$WORK/tmux-darwin-universal"
 xcrun lipo -create -output "$DARWIN_UNIVERSAL" "$WORK/darwin-arm64/tmux" "$WORK/darwin-x86_64/tmux"
-codesign -f -s - "$DARWIN_UNIVERSAL" 2>/dev/null
+# Signed ad hoc, which is all a Mac asks of it — except in a notarized
+# release: the notary service unpacks the .gz and holds the binary inside to
+# what it holds the app's own to (Developer ID, a secure timestamp, the
+# hardened runtime). The release names its identity.
+if [ -n "${RELAY_TMUX_SIGNING_IDENTITY:-}" ]; then
+  codesign --force --sign "$RELAY_TMUX_SIGNING_IDENTITY" --options runtime --timestamp \
+    --identifier com.iddogino.Relay.tmux "$DARWIN_UNIVERSAL"
+else
+  codesign -f -s - "$DARWIN_UNIVERSAL" 2>/dev/null
+fi
 
 # Only system libraries from /usr/lib may be linked; nothing from the build tree.
 bad_libs="$(xcrun otool -L "$DARWIN_UNIVERSAL" | awk '!/:$/ && $1 !~ /^\/usr\/lib\// {print $1}')"

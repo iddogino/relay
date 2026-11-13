@@ -7,6 +7,15 @@ description: >
   bundle build/tmux when it's there (App/project.yml), and
   Scripts/check-app.py --tmux checks that they did.
 
+inputs:
+  signing-identity:
+    description: >
+      The identity the macOS build is signed with (ad hoc when empty). A
+      notarized release passes its Developer ID identity, already in the
+      keychain: the notary service checks the binary inside the bundle's .gz
+      like any other in the app.
+    default: ""
+
 runs:
   using: composite
   steps:
@@ -17,4 +26,6 @@ runs:
 
     - name: Build the macOS tmux and package the bundle
       shell: bash
+      env:
+        RELAY_TMUX_SIGNING_IDENTITY: ${{ inputs.signing-identity }}
       run: Scripts/build-tmux.sh --no-docker

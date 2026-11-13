@@ -25,6 +25,7 @@ import plistlib
 import re
 import subprocess
 import sys
+import tempfile
 
 BUNDLE_ID = "com.iddogino.Relay"
 TEAM = "HL9SP7TJ3J"
@@ -172,6 +173,21 @@ if distribution:
         if code in executables:
             check(re.search(r"flags=0x[0-9a-f]+\([^)]*runtime", details) is not None,
                   f"{name}: no hardened runtime")
+    # The macOS tmux too: the notary service unpacks the bundle's .gz and
+    # holds the binary inside to the same.
+    packed = os.path.join(tmux, "tmux-darwin-universal.gz")
+    if os.path.isfile(packed):
+        with tempfile.TemporaryDirectory() as folder:
+            unpacked = os.path.join(folder, "tmux-darwin-universal")
+            with open(packed, "rb") as f, open(unpacked, "wb") as out:
+                out.write(gzip.decompress(f.read()))
+            verify = run("codesign", "--verify", "--strict", unpacked)
+            check(verify.returncode == 0, f"bundled tmux: signature doesn't verify: {verify.stderr.strip()}")
+            details = run("codesign", "-dvv", unpacked).stderr
+        check(f"Authority=Developer ID Application: " in details and f"TeamIdentifier={TEAM}" in details,
+              "bundled tmux: not signed with the Developer ID certificate (RELAY_TMUX_SIGNING_IDENTITY, Scripts/build-tmux.sh)")
+        check("Timestamp=" in details, "bundled tmux: no secure timestamp")
+        check(re.search(r"flags=0x[0-9a-f]+\([^)]*runtime", details) is not None, "bundled tmux: no hardened runtime")
     check(entitlements.get("com.apple.developer.icloud-container-environment") == "Production",
           f"iCloud environment {entitlements.get('com.apple.developer.icloud-container-environment')}")
     check(entitlements.get("com.apple.developer.aps-environment") == "production",
