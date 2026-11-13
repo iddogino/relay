@@ -68,13 +68,36 @@ function toolbarItems(project, session) {
         <span class="tool diff" data-diff><span class="add" data-add>+${session.git[0]}</span><span class="del" data-del>−${session.git[1]}</span></span>`;
 }
 
+/**
+ * The diff tray (DiffTrayView): what a session changed, a file at a time.
+ * `diff` is { session, files: [{ path, add, del, lines }] }; a line is
+ * [old number, new number, '+' | '-' | ' ', its code as HTML].
+ */
+export function diffTray(diff) {
+  const line = ([was, now, sign, code]) =>
+    `<span class="dl${sign === '+' ? ' plus' : sign === '-' ? ' minus' : ''}"><i>${was ?? ''}</i><i>${now ?? ''}</i><i class="sign">${sign === ' ' ? '' : sign === '-' ? '−' : sign}</i><span class="code">${code}</span></span>`;
+  return `<div class="tray" data-tray>
+    <div class="tray-head"><b>Changes</b><span class="t2">${esc(diff.session)}</span><span class="tray-refresh">${I.refresh}</span></div>
+    <div class="tray-body">
+      ${diff.files
+        .map(
+          (file) => `<div class="tray-file"><span class="chev">${I.chevronDown}</span><span class="path">${esc(file.path)}</span><span class="tray-acts">${I.copy}${I.doc}<span class="diff"><span class="add">+${file.add}</span><span class="del">−${file.del}</span></span></span></div>
+      <div class="tray-gap">⋯</div>
+      <div class="tray-lines">${file.lines.map(line).join('')}</div>`,
+        )
+        .join('\n      ')}
+    </div>
+  </div>`;
+}
+
 // ── Mac ───────────────────────────────────────────────────────────────
 
 /**
  * The Mac window. `solo` leaves the sidebar out (the window with its
- * sidebar hidden), for the demos that are about one session.
+ * sidebar hidden), for the demos that are about one session; `tray` opens
+ * the diff tray beside the terminal.
  */
-export function macWindow(world, { id = '', solo = false } = {}) {
+export function macWindow(world, { id = '', solo = false, tray = null } = {}) {
   const { project, session } = findSession(world, world.selected);
   const lights = '<i class="light r"></i><i class="light y"></i><i class="light g"></i>';
   return `<div class="mac${solo ? ' solo' : ''}" data-device="mac"${id ? ` id="${id}"` : ''}>
@@ -97,12 +120,14 @@ export function macWindow(world, { id = '', solo = false } = {}) {
         ${toolbarItems(project, session)}
       </span>
     </div>
+    ${tray ? '<div class="mac-split"><div class="mac-pane">' : ''}
     <div class="hbar">
       <i class="dot green" data-hdot></i>
       <span class="crumbs"><span class="t2" data-hproject>${esc(project.name)}</span><span class="t3">/</span><b data-hsession>${esc(session.name)}</b><span class="t3">·</span><span class="t2" data-hhost>${esc(project.host)}</span></span>
       <span class="htitle" data-htitle>${esc(session.title ?? '')}</span>
     </div>
     ${terminal()}
+    ${tray ? `</div>${diffTray(tray)}</div>` : ''}
   </div>
 </div>`;
 }
@@ -140,19 +165,28 @@ const statusBar = () =>
         <svg viewBox="0 0 26 12" aria-hidden="true"><rect x=".5" y=".5" width="22" height="11" rx="3.2" fill="none" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="19" height="8" rx="1.9"/><path d="M24 4v4c.8-.3 1.400-1.100 1.400-2s-.6-1.700-1.400-2Z" opacity=".45"/></svg>
       </span></div>`;
 
-const iosList = (world) =>
-  `<div class="ios-bar"><span class="glass round">${I.gear}</span><span class="glass round">${I.plus}</span></div>
-      <div class="ios-large">Relay</div>
+/**
+ * The list of projects: under a large title on an iPhone, under the
+ * sidebar's own bar (`inline`) on an iPad.
+ */
+const iosList = (world, inline = false) =>
+  `${
+    inline
+      ? `<div class="ios-bar"><span class="glass round">${I.gear}</span><b class="ios-inline">Relay</b><span class="glass round">${I.plus}</span><span class="glass round">${I.sidebar}</span></div>`
+      : `<div class="ios-bar"><span class="glass round">${I.gear}</span><span class="glass round">${I.plus}</span></div>
+      <div class="ios-large">Relay</div>`
+  }
       <div class="list ios" data-list>
       ${groups(world)}
       </div>`;
 
-export function padDevice(world) {
+/** `tray` opens the diff tray: the iPad's inspector, the iPhone's sheet. */
+export function padDevice(world, { tray = null } = {}) {
   const { project, session } = findSession(world, world.selected);
-  return `<div class="pad" data-device="pad">
+  return `<div class="pad${tray ? ' with-tray' : ''}" data-device="pad">
   <div class="pad-screen">
     <div class="pad-side">
-      ${iosList(world)}
+      ${iosList(world, true)}
     </div>
     <div class="pad-main">
       <div class="ios-nav">
@@ -165,11 +199,12 @@ export function padDevice(world) {
       ${terminal()}
       ${keyBar()}
     </div>
+    ${tray ? diffTray(tray) : ''}
   </div>
 </div>`;
 }
 
-export function phoneDevice(world) {
+export function phoneDevice(world, { tray = null } = {}) {
   const { project, session } = findSession(world, world.selected);
   return `<div class="phone" data-device="phone">
   <div class="phone-screen">
@@ -190,6 +225,7 @@ export function phoneDevice(world) {
         ${keyboard()}
       </div>
     </div>
+    ${tray ? `<div class="sheet">${diffTray(tray)}</div>` : ''}
     <span class="home-bar"></span>
   </div>
 </div>`;

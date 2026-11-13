@@ -213,9 +213,27 @@ checks what would be sent; without `--upload`, nothing is. It needs Xcode
 signed in to the team, the Apple Distribution and Mac Installer
 Distribution certificates, libghostty's slices for the platform, and
 `build/tmux`. The version is three numbers (no prerelease suffix), and each
-upload of a version needs a higher build number.
-`Scripts/store-screenshots.sh <folder>` takes the iPhone and iPad
-screenshots, of a demo workspace on a throwaway SSH host.
+upload of a version needs a higher build number. Run it from a terminal on
+the Mac's desktop: over SSH (a Relay session included) the login keychain's
+signing keys can't be used, and `codesign` fails with
+`errSecInternalComponent`.
+
+The store's screenshots are pages: a headline over the app, on the site's
+background, drawn with the same HTML mockups as the landing page.
+
+```sh
+cd website && npm run store        # → build/store/screenshots/*.png
+```
+
+[website/src/js/store.js](website/src/js/store.js) is what they say: the
+headlines, the demo workspace, each terminal's contents, the diff.
+[website/store.mjs](website/store.mjs) renders each page in headless Chrome
+at the size App Store Connect asks for (2880 × 1800 for the Mac,
+2752 × 2064 for the iPad, 1320 × 2868 for the iPhone); `--html` writes only
+the pages, to open while working on one. The mockups stand in for the app,
+so they have to stay true to it: `Scripts/store-screenshots.sh <folder>`
+takes the same screens from the real app (iPhone and iPad, a demo workspace
+on a throwaway SSH host) to check them against.
 
 iCloud sync needs, once: iCloud (CloudKit, with the
 `iCloud.com.iddogino.Relay` container) and Push Notifications on the

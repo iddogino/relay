@@ -1,0 +1,147 @@
+/* The App Store's screenshots (src/js/store.js, store.mjs): a headline
+   over the app, on the site's background. A page is one screenshot, the
+   size of its window. */
+
+@import './base.css';
+@import './mock.css';
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+/* A still picture: everything in its final state. */
+*,
+*::before,
+*::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+.shot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+}
+/* The site's field: the grid of cells (store.mjs draws the tile), the
+   wash of the accent behind the top, quieter down the page. */
+.shot::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 90% at 50% 0%, transparent 0%, rgb(7 8 10 / 0.25) 45%, rgb(7 8 10 / 0.55) 100%),
+    radial-gradient(60% 50% at 50% -8%, rgb(48 209 88 / 0.15), transparent 70%),
+    radial-gradient(40% 36% at 85% 4%, rgb(10 132 255 / 0.07), transparent 70%),
+    var(--grid) 13px 13px;
+}
+
+.copy {
+  position: relative;
+  padding: var(--top) var(--side) 0;
+  text-align: center;
+}
+/* The hero's headline: grey, its last words in white. */
+.copy h1 {
+  font-size: var(--headline);
+  font-weight: 700;
+  line-height: 0.98;
+  letter-spacing: -0.04em;
+  color: #7d8089;
+  text-wrap: balance;
+}
+.copy h1 em {
+  font-style: normal;
+  color: var(--fg);
+}
+.copy p {
+  max-width: 30em;
+  margin: var(--gap) auto 0;
+  font-size: var(--text);
+  line-height: 1.35;
+  color: var(--fg-2);
+  text-wrap: balance;
+}
+
+.stage {
+  position: relative;
+  flex: none;
+  width: var(--device);
+  margin-top: var(--lead);
+}
+.glow {
+  position: absolute;
+  inset: 4% 2% 10%;
+  background:
+    radial-gradient(50% 60% at 50% 40%, rgb(48 209 88 / 0.2), transparent 70%),
+    radial-gradient(40% 50% at 20% 70%, rgb(10 132 255 / 0.12), transparent 70%);
+  filter: blur(50px);
+}
+.stage > :not(.glow) {
+  position: relative;
+}
+
+/* A Mac: 1440 × 900, the window at its natural size. */
+.shot-mac {
+  --top: 46px;
+  --side: 60px;
+  --headline: 60px;
+  --gap: 14px;
+  --text: 21px;
+  --lead: 34px;
+  --device: 1120px;
+}
+.shot-mac .copy p,
+.shot-ipad .copy p {
+  max-width: none;
+}
+/* A 13-inch iPad on its side: 1376 × 1032. */
+.shot-ipad {
+  --top: 48px;
+  --side: 60px;
+  --headline: 62px;
+  --gap: 14px;
+  --text: 22px;
+  --lead: 36px;
+  --device: 1080px;
+}
+/* A 6.9-inch iPhone: 660 × 1434. The headline takes two lines, and the
+   phone runs off the bottom. */
+.shot-iphone {
+  --top: 76px;
+  --side: 30px;
+  --headline: 58px;
+  --gap: 20px;
+  --text: 25px;
+  --lead: 48px;
+  --device: 540px;
+}
+.shot-iphone .copy h1 em {
+  display: block;
+}
+/* Two lines of each, whatever they say: the phone starts at the same
+   height in every screenshot. */
+.shot-iphone .copy {
+  min-height: 282px;
+}
+.shot-iphone .copy p {
+  max-width: 20em;
+}
+/* Under the diff's sheet there's only the sheet to see. */
+.phone:has(.sheet) .phone-stack {
+  visibility: hidden;
+}
+
+/* The iPhone without its keyboard: the terminal takes the room. */
+.phone.no-kbd .kbd {
+  display: none;
+}
+.phone.no-kbd .keybar {
+  margin-bottom: 1.6em;
+}
