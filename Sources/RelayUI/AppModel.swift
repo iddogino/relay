@@ -160,8 +160,35 @@ public final class AppModel {
     private(set) var sessionErrors: [ProjectID: String] = [:]
 
     // Selection & transient UI state
+
+    /// The sidebar's selection. Usually one session, the one on screen. On
+    /// the Mac, ⌘-click and ⇧-click select several for batch actions, and
+    /// then no terminal is shown.
+    var selectedSessionIDs: Set<SessionID> = [] {
+        didSet {
+            let previous = Self.onScreen(oldValue)
+            if let onScreen = selectedSessionID { lastOnScreenSessionID = onScreen }
+            else if selectedSessionIDs.isEmpty { lastOnScreenSessionID = nil }
+            selectionDidChange(from: previous)
+        }
+    }
+    /// The session on screen: the selection, when it's exactly one session.
+    /// Setting it selects just that session (nil clears the selection).
     var selectedSessionID: SessionID? {
-        didSet { selectionDidChange(from: oldValue) }
+        get { Self.onScreen(selectedSessionIDs) }
+        set { selectedSessionIDs = newValue.map { [$0] } ?? [] }
+    }
+    private static func onScreen(_ selection: Set<SessionID>) -> SessionID? {
+        selection.count == 1 ? selection.first : nil
+    }
+    /// The session last on screen, saved for next launch while several are
+    /// selected (none of them is on screen then).
+    private var lastOnScreenSessionID: SessionID?
+
+    /// Drops sessions from the selection; whatever is left stays selected.
+    private func deselect<S: Sequence>(_ ids: S) where S.Element == SessionID {
+        let remaining = selectedSessionIDs.subtracting(ids)
+        if remaining != selectedSessionIDs { selectedSessionIDs = remaining }
     }
     /// When true, clearing the selection detaches but does not persist the
     /// cleared value (used for window close, which races app termination).
@@ -175,7 +202,8 @@ public final class AppModel {
     var newSessionProject: Project?
     /// The sidebar's + sheet: create a session or a project, user's choice.
     var createSheetPresented = false
-    var confirmKillSession: RemoteSession?
+    /// Sessions waiting on the Kill confirmation (one, or a batch).
+    var confirmKillSessions: [RemoteSession] = []
     var confirmRemoveProject: Project?
     /// iOS: Settings, as a sheet (the Mac has a Settings window).
     var settingsPresented = false
@@ -414,7 +442,7 @@ public final class AppModel {
                 restoredSelection = nil
                 // Let the sidebar finish inserting rows before applying selection.
                 try? await Task.sleep(for: .milliseconds(100))
-                if selectedSessionID == nil { selectedSessionID = restored }
+                if selectedSessionIDs.isEmpty { selectedSessionID = restored }
             }
         }
         restoredSelection = nil
@@ -626,6 +654,21 @@ public final class AppModel {
         return projects.first { $0.id == session.projectID }
     }
 
+    /// Every selected session, in sidebar order.
+    var selectedSessions: [RemoteSession] {
+        guard !selectedSessionIDs.isEmpty else { return [] }
+        return projects.flatMap { sessions[$0.id] ?? [] }.filter { selectedSessionIDs.contains($0.id) }
+    }
+
+    /// What a session row's context menu acts on, Finder-style: the whole
+    /// selection when the row is part of a multiple selection, otherwise
+    /// just that row (right-clicking outside the selection leaves it be).
+    func contextTargets(for session: RemoteSession) -> [RemoteSession] {
+        guard selectedSessionIDs.count > 1, selectedSessionIDs.contains(session.id) else { return [session] }
+        let selected = selectedSessions
+        return selected.count > 1 ? selected : [session]
+    }
+
     private func selectionDidChange(from oldValue: SessionID?) {
         guard selectedSessionID != oldValue else { return }
         // Selection changes arrive mid view-update (List binding); defer the
@@ -715,10 +758,14 @@ public final class AppModel {
     /// User-facing "Disconnect": drop the warm ssh attachment without
     /// touching the remote session. A selected session is deselected first.
     func disconnectSession(_ session: RemoteSession) {
-        if selectedSessionID == session.id {
+        disconnectSessions([session])
+    }
+
+    func disconnectSessions(_ sessions: [RemoteSession]) {
+        if let id = selectedSessionID, sessions.contains(where: { $0.id == id }) {
             selectedSessionID = nil
         }
-        dropAttachment(for: session.id)
+        for session in sessions { dropAttachment(for: session.id) }
     }
 
     /// The connection phase for a session's warm controller, or nil when
@@ -825,6 +872,10 @@ public final class AppModel {
             let vanished = previousIDs.filter { !liveIDs.contains($0) }
             if !vanished.isEmpty {
                 sessionOrder.removeAll { vanished.contains($0) }
+                // Out of a multiple selection, so batch actions and the
+                // count shown match the rows. (A session on screen stays
+                // selected: its "session ended" overlay explains it.)
+                if selectedSessionIDs.count > 1 { deselect(vanished) }
                 persist()
             }
             // Warm attachments for this project's vanished sessions have
@@ -1197,10 +1248,18 @@ public final class AppModel {
     }
 
     func setMarkedUnread(_ unread: Bool, for session: RemoteSession) {
-        if unread { markedUnread.insert(session.id) } else { markedUnread.remove(session.id) }
-        if !unread, let activity = agentActivity(for: session),
-           activity.state == .done || activity.state == .failed {
-            agentSeen[session.id] = activity.since
+        setMarkedUnread(unread, for: [session])
+    }
+
+    func setMarkedUnread(_ unread: Bool, for sessions: [RemoteSession]) {
+        let ids = sessions.map(\.id)
+        if unread { markedUnread.formUnion(ids) } else { markedUnread.subtract(ids) }
+        guard !unread else { return }
+        for session in sessions {
+            if let activity = agentActivity(for: session),
+               activity.state == .done || activity.state == .failed {
+                agentSeen[session.id] = activity.since
+            }
         }
     }
 
@@ -1665,58 +1724,119 @@ public final class AppModel {
     }
 
     func archiveSession(_ session: RemoteSession) async {
-        // Once at a time: its cleanup command mustn't run twice.
-        guard !archivingSessions.contains(session.id),
-              let project = projects.first(where: { $0.id == session.projectID }) else { return }
-        if selectedSessionID == session.id {
-            selectedSessionID = nil
-        }
-        dropAttachment(for: session.id)
-        archivingSessions.insert(session.id)
-        defer { archivingSessions.remove(session.id) }
-        do {
-            try await provider.archiveSession(session, project: project)
-            bumpSessionEpoch(project.id)
-            sessions[project.id]?.removeAll { $0.id == session.id }
-            tombstones.removeAll { $0.id == session.id }
-            sessionOrder.removeAll { $0 == session.id }
-            persist()
-            await refreshSessions(for: project)
-        } catch let error as RuntimeProviderError {
-            if case .cleanupFailed = error {
-                // The runtime session is gone; keep a tombstone for retry.
-                bumpSessionEpoch(project.id)
-                sessions[project.id]?.removeAll { $0.id == session.id }
-                tombstones.removeAll { $0.id == session.id }
-                sessionOrder.removeAll { $0 == session.id }
-                tombstones.append(CleanupTombstone(
-                    session: session,
-                    projectID: project.id,
-                    failureMessage: error.localizedDescription))
-                persist()
+        await archiveSessions([session])
+    }
+
+    /// Ends each session and runs the cleanup it recorded at launch.
+    func archiveSessions(_ targets: [RemoteSession]) async {
+        // Once at a time: a cleanup command mustn't run twice.
+        let targets = targets.filter { !archivingSessions.contains($0.id) }
+        let failures = await forEachSession(targets, starting: { self.archivingSessions.insert($0.id) }) { session, project in
+            defer { self.archivingSessions.remove(session.id) }
+            do {
+                try await self.provider.archiveSession(session, project: project)
+                self.bumpSessionEpoch(project.id)
+                self.sessions[project.id]?.removeAll { $0.id == session.id }
+                self.tombstones.removeAll { $0.id == session.id }
+                self.sessionOrder.removeAll { $0 == session.id }
+                self.persist()
+                return nil
+            } catch let error as RuntimeProviderError {
+                if case .cleanupFailed = error {
+                    // The runtime session is gone; keep a tombstone for retry.
+                    self.bumpSessionEpoch(project.id)
+                    self.sessions[project.id]?.removeAll { $0.id == session.id }
+                    self.tombstones.removeAll { $0.id == session.id }
+                    self.sessionOrder.removeAll { $0 == session.id }
+                    self.tombstones.append(CleanupTombstone(
+                        session: session,
+                        projectID: project.id,
+                        failureMessage: error.localizedDescription))
+                    self.persist()
+                }
+                return error.localizedDescription
+            } catch {
+                return error.localizedDescription
             }
-            alert = AppAlert(title: "Archive Failed", message: error.localizedDescription)
-        } catch {
-            alert = AppAlert(title: "Archive Failed", message: error.localizedDescription)
         }
+        reportBatchFailures(failures, of: targets.count, title: "Archive Failed", verb: "Archive")
     }
 
     func killSession(_ session: RemoteSession) async {
-        guard let project = projects.first(where: { $0.id == session.projectID }) else { return }
-        if selectedSessionID == session.id {
-            selectedSessionID = nil
+        await killSessions([session])
+    }
+
+    /// Force-kills each session; no cleanup runs.
+    func killSessions(_ targets: [RemoteSession]) async {
+        let failures = await forEachSession(targets) { session, project in
+            do {
+                try await self.provider.destroySession(session, project: project)
+                self.bumpSessionEpoch(project.id)
+                self.sessions[project.id]?.removeAll { $0.id == session.id }
+                self.sessionOrder.removeAll { $0 == session.id }
+                self.persist()
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
         }
-        dropAttachment(for: session.id)
-        do {
-            try await provider.destroySession(session, project: project)
-            bumpSessionEpoch(project.id)
-            sessions[project.id]?.removeAll { $0.id == session.id }
-            sessionOrder.removeAll { $0 == session.id }
-            persist()
-            await refreshSessions(for: project)
-        } catch {
-            alert = AppAlert(title: "Couldn't Kill Session", message: error.localizedDescription)
+        reportBatchFailures(failures, of: targets.count, title: "Couldn't Kill Session", verb: "Kill")
+    }
+
+    /// Takes the sessions out of the selection and drops their connections,
+    /// then runs `operation` on each, which returns an error message or
+    /// nil. A project's sessions go one after another — their cleanups
+    /// mostly work in the same git repository, where concurrent `git
+    /// worktree` and `git branch` runs trip over each other's lock files —
+    /// while different projects go at once, each refreshed when done.
+    private func forEachSession(
+        _ targets: [RemoteSession],
+        starting: (RemoteSession) -> Void = { _ in },
+        _ operation: @escaping @MainActor @Sendable (RemoteSession, Project) async -> String?
+    ) async -> [(session: RemoteSession, message: String)] {
+        let groups: [(project: Project, sessions: [RemoteSession])] = projects.compactMap { project in
+            let mine = targets.filter { $0.projectID == project.id }
+            return mine.isEmpty ? nil : (project, mine)
         }
+        let all = groups.flatMap(\.sessions)
+        guard !all.isEmpty else { return [] }
+        deselect(all.map(\.id))
+        for session in all {
+            dropAttachment(for: session.id)
+            starting(session)
+        }
+        let runs = groups.map { group in
+            Task { @MainActor in
+                var failures: [(session: RemoteSession, message: String)] = []
+                for session in group.sessions {
+                    if let message = await operation(session, group.project) {
+                        failures.append((session, message))
+                    }
+                }
+                await self.refreshSessions(for: group.project)
+                return failures
+            }
+        }
+        var failures: [(session: RemoteSession, message: String)] = []
+        for run in runs { failures += await run.value }
+        return failures
+    }
+
+    /// One alert for a batch: `title` and the error itself for a lone
+    /// session, else each failed session's name with its error.
+    private func reportBatchFailures(
+        _ failures: [(session: RemoteSession, message: String)], of total: Int, title: String, verb: String
+    ) {
+        guard let first = failures.first else { return }
+        if total == 1 {
+            alert = AppAlert(title: title, message: first.message)
+            return
+        }
+        alert = AppAlert(
+            title: "Couldn't \(verb) \(failures.count) of \(total) Sessions",
+            message: failures
+                .map { "\u{201C}\($0.session.displayName)\u{201D}: \($0.message)" }
+                .joined(separator: "\n\n"))
     }
 
     func retryCleanup(_ tombstone: CleanupTombstone) async {
@@ -1751,9 +1871,7 @@ public final class AppModel {
 
     /// Remove a session that ended (used from the "session ended" overlay).
     func clearEndedSession(_ session: RemoteSession) {
-        if selectedSessionID == session.id {
-            selectedSessionID = nil
-        }
+        deselect([session.id])
         dropAttachment(for: session.id)
         noteSessionGone(session)
         sessionOrder.removeAll { $0 == session.id }
@@ -1781,9 +1899,7 @@ public final class AppModel {
 
     /// Everything Relay keeps about a project, gone (not saved yet).
     private func forgetProject(_ id: ProjectID) {
-        if let session = selectedSession, session.projectID == id {
-            selectedSessionID = nil
-        }
+        deselect((sessions[id] ?? []).map(\.id))
         for (sessionID, controller) in attachmentPool where controller.session?.projectID == id {
             dropAttachment(for: sessionID)
         }
@@ -2036,7 +2152,7 @@ public final class AppModel {
     private var unreadableHosts: (records: [JSONValue], aliases: [String]) = ([], [])
 
     func persist() {
-        persist(lastSelected: selectedSessionID)
+        persist(lastSelected: selectedSessionID ?? lastOnScreenSessionID)
     }
 
     private func persist(lastSelected: SessionID?) {

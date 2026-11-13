@@ -46,6 +46,8 @@ struct TerminalDetailView: View {
                         TerminalToolbarItems(model: model, session: session, project: project)
                     }
                 #endif
+            } else if model.selectedSessionIDs.count > 1, model.selectedSessions.count > 1 {
+                MultipleSelectionView(sessionCount: model.selectedSessions.count)
             } else {
                 EmptyDetailView(model: model)
             }
@@ -327,6 +329,20 @@ private struct OverlayCard<Content: View>: View {
     }
 }
 
+/// Several sessions selected in the sidebar, Mail-style: no terminal, just
+/// how many and where their actions are.
+private struct MultipleSelectionView: View {
+    let sessionCount: Int
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("\(sessionCount) Sessions Selected", systemImage: "square.stack")
+        } description: {
+            Text("Right-click the selection to act on all of them, or use the Session menu.")
+        }
+    }
+}
+
 private struct EmptyDetailView: View {
     @Bindable var model: AppModel
 
@@ -527,7 +543,7 @@ private struct SessionToolbarItems: View {
                 Label("Archive Session", systemImage: "archivebox")
             }
             Button(role: .destructive) {
-                model.confirmKillSession = session
+                model.confirmKillSessions = [session]
             } label: {
                 Label("Kill Session…", systemImage: "xmark.octagon")
             }

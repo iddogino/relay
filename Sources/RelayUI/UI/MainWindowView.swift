@@ -98,17 +98,27 @@ struct MainWindowView: View {
             GitHubLoginSheet(model: model)
         }
         .confirmationDialog(
-            "Kill Session?",
+            model.confirmKillSessions.count > 1 ? "Kill \(model.confirmKillSessions.count) Sessions?" : "Kill Session?",
             isPresented: killDialogPresented,
             titleVisibility: .visible,
-            presenting: model.confirmKillSession
-        ) { session in
-            Button("Kill \u{201C}\(session.displayName)\u{201D}", role: .destructive) {
-                Task { await model.killSession(session) }
+            presenting: model.confirmKillSessions.isEmpty ? nil : model.confirmKillSessions
+        ) { sessions in
+            if sessions.count == 1, let session = sessions.first {
+                Button("Kill \u{201C}\(session.displayName)\u{201D}", role: .destructive) {
+                    Task { await model.killSession(session) }
+                }
+            } else {
+                Button("Kill \(sessions.count) Sessions", role: .destructive) {
+                    Task { await model.killSessions(sessions) }
+                }
             }
             Button("Cancel", role: .cancel) {}
-        } message: { session in
-            Text("This force-kills the remote session and everything running in it. The project's cleanup command will NOT run — any user-managed cleanup (like removing a worktree) is skipped.")
+        } message: { sessions in
+            if sessions.count == 1 {
+                Text("This force-kills the remote session and everything running in it. The project's cleanup command will NOT run — any user-managed cleanup (like removing a worktree) is skipped.")
+            } else {
+                Text("This force-kills \(Self.namesList(sessions)) and everything running in them. Their cleanup commands will NOT run — any user-managed cleanup (like removing a worktree) is skipped.")
+            }
         }
         .confirmationDialog(
             "Remove Project?",
@@ -132,8 +142,17 @@ struct MainWindowView: View {
 
     private var killDialogPresented: Binding<Bool> {
         Binding(
-            get: { model.confirmKillSession != nil },
-            set: { if !$0 { model.confirmKillSession = nil } })
+            get: { !model.confirmKillSessions.isEmpty },
+            set: { if !$0 { model.confirmKillSessions = [] } })
+    }
+
+    /// “a”, “b”, and “c” — or the first few and how many more.
+    static func namesList(_ sessions: [RemoteSession], limit: Int = 4) -> String {
+        var names = sessions.map { "\u{201C}\($0.displayName)\u{201D}" }
+        if names.count > limit {
+            names = names.prefix(limit - 1) + ["\(names.count - (limit - 1)) more"]
+        }
+        return ListFormatter.localizedString(byJoining: names)
     }
 
     private var removeProjectDialogPresented: Binding<Bool> {

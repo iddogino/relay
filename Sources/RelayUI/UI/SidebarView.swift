@@ -37,8 +37,17 @@ private struct GridRow<Glyph: View, Content: View>: View {
 struct SidebarView: View {
     @Bindable var model: AppModel
 
+    /// On the Mac a set, so the list does multiple selection the AppKit way
+    /// (⌘-click, ⇧-click, ⇧-arrows, ⌘A). iOS keeps single selection: a set
+    /// there means edit mode, and the split view pushes on a single one.
+    #if os(macOS)
+    private var selection: Binding<Set<SessionID>> { $model.selectedSessionIDs }
+    #else
+    private var selection: Binding<SessionID?> { $model.selectedSessionID }
+    #endif
+
     var body: some View {
-        List(selection: $model.selectedSessionID) {
+        List(selection: selection) {
             if model.remotesLoaded && model.projects.isEmpty {
                 emptyState
             } else {
@@ -186,6 +195,10 @@ private struct ProjectGroup: View {
             ForEach(model.tombstones.filter { $0.projectID == project.id }) { tombstone in
                 TombstoneRow(model: model, tombstone: tombstone)
                     .moveDisabled(true)
+                    // ForEach tags each row with its ID — a SessionID, like
+                    // the session rows' — which would make these selectable
+                    // (and part of ⇧-click ranges) with nothing to show.
+                    .selectionDisabled()
             }
             if !remoteMissing {
                 NewSessionRow(model: model, project: project)
@@ -396,6 +409,21 @@ private struct SessionRow: View {
         Task { await model.renameSession(session, to: name) }
     }
 
+    /// A click on the selected row's name. The gesture takes the click
+    /// from the list, so a ⌘-click is done here: it deselects the row, as
+    /// the list would. (A ⇧-click would select from the row to itself.)
+    private func nameClicked() {
+        #if os(macOS)
+        let modifiers = NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags
+        if modifiers.contains(.command) {
+            model.selectedSessionIDs.remove(session.id)
+            return
+        }
+        if modifiers.contains(.shift) { return }
+        #endif
+        beginRename()
+    }
+
     var body: some View {
         GridRow {
             Circle()
@@ -423,7 +451,7 @@ private struct SessionRow: View {
                     // mouse-down the List needs to start a row drag.
                     Text(session.displayName)
                         .lineLimit(1)
-                        .onTapGesture { beginRename() }
+                        .onTapGesture { nameClicked() }
                 } else {
                     Text(session.displayName)
                         // A finished turn not looked at yet reads as unread.
@@ -479,32 +507,77 @@ private struct SessionRow: View {
         }
         #endif
         .contextMenu {
-            Button("Rename") {
-                beginRename()
-            }
-            .disabled(isArchiving)
-            if agentUnseen {
-                Button("Mark as Read") {
-                    model.setMarkedUnread(false, for: session)
-                }
+            let targets = model.contextTargets(for: session)
+            if targets.count > 1 {
+                SessionBatchMenuItems(model: model, sessions: targets)
             } else {
-                Button("Mark as Unread") {
-                    model.setMarkedUnread(true, for: session)
+                Button("Rename") {
+                    beginRename()
                 }
-            }
-            Button("Disconnect") {
-                model.disconnectSession(session)
-            }
-            .disabled(!isConnected)
-            Button("Archive Session…") {
-                Task { await model.archiveSession(session) }
-            }
-            .disabled(isArchiving)
-            Divider()
-            Button("Kill Session…", role: .destructive) {
-                model.confirmKillSession = session
+                .disabled(isArchiving)
+                if agentUnseen {
+                    Button("Mark as Read") {
+                        model.setMarkedUnread(false, for: session)
+                    }
+                } else {
+                    Button("Mark as Unread") {
+                        model.setMarkedUnread(true, for: session)
+                    }
+                }
+                Button("Disconnect") {
+                    model.disconnectSession(session)
+                }
+                .disabled(!isConnected)
+                Button("Archive Session…") {
+                    Task { await model.archiveSession(session) }
+                }
+                .disabled(isArchiving)
+                Divider()
+                Button("Kill Session…", role: .destructive) {
+                    model.confirmKillSessions = [session]
+                }
             }
         }
+    }
+}
+
+/// The context menu for several selected sessions: what applies to all
+/// of them at once.
+private struct SessionBatchMenuItems: View {
+    let model: AppModel
+    let sessions: [RemoteSession]
+
+    var body: some View {
+        let unseen = sessions.filter { model.agentUnseen(for: $0) }
+        let connected = sessions.filter { model.connectionPhase(for: $0.id) != nil }
+        let archivable = sessions.filter { !model.archivingSessions.contains($0.id) }
+        // Mail-style: whichever applies to some of them (both when mixed).
+        if !unseen.isEmpty {
+            Button("Mark as Read") {
+                model.setMarkedUnread(false, for: sessions)
+            }
+        }
+        if unseen.count < sessions.count {
+            Button("Mark as Unread") {
+                model.setMarkedUnread(true, for: sessions)
+            }
+        }
+        Button("Disconnect") {
+            model.disconnectSessions(connected)
+        }
+        .disabled(connected.isEmpty)
+        Button("Archive \(Self.sessions(archivable.count))…") {
+            Task { await model.archiveSessions(archivable) }
+        }
+        .disabled(archivable.isEmpty)
+        Divider()
+        Button("Kill \(Self.sessions(sessions.count))…", role: .destructive) {
+            model.confirmKillSessions = sessions
+        }
+    }
+
+    static func sessions(_ count: Int) -> String {
+        count == 1 ? "1 Session" : "\(count) Sessions"
     }
 }
 
