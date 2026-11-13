@@ -4,7 +4,7 @@ import UIKit
 /// The keys a terminal needs that iOS keyboards lack — Escape, Tab,
 /// Control, Option, the arrows and the symbols buried on the keyboard's
 /// other pages — in a row above the software keyboard (at the bottom of
-/// the screen with a hardware one), plus Paste and Hide Keyboard.
+/// the screen with a hardware one), plus Attach, Paste and Hide Keyboard.
 ///
 /// Control and Option apply to the next key, from here or the keyboard:
 /// tap to arm one for one key, double-tap to keep it on, tap again to
@@ -83,6 +83,29 @@ final class TerminalKeyBar: UIInputView, UIInputViewAudioFeedback {
         trailing.alignment = .center
         trailing.translatesAutoresizingMaskIntoConstraints = false
         addSubview(trailing)
+        // Attach: a photo or a file, uploaded to the host with its path
+        // there pasted in. The choices are made as the menu opens, for the
+        // terminal's state then.
+        let attach = keyButton(title: nil, image: "plus", label: "Attach")
+        attach.accessibilityIdentifier = "keybar.attach"
+        attach.showsMenuAsPrimaryAction = true
+        attach.menu = UIMenu(children: [
+            UIDeferredMenuElement.uncached { [weak self] provide in
+                let available = self?.terminal?.canAttachFiles ?? false
+                let attributes: UIMenuElement.Attributes = available ? [] : .disabled
+                provide([
+                    UIAction(
+                        title: "Photo Library", image: UIImage(systemName: "photo.on.rectangle"),
+                        attributes: attributes
+                    ) { _ in self?.terminal?.pickAttachments(from: .photoLibrary) },
+                    UIAction(
+                        title: "Choose Files", image: UIImage(systemName: "folder"),
+                        attributes: attributes
+                    ) { _ in self?.terminal?.pickAttachments(from: .files) },
+                ])
+            },
+        ])
+        trailing.addArrangedSubview(attach)
         if let terminal {
             // The system's paste button: pastes without asking first.
             let configuration = UIPasteControl.Configuration()

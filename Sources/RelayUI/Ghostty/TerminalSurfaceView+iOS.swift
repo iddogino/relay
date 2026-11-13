@@ -21,11 +21,16 @@ import UniformTypeIdentifiers
 final class TerminalSurfaceView: UIView, UIKeyInput {
     private(set) var surface: ghostty_surface_t?
 
-    /// File drops (upload to the session's host). Not offered on iOS yet;
-    /// kept so the attachment controller is the same on both platforms.
+    /// File drops (upload to the session's host). iOS has no drops: these
+    /// two are kept so the attachment controller is the same on both
+    /// platforms.
     var onFilesDropped: ((_ urls: [URL], _ preferLocalPaths: Bool) -> Void)?
     var onDragTargeted: ((Bool) -> Void)?
+    /// Whether an upload can start now (attached, and none under way).
     var canAcceptFileDrop: (() -> Bool)?
+    /// Photos or files picked with the key bar's attach button, to upload.
+    var onAttachmentsPicked: ((PickedAttachments) -> Void)?
+    private let attachmentPicker = AttachmentPicker()
 
     /// Terminal-reported title (escape sequences).
     var terminalTitle: String = "" {
@@ -673,6 +678,24 @@ final class TerminalSurfaceView: UIView, UIKeyInput {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.paste(text: string) }
             }
+        }
+    }
+
+    // MARK: Attachments
+
+    /// Whether the key bar's attach button has anything to offer now.
+    var canAttachFiles: Bool { canAcceptFileDrop?() ?? false }
+
+    /// Shows the photo library or the file browser; what's picked is
+    /// uploaded to the host and its path there pasted in.
+    func pickAttachments(from source: AttachmentPicker.Source) {
+        guard canAttachFiles, let presenter = window?.rootViewController?.topmostPresented else { return }
+        // The picker takes the keyboard; the terminal gets it back after.
+        let hadKeyboard = isFirstResponder
+        attachmentPicker.present(source, from: presenter) { [weak self] picked in
+            guard let self else { return }
+            if hadKeyboard { _ = self.becomeFirstResponder() }
+            if let picked { self.onAttachmentsPicked?(picked) }
         }
     }
 

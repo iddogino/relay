@@ -15,7 +15,7 @@
 #
 # Needs libghostty's iOS slices (Scripts/build-libghostty.sh --universal),
 # XcodeGen, and tmux. RELAY_UITEST_SHOTS=<folder> keeps the tests'
-# screenshots.
+# screenshots; RELAY_UITEST_ONLY="<class>[/<test>] …" runs just those.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -186,6 +186,8 @@ for kind in $DEVICES; do
   done
   xcrun simctl terminate "$device" "$BUNDLE"
 
+  # shellcheck disable=SC2206
+  [ -n "${RELAY_UITEST_ONLY:-}" ] && tests=($RELAY_UITEST_ONLY)
   only=()
   for test in "${tests[@]}"; do only+=("-only-testing:RelayUITests/$test"); done
   result="$WORK/$kind.xcresult"
