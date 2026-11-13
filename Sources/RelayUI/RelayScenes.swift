@@ -165,13 +165,14 @@ public struct RelayScenes<AppMenuCommands: Commands>: Scene {
 
             Divider()
 
-            Button("Archive Session…") {
-                if let session = model.selectedSession {
-                    Task { await model.archiveSession(session) }
-                }
+            // These act on the whole selection — several sessions when
+            // ⌘- or ⇧-clicked in the sidebar.
+            let selected = model.selectedSessions
+            Button(selected.count > 1 ? "Archive \(selected.count) Sessions…" : "Archive Session…") {
+                Task { await model.archiveSessions(selected) }
             }
             .keyboardShortcut("e", modifiers: [.command, .shift])
-            .disabled(model.selectedSession == nil)
+            .disabled(selected.isEmpty)
 
             Button("Reconnect") {
                 model.attachment.retryNow()
@@ -180,12 +181,10 @@ public struct RelayScenes<AppMenuCommands: Commands>: Scene {
 
             Divider()
 
-            Button("Kill Session…") {
-                if let session = model.selectedSession {
-                    model.confirmKillSession = session
-                }
+            Button(selected.count > 1 ? "Kill \(selected.count) Sessions…" : "Kill Session…") {
+                model.confirmKillSessions = selected
             }
-            .disabled(model.selectedSession == nil)
+            .disabled(selected.isEmpty)
 
             if !Platform.isPhone {
                 Divider()
