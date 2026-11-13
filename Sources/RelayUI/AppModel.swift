@@ -156,7 +156,7 @@ public final class AppModel {
     // Remote-reconciled session lists
     private(set) var sessions: [ProjectID: [RemoteSession]] = [:]
     private(set) var sessionsLoading: Set<ProjectID> = []
-    private var titleRefreshTimer: Timer?
+    private var sessionSweepTimer: Timer?
     private(set) var sessionErrors: [ProjectID: String] = [:]
 
     // Selection & transient UI state
@@ -288,10 +288,10 @@ public final class AppModel {
             }
         }
 
-        // Detached sessions keep reporting status through their pane titles
-        // (tmux tracks OSC titles server-side), so the sidebar merges fresh
-        // titles in periodically while a window is showing. Title-only: this
-        // sweep never adds or removes rows.
+        // While a window is showing, the sidebar re-reads every project's
+        // sessions periodically: pane titles (detached sessions keep
+        // reporting status through them; tmux tracks OSC titles server-side),
+        // and names and sessions changed from another device.
         let timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -301,11 +301,11 @@ public final class AppModel {
                 self.refreshGitState()
                 self.syncLoadMonitor()
                 self.syncAgentMonitors()
-                await self.refreshSessionTitles()
+                await self.sweepSessions()
             }
         }
         timer.tolerance = 5
-        titleRefreshTimer = timer
+        sessionSweepTimer = timer
 
         GhosttyRuntime.shared.urlOpener = { [weak self] text in
             self?.openTerminalLink(text)
@@ -461,7 +461,7 @@ public final class AppModel {
         // Back on the session: its notification has been seen.
         if let id = selectedSessionID { agentNotifier.clear(id) }
         Task { await refreshRemotes() }
-        // Only refresh the project that's currently in use — no polling sweep.
+        // The project in use right away; the 30s sweep covers the rest.
         if let project = selectedProject {
             Task { await refreshSessions(for: project) }
         }
@@ -845,8 +845,9 @@ public final class AppModel {
 
     // MARK: Sessions
 
-    /// Incremented whenever local mutations (create/archive/kill) change what
-    /// a concurrent refresh's results would mean; stale results are dropped.
+    /// Incremented whenever local mutations (create/rename/archive/kill)
+    /// change what a concurrent read's results would mean, and when an
+    /// explicit refresh starts; reads that began before are dropped.
     private var sessionListEpoch: [ProjectID: Int] = [:]
 
     private func bumpSessionEpoch(_ projectID: ProjectID) {
@@ -857,69 +858,79 @@ public final class AppModel {
         guard !sessionsLoading.contains(project.id) else { return }
         sessionsLoading.insert(project.id)
         defer { sessionsLoading.remove(project.id) }
+        // Supersedes a background sweep's read that's already under way.
+        bumpSessionEpoch(project.id)
         let epoch = sessionListEpoch[project.id, default: 0]
         do {
             let list = try await provider.listSessions(for: project)
             noteHostContact(project.workspace, ok: true)
-            guard sessionListEpoch[project.id, default: 0] == epoch else { return }
-            let previousIDs = (sessions[project.id] ?? []).map(\.id)
-            sessions[project.id] = SessionOrdering.apply(order: sessionOrder, to: list)
-            sessionErrors[project.id] = nil
-            let liveIDs = Set(list.map(\.id))
-            // Order entries for sessions that vanished remotely are dead;
-            // pruning here (where project membership is still known) keeps
-            // the overlay from accreting stale IDs.
-            let vanished = previousIDs.filter { !liveIDs.contains($0) }
-            if !vanished.isEmpty {
-                sessionOrder.removeAll { vanished.contains($0) }
-                // Out of a multiple selection, so batch actions and the
-                // count shown match the rows. (A session on screen stays
-                // selected: its "session ended" overlay explains it.)
-                if selectedSessionIDs.count > 1 { deselect(vanished) }
-                persist()
-            }
-            // Warm attachments for this project's vanished sessions have
-            // nothing to reattach to; drop them (the selected one keeps its
-            // controller so the "session ended" overlay can appear).
-            for id in warmOrder
-            where id != selectedSessionID && !liveIDs.contains(id)
-                && attachmentPool[id]?.session?.projectID == project.id {
-                dropAttachment(for: id)
-            }
+            applySessionList(list, for: project, readAt: epoch)
         } catch {
             noteHostContact(project.workspace, ok: false)
             sessionErrors[project.id] = error.localizedDescription
         }
     }
 
-    /// Re-reads pane titles for the sessions already in the sidebar and
-    /// merges them in place. Deliberately title-only: existence
-    /// reconciliation (rows appearing/disappearing) stays with the explicit
-    /// refresh paths, so this background sweep never surprises the user.
-    private func refreshSessionTitles() async {
-        guard Platform.hasVisibleWindow else { return }
+    /// Makes a fresh read the project's rows (see
+    /// `SessionOrdering.reconcile`), unless the list changed locally, or a
+    /// newer read started, after it began (`epoch`).
+    private func applySessionList(_ list: [RemoteSession], for project: Project, readAt epoch: Int) {
+        guard sessionListEpoch[project.id, default: 0] == epoch,
+              projects.contains(where: { $0.id == project.id }) else { return }
+        let merged = SessionOrdering.reconcile(
+            previous: sessions[project.id] ?? [],
+            fresh: list,
+            order: sessionOrder,
+            keeping: selectedSessionID)
+        if merged.sessions != sessions[project.id] { sessions[project.id] = merged.sessions }
+        sessionErrors[project.id] = nil
+        // Order entries for sessions that vanished remotely are dead;
+        // pruning here (where project membership is still known) keeps
+        // the overlay from accreting stale IDs.
+        if !merged.vanished.isEmpty {
+            sessionOrder.removeAll { merged.vanished.contains($0) }
+            // Out of a multiple selection, so batch actions and the
+            // count shown match the rows. (A session on screen keeps its
+            // row and stays selected: its "session ended" overlay explains it.)
+            if selectedSessionIDs.count > 1 { deselect(merged.vanished) }
+            persist()
+        }
+        // Warm attachments for this project's vanished sessions have
+        // nothing to reattach to; drop them (the selected one keeps its
+        // controller so the "session ended" overlay can appear).
+        let liveIDs = Set(list.map(\.id))
+        for id in warmOrder
+        where id != selectedSessionID && !liveIDs.contains(id)
+            && attachmentPool[id]?.session?.projectID == project.id {
+            dropAttachment(for: id)
+        }
+    }
+
+    private var sessionSweepRunning = false
+
+    /// Re-reads every project's sessions in the background and applies them
+    /// whole, so changes made elsewhere — renames, sessions created or ended
+    /// on another device or on the host — show up without a manual refresh.
+    /// Quiet: no spinner, and a failed read leaves the rows (and any error
+    /// shown) as they are.
+    private func sweepSessions() async {
+        // A slow host can make one pass outlast the timer; never overlap,
+        // or an older read could land after a newer one.
+        guard Platform.hasVisibleWindow, !sessionSweepRunning else { return }
+        sessionSweepRunning = true
+        defer { sessionSweepRunning = false }
         for project in projects {
             guard !sessionsLoading.contains(project.id), !isRemoteMissing(project) else { continue }
-            let fresh: [RemoteSession]
+            let epoch = sessionListEpoch[project.id, default: 0]
             do {
-                fresh = try await provider.listSessions(for: project)
+                let list = try await provider.listSessions(for: project)
                 noteHostContact(project.workspace, ok: true)
+                applySessionList(list, for: project, readAt: epoch)
             } catch {
                 // The sweep doubles as the host-reachability heartbeat, so a
                 // failed dial is recorded, not just skipped.
                 noteHostContact(project.workspace, ok: false)
-                continue
             }
-            guard let known = sessions[project.id], !known.isEmpty else { continue }
-            let titles = Dictionary(fresh.map { ($0.id, $0.paneTitle) },
-                                    uniquingKeysWith: { first, _ in first })
-            guard var updated = sessions[project.id] else { continue }
-            for index in updated.indices {
-                if let title = titles[updated[index].id] {
-                    updated[index].paneTitle = title
-                }
-            }
-            if updated != sessions[project.id] { sessions[project.id] = updated }
         }
     }
 
@@ -1698,6 +1709,9 @@ public final class AppModel {
               name != session.displayName else { return }
         do {
             try await provider.renameSession(session, to: name, project: project)
+            // A read already under way may predate the rename; it mustn't
+            // land and put the old name back.
+            bumpSessionEpoch(project.id)
             // Reflect immediately; the next refresh re-reads the same value
             // from the remote metadata.
             if var list = sessions[project.id],

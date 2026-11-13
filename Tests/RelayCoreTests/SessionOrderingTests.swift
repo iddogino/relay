@@ -55,4 +55,71 @@ struct SessionOrderingTests {
         let ordered = SessionOrdering.apply(order: [t1, a, t2, b], to: remote)
         #expect(ordered.map(\.displayName) == ["a", "b"])
     }
+
+    // MARK: Reconciling a fresh read
+
+    @Test func freshReadCarriesRenamesAndNewSessionsFromElsewhere() {
+        // Renamed and created on another device: the read wins.
+        let project = ProjectID()
+        let (a, b, c) = (SessionID(), SessionID(), SessionID())
+        let shown = [session("misc", id: a, project: project),
+                     session("other", id: b, project: project)]
+        let fresh = [session("testing", id: a, project: project),
+                     session("other", id: b, project: project),
+                     session("new", id: c, project: project)]
+
+        let result = SessionOrdering.reconcile(previous: shown, fresh: fresh, order: [b, a], keeping: a)
+        #expect(result.sessions.map(\.displayName) == ["other", "testing", "new"])
+        #expect(result.vanished.isEmpty)
+    }
+
+    @Test func endedSessionsDropOut() {
+        let project = ProjectID()
+        let (a, b, c) = (SessionID(), SessionID(), SessionID())
+        let shown = [session("a", id: a, project: project),
+                     session("b", id: b, project: project),
+                     session("c", id: c, project: project)]
+        let fresh = [session("a", id: a, project: project),
+                     session("c", id: c, project: project)]
+
+        let result = SessionOrdering.reconcile(previous: shown, fresh: fresh, order: [], keeping: a)
+        #expect(result.sessions.map(\.displayName) == ["a", "c"])
+        #expect(result.vanished == [b])
+    }
+
+    @Test func onScreenSessionThatEndedKeepsItsRowInPlace() {
+        let project = ProjectID()
+        let (a, b, c) = (SessionID(), SessionID(), SessionID())
+        let shown = [session("a", id: a, project: project),
+                     session("b", id: b, project: project),
+                     session("c", id: c, project: project)]
+        let fresh = [session("c", id: c, project: project),
+                     session("a", id: a, project: project)]
+
+        let result = SessionOrdering.reconcile(previous: shown, fresh: fresh, order: [a, c], keeping: b)
+        #expect(result.sessions.map(\.displayName) == ["a", "b", "c"])
+        #expect(result.vanished.isEmpty)
+    }
+
+    @Test func keptRowAtTheTopStaysAtTheTop() {
+        let project = ProjectID()
+        let (a, b) = (SessionID(), SessionID())
+        let shown = [session("a", id: a, project: project),
+                     session("b", id: b, project: project)]
+        let fresh = [session("b", id: b, project: project)]
+
+        let result = SessionOrdering.reconcile(previous: shown, fresh: fresh, order: [], keeping: a)
+        #expect(result.sessions.map(\.displayName) == ["a", "b"])
+    }
+
+    @Test func keepingOnlyAppliesToARowAlreadyShown() {
+        // The on-screen session is in another project, or was never listed.
+        let project = ProjectID()
+        let a = SessionID()
+        let shown = [session("a", id: a, project: project)]
+
+        let result = SessionOrdering.reconcile(previous: shown, fresh: [], order: [], keeping: SessionID())
+        #expect(result.sessions.isEmpty)
+        #expect(result.vanished == [a])
+    }
 }
