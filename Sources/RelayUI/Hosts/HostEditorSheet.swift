@@ -67,7 +67,18 @@ struct HostEditorSheet: View {
         case failed(String)
     }
     @State private var saveError: String?
+    /// Add/Save is connecting once first, to see the host's key.
+    @State private var saving = false
+    /// What Add/Save has to ask before it can save.
+    @State private var trustQuestion: TrustQuestion?
     @Environment(\.dismiss) private var dismiss
+
+    /// A host key nobody has trusted yet: the host's own, or that of a
+    /// jump host on the way.
+    struct TrustQuestion: Equatable {
+        var jumpAlias: String?
+        var presentedKey: String
+    }
 
     enum AuthKind: Hashable { case relayKey, automatic, keyFile, password }
 
@@ -95,6 +106,22 @@ struct HostEditorSheet: View {
     private var isEditing: Bool { original != nil }
 
     var body: some View {
+        editor
+            .alert(
+                trustQuestion?.jumpAlias.map { "Trust the jump host \u{201C}\($0)\u{201D}?" } ?? "Trust this host?",
+                isPresented: Binding(get: { trustQuestion != nil }, set: { if !$0 { trustQuestion = nil } }),
+                presenting: trustQuestion
+            ) { question in
+                Button(isEditing ? "Trust & Save" : "Trust & Add") {
+                    Task { await trustAndSave(question) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { question in
+                Text("You haven\u{2019}t connected to it from Relay before, so its identity can\u{2019}t be checked yet. Make sure this is the right fingerprint:\n\(KnownHosts.fingerprint(ofPublicKey: question.presentedKey) ?? question.presentedKey)")
+            }
+    }
+
+    @ViewBuilder private var editor: some View {
         #if os(iOS)
         NavigationStack {
             iOSForm
@@ -108,13 +135,13 @@ struct HostEditorSheet: View {
                         Button {
                             Task { await save() }
                         } label: {
-                            if setupState == .running {
+                            if setupState == .running || saving {
                                 ProgressView()
                             } else {
                                 Text(authKind == .relayKey && !keyIsReady ? "Set Up" : isEditing ? "Save" : "Add")
                             }
                         }
-                        .disabled(candidate == nil || setupState == .running || relayKeyBlocked)
+                        .disabled(candidate == nil || setupState == .running || saving || relayKeyBlocked)
                     }
                 }
         }
@@ -175,13 +202,13 @@ struct HostEditorSheet: View {
                         Task { await save() }
                     } label: {
                         HStack(spacing: 6) {
-                            if setupState == .running { ProgressView().controlSize(.small) }
+                            if setupState == .running || saving { ProgressView().controlSize(.small) }
                             Text(saveTitle)
                         }
                     }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(candidate == nil || setupState == .running || relayKeyBlocked)
+                    .disabled(candidate == nil || setupState == .running || saving || relayKeyBlocked)
                 }
             }
             .padding(.top, 16)
@@ -972,6 +999,7 @@ struct HostEditorSheet: View {
             await runSetup()
             return
         }
+        guard await identityIsSettled() else { return }
         do {
             var host = try buildHost()
             if authKind == .relayKey, let currentKey { host.auth = .storedKey(id: currentKey.id) }
@@ -982,6 +1010,52 @@ struct HostEditorSheet: View {
         } catch {
             saveError = error.localizedDescription
         }
+    }
+
+    /// Connects once before saving, as Test Connection does (unless these
+    /// settings just passed it). A host whose key nobody has trusted can't
+    /// be used, and saved like that it would only say "needs connecting"
+    /// wherever it's used next (adding a project): so the question is
+    /// asked here, and answering it saves. False while it's being asked.
+    ///
+    /// Anything else the test finds saves as before: a host can be added
+    /// while it's off, or before it has tmux.
+    private func identityIsSettled() async -> Bool {
+        if case .finished(.ok) = testState { return true }
+        guard testSubject != nil else { return true }
+        saving = true
+        await runTest()
+        saving = false
+        switch testState {
+        case .finished(.untrustedHostKey(let presented)):
+            trustQuestion = TrustQuestion(jumpAlias: nil, presentedKey: presented)
+            return false
+        case .finished(.untrustedJumpHostKey(let alias, let presented)):
+            trustQuestion = TrustQuestion(jumpAlias: alias, presentedKey: presented)
+            return false
+        case .finished:
+            return true
+        case .idle, .running:
+            // The settings changed while it connected: no longer what was
+            // asked to be saved.
+            return false
+        }
+    }
+
+    private func trustAndSave(_ question: TrustQuestion) async {
+        let host = if let alias = question.jumpAlias {
+            model.hosts.first { $0.alias == alias }
+        } else {
+            candidate
+        }
+        guard let host else { return }
+        do {
+            try model.trustHostKey(question.presentedKey, for: host)
+        } catch {
+            saveError = "Couldn\u{2019}t save the host key: \(error.localizedDescription)"
+            return
+        }
+        await save()
     }
 }
 
