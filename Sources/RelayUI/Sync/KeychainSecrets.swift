@@ -44,7 +44,9 @@ struct KeychainSecrets: Sendable {
 
     func save(_ value: String, account: String) {
         write(value, to: active, account: account)
-        if loginKeychainInUse { remove(.login, account: account) }
+        // An earlier build's copy: not the one just written, in a build
+        // that saves to the login keychain.
+        if loginKeychainInUse, active != .login { remove(.login, account: account) }
     }
 
     func delete(account: String) {
