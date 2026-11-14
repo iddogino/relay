@@ -167,7 +167,8 @@ git tag v0.1.0-rc.1 && git push origin v0.1.0-rc.1
 
 The [release workflow](.github/workflows/release.yml) tests, builds and
 Developer ID-signs `Relay.app` (hardened runtime, with
-`Scripts/archive-app.sh`) with the tmux bundle, checks it, packages a
+`Scripts/archive-app.sh`) with the tmux bundle (its macOS tmux signed the
+same way: the notary service looks inside the bundle), checks it, packages a
 drag-to-Applications DMG, notarizes and staples it, and publishes a GitHub
 release with the DMG and SHA-256 checksums attached — marked *prerelease*
 automatically for channel tags. It then EdDSA-signs the DMG and commits an
