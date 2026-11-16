@@ -71,6 +71,16 @@ re-applies a changed patch set from a clean checkout).
   (the `ios` CI job). The target's other suites run local programs and are
   macOS only.
 
+- **0003 — no private window blur call.** libghostty exported
+  `ghostty_set_window_background_blur`, which calls the window server's
+  private `CGSSetWindowBackgroundBlurRadius`. An export is linked into the
+  app whether or not anything calls it, and App Review's automated check
+  turned the first Mac submission away for importing it (2026-11-16). Relay
+  never called it; the patch removes the function and its declaration.
+
+  Tests: `Scripts/check-store-export.py` refuses an App Store binary that
+  imports a private window server function.
+
 ### Zig
 
 `patches/zig/*.patch` are applied to the fetched toolchain's standard

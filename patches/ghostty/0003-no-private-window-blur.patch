@@ -1,0 +1,71 @@
+Relay patch 0003: no private window blur call.
+
+libghostty exports ghostty_set_window_background_blur, which calls
+CGSSetWindowBackgroundBlurRadius and CGSDefaultConnectionForThread:
+private window server functions. An export is linked into the app
+whether or not anything calls it, so the Mac binary imported both, and
+App Review's automated check turned the build away for it (2026-11-16:
+"The app uses or references the following non-public or deprecated
+APIs: _CGSSetWindowBackgroundBlurRadius").
+
+Relay doesn't blur its window's background and never called the
+function, so this removes it, with its declaration in ghostty.h.
+Scripts/check-store-export.py refuses an App Store binary that imports
+a CGS function.
+
+diff --git a/include/ghostty.h b/include/ghostty.h
+index 5358aff..050fd1e 100644
+--- a/include/ghostty.h
++++ b/include/ghostty.h
+@@ -1308,10 +1308,6 @@ GHOSTTY_API void ghostty_inspector_metal_render(ghostty_inspector_t, void*, void
+ GHOSTTY_API bool ghostty_inspector_metal_shutdown(ghostty_inspector_t);
+ #endif
+ 
+-// APIs I'd like to get rid of eventually but are still needed for now.
+-// Don't use these unless you know what you're doing.
+-GHOSTTY_API void ghostty_set_window_background_blur(ghostty_app_t, void*);
+-
+ // Benchmark API, if available.
+ GHOSTTY_API bool ghostty_benchmark_cli(const char*, const char*);
+ 
+diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
+index 2393430..d582f70 100644
+--- a/src/apprt/embedded.zig
++++ b/src/apprt/embedded.zig
+@@ -2515,36 +2515,6 @@ pub const CAPI = struct {
+         ptr.focusCallback(focused);
+     }
+ 
+-    /// Sets the window background blur on macOS to the desired value.
+-    /// I do this in Zig as an extern function because I don't know how to
+-    /// call these functions in Swift.
+-    ///
+-    /// This uses an undocumented, non-public API because this is what
+-    /// every terminal appears to use, including Terminal.app.
+-    export fn ghostty_set_window_background_blur(
+-        app: *App,
+-        window: *anyopaque,
+-    ) void {
+-        // This is only supported on macOS
+-        if (comptime builtin.target.os.tag != .macos) return;
+-
+-        const config = &app.config;
+-
+-        // Do nothing if we don't have background transparency enabled
+-        if (config.@"background-opacity" >= 1.0) return;
+-
+-        const nswindow = objc.Object.fromId(window);
+-        _ = CGSSetWindowBackgroundBlurRadius(
+-            CGSDefaultConnectionForThread(),
+-            nswindow.msgSend(usize, objc.sel("windowNumber"), .{}),
+-            @intCast(config.@"background-blur".cval()),
+-        );
+-    }
+-
+-    /// See ghostty_set_window_background_blur
+-    extern "c" fn CGSSetWindowBackgroundBlurRadius(*anyopaque, usize, c_int) i32;
+-    extern "c" fn CGSDefaultConnectionForThread() *anyopaque;
+-
+     // Darwin-only C APIs.
+     const Darwin = struct {
+         export fn ghostty_surface_set_display_id(ptr: *Surface, display_id: u32) void {

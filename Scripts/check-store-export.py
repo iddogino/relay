@@ -8,11 +8,12 @@ app inside must be the release it claims to be, signed as the App Store
 takes it: Relay's bundle ID, Keychain group and iCloud container (or it
 can't see the user's keys and synced hosts), iCloud and push in Production,
 not debuggable, sandboxed on the Mac, with the privacy manifest and the
-tmux bundle, and without Sparkle.
+tmux bundle, without Sparkle, and importing no private function.
 """
 import glob
 import os
 import plistlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,9 @@ BUNDLE_ID = "com.iddogino.Relay"
 TEAM = "HL9SP7TJ3J"
 KEYCHAIN_GROUP = f"{TEAM}.{BUNDLE_ID}"
 CLOUDKIT_CONTAINER = "iCloud.com.iddogino.Relay"
+# The window server's private functions (CGSSetWindowBackgroundBlurRadius…);
+# CoreGraphics' public CGSize… and CGShading… names don't match.
+PRIVATE_IMPORT = re.compile(r"_(CGS|SLS)[A-Z]")
 
 if len(sys.argv) != 5 or sys.argv[1] not in ("macos", "ios"):
     sys.exit(f"usage: {sys.argv[0]} macos|ios <export folder> <version> <build>")
@@ -100,6 +104,14 @@ with tempfile.TemporaryDirectory() as work:
         check(not any("temporary-exception" in key for key in entitlements),
               "has a sandbox temporary exception")
         check(not os.path.exists(os.path.join(contents, "Frameworks", "Sparkle.framework")), "embeds Sparkle")
+
+    # App Review's automated check turns a build away for importing a private
+    # function, called or not (libghostty exported one that did: patch 0003).
+    executable = os.path.join(contents, "MacOS" if mac else "", info.get("CFBundleExecutable", "Relay"))
+    imports = run("nm", "-u", executable)
+    private = sorted({name for name in imports.stdout.split() if PRIVATE_IMPORT.match(name)})
+    check(imports.returncode == 0, f"can't list what the binary imports: {imports.stderr.strip()}")
+    check(not private, f"imports private functions: {', '.join(private)}")
 
     check(os.path.isfile(os.path.join(resources, "PrivacyInfo.xcprivacy")), "no privacy manifest")
     check(os.path.isfile(os.path.join(resources, "tmux", "manifest.json")), "no tmux bundle")
