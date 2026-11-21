@@ -71,6 +71,38 @@ final class TerminalUITests: RelayUITestCase {
         waitForScreen(containing: "\n\(typed)")
     }
 
+    /// The key bar's attach button offers the photo library and the file
+    /// browser; a photo picked is uploaded to the host and its path there
+    /// typed in, with the keyboard back up.
+    func testAttachAPhoto() throws {
+        openSession()
+        showKeyboard()
+        clearLine()
+        let attach = keyBarKey("attach")
+        XCTAssertTrue(attach.waitForExistence(timeout: 5), "no attach button")
+        attach.tap()
+        XCTAssertTrue(app.buttons["Choose Files"].waitForExistence(timeout: 5), "no file browser choice")
+        shot("attach-menu")
+        app.buttons["Photo Library"].tap()
+
+        // The system's picker, with the Simulator's own photos.
+        let photo = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
+        XCTAssertTrue(photo.waitForExistence(timeout: 15), "no photo picker:\n\(app.debugDescription)")
+        photo.tap()
+        let done = app.buttons["Done"].firstMatch
+        let selected = Date().addingTimeInterval(5)
+        while !done.isEnabled, Date() < selected { RunLoop.current.run(until: Date().addingTimeInterval(0.2)) }
+        shot("attach-picker")
+        XCTAssertTrue(done.isEnabled, "the photo wasn't selected:\n\(app.debugDescription)")
+        done.tap()
+
+        waitForScreen(containing: "/tmp/relay-drop.", timeout: 60)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the keyboard didn't come back")
+        shot("attached")
+        dismissKeyboardTip()
+        clearLine()
+    }
+
     /// The keys past the edge scroll into reach, and a swipe along the key
     /// bar that starts on a key scrolls without pressing it.
     func testKeyBarScrolls() throws {

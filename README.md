@@ -74,6 +74,8 @@ Two conveniences make the remote feel local:
   the local path instead. Uploads show progress, can be cancelled, and clean
   up after themselves on failure; if you switch sessions mid-upload the
   finished path lands on your clipboard instead of in the wrong terminal.
+  On iPhone and iPad, the key bar's **+** does the same for photos and
+  videos from the library or anything in Files.
 
 **Archive Session** (⌘⇧E) ends a session cleanly: detach → kill the tmux
 session → run your shutdown command (with retry if it fails). **Kill Session**

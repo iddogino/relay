@@ -205,6 +205,12 @@ final class TerminalAttachmentController {
             guard let self, gen == self.generation else { return }
             self.handleFileDrop(urls: urls, preferLocalPaths: preferLocalPaths)
         }
+        #if os(iOS)
+        view.onAttachmentsPicked = { [weak self] picked in
+            guard let self, gen == self.generation else { return }
+            self.handlePickedAttachments(picked)
+        }
+        #endif
         surfaceView = view
         terminalLink = created?.link
         terminalLink?.start()
@@ -257,9 +263,45 @@ final class TerminalAttachmentController {
 
     // MARK: Drag & drop upload
 
-    private func handleFileDrop(urls: [URL], preferLocalPaths: Bool) {
-        guard case .attached = phase, let session, let project else { return }
+    #if os(iOS)
+    /// Photos or files from the key bar's attach button: made into files
+    /// here first (a photo may have to come down from iCloud), then
+    /// uploaded as a drop is.
+    private func handlePickedAttachments(_ picked: PickedAttachments) {
+        guard case .attached = phase else { return }
         if case .uploading = dropActivity { return }
+        let gen = generation
+        let label = picked.count == 1 ? "Preparing 1 item…" : "Preparing \(picked.count) items…"
+        dropActivity = .uploading(label: label, fraction: nil, detail: nil)
+        uploadTask = Task {
+            do {
+                let staged = try await picked.stage()
+                guard gen == self.generation, case .uploading = self.dropActivity else {
+                    staged.remove()
+                    return
+                }
+                self.dropActivity = .idle
+                self.handleFileDrop(urls: staged.urls, preferLocalPaths: false, staging: staged)
+            } catch {
+                guard gen == self.generation else { return }
+                self.dropActivity = .idle
+                self.showDropNotice(error is CancellationError ? "Upload canceled." : error.localizedDescription)
+            }
+        }
+    }
+    #endif
+
+    /// `staging`: the folder holding `urls`, when they're copies made for
+    /// this upload; removed once it's over.
+    private func handleFileDrop(urls: [URL], preferLocalPaths: Bool, staging: StagedFiles? = nil) {
+        guard case .attached = phase, let session, let project else {
+            staging?.remove()
+            return
+        }
+        if case .uploading = dropActivity {
+            staging?.remove()
+            return
+        }
         let localPaths = urls.map(\.path)
 
         if preferLocalPaths {
@@ -288,6 +330,7 @@ final class TerminalAttachmentController {
         }
 
         uploadTask = Task { [provider] in
+            defer { staging?.remove() }
             do {
                 let remotePaths = try await provider.uploadFiles(
                     localPaths: localPaths, for: session, project: project,
@@ -331,6 +374,15 @@ final class TerminalAttachmentController {
             }
         }
     }
+
+    #if os(iOS)
+    private typealias StagedFiles = PickedAttachments.Staged
+    #else
+    /// Only iOS copies files to upload them; a drop's are used in place.
+    private struct StagedFiles {
+        func remove() {}
+    }
+    #endif
 
     func cancelUpload() {
         uploadTask?.cancel()
